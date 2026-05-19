@@ -203,6 +203,7 @@
                     <button class="btn btn-secondary" onclick="cancelLogin()">取消</button>
                     <button class="btn btn-primary" id="modalLoginBtn" onclick="doLogin()">登录</button>
                     <button class="btn btn-primary" id="captchaSubmitBtn" onclick="doLoginStep2()" style="display:none">提交验证码</button>
+                    <button class="btn btn-secondary" id="resetLoginBtn" onclick="restartLogin()" style="display:none">重新登录</button>
                 </div>
             </div>
         </div>
@@ -299,6 +300,7 @@
             modal.classList.add('show');
             document.getElementById('captchaRow').style.display = 'none';
             document.getElementById('captchaSubmitBtn').style.display = 'none';
+            document.getElementById('resetLoginBtn').style.display = 'none';
             document.getElementById('modalLoginBtn').style.display = '';
             document.getElementById('captchaInput').value = '';
             const savedUsername = localStorage.getItem('crm_username');
@@ -316,11 +318,13 @@
             closeLoginModal();
             document.getElementById('captchaRow').style.display = 'none';
             document.getElementById('captchaSubmitBtn').style.display = 'none';
+            document.getElementById('resetLoginBtn').style.display = 'none';
             document.getElementById('modalLoginBtn').style.display = '';
             document.getElementById('modalLoginBtn').disabled = false;
             document.getElementById('modalLoginBtn').textContent = '登录';
             document.getElementById('captchaSubmitBtn').disabled = false;
             document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
+            document.getElementById('resetLoginBtn').disabled = false;
             document.getElementById('captchaInput').value = '';
             document.getElementById('loginProgress').classList.remove('show');
             try {
@@ -388,6 +392,7 @@
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner"></span> 登录中...';
             document.getElementById('loginProgress').classList.add('show');
+            document.getElementById('resetLoginBtn').style.display = 'none';
             setProgress('loginProgressBar', 20);
             log('开始登录 CRM...', 'info');
 
@@ -409,6 +414,7 @@
                         document.getElementById('captchaRow').style.display = '';
                         document.getElementById('modalLoginBtn').style.display = 'none';
                         document.getElementById('captchaSubmitBtn').style.display = '';
+                        document.getElementById('resetLoginBtn').style.display = '';
                         document.getElementById('loginPassword').value = '';
                         document.getElementById('captchaInput').focus();
                         log('验证码已发送到手机，请在下方输入', 'success');
@@ -417,6 +423,7 @@
                         log('登录成功！', 'success');
                         showToast('登录成功');
                         closeLoginModal();
+                        document.getElementById('resetLoginBtn').style.display = 'none';
                         document.getElementById('loginBtn').style.display = 'none';
                         document.getElementById('logoutBtn').style.display = '';
                         document.getElementById('batchQueryBtn').disabled = false;
@@ -458,13 +465,19 @@
                     showToast('登录成功');
                     closeLoginModal();
                     document.getElementById('captchaRow').style.display = 'none';
+                    document.getElementById('resetLoginBtn').style.display = 'none';
                     document.getElementById('loginBtn').style.display = 'none';
                     document.getElementById('logoutBtn').style.display = '';
                     document.getElementById('batchQueryBtn').disabled = false;
                     document.getElementById('captchaInput').value = '';
                 } else {
                     log('验证码错误: ' + d.message, 'error');
-                    showToast('验证码错误，请重试');
+                    showToast(d.message || '验证码错误，请重试');
+                    document.getElementById('resetLoginBtn').style.display = '';
+                    if ((d.message || '').includes('已重置')) {
+                        document.getElementById('captchaSubmitBtn').style.display = 'none';
+                        document.getElementById('modalLoginBtn').style.display = '';
+                    }
                 }
             } catch(e) {
                 log('提交验证码出错: ' + e, 'error');
@@ -472,6 +485,27 @@
             btn.disabled = false;
             btn.textContent = '提交验证码';
             checkStatus();
+        }
+
+        async function restartLogin() {
+            const btn = document.getElementById('resetLoginBtn');
+            btn.disabled = true;
+            log('正在重置登录状态并重新打开登录页...', 'warn');
+            try {
+                await fetch('/api/crm/login/cancel', {method:'POST'});
+            } catch(e) {
+                console.error(e);
+            }
+
+            document.getElementById('captchaRow').style.display = 'none';
+            document.getElementById('captchaSubmitBtn').style.display = 'none';
+            document.getElementById('resetLoginBtn').style.display = 'none';
+            document.getElementById('modalLoginBtn').style.display = '';
+            document.getElementById('captchaInput').value = '';
+            const savedPassword = localStorage.getItem('crm_password');
+            if (savedPassword) document.getElementById('loginPassword').value = savedPassword;
+            btn.disabled = false;
+            await doLogin();
         }
 
         async function doLogout() {
@@ -573,6 +607,7 @@
                         document.getElementById('captchaRow').style.display = '';
                         document.getElementById('modalLoginBtn').style.display = 'none';
                         document.getElementById('captchaSubmitBtn').style.display = '';
+                        document.getElementById('resetLoginBtn').style.display = '';
                         document.getElementById('captchaInput').focus();
                         pendingBatch = true;
                         return;

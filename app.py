@@ -130,24 +130,58 @@ class CRMSession:
             except Exception:
                 pass
 
+    def _is_current_page_logged_in(self):
+        try:
+            if not self.page:
+                return False
+            url = self.page.url.lower()
+            body_text = self.page.inner_text("body")
+            return (
+                "login" not in url and
+                (
+                    "退出" in body_text or
+                    "注销" in body_text or
+                    "首页" in body_text or
+                    "报表" in body_text or
+                    "home" in url
+                )
+            )
+        except Exception:
+            return False
+
+    def _reset_unfinished_login(self):
+        """新登录开始前清掉半截验证码页或异常页，避免只能重启 Docker。"""
+        if not self.is_alive():
+            self.logged_in = False
+            self.needs_navigation = True
+            return False
+
+        if self._is_current_page_logged_in():
+            self.logged_in = True
+            return True
+
+        print("  [登录] 检测到未完成/异常登录状态，重开 CRM 登录入口...")
+        self._close_browser()
+        self.logged_in = False
+        self.needs_navigation = True
+        return False
+
     def login_step1(self, username, password):
         """Step1: 填账号密码 → 点登录 → 点发送验证码（你收到短信）"""
         if not HAS_PLAYWRIGHT:
             return False, "Playwright 未安装"
         with self.lock:
             try:
-                self.logged_in = False
+                if self._reset_unfinished_login():
+                    return True, "已登录（会话有效）"
                 if not self._ensure_browser():
                     return False, "浏览器启动失败"
 
                 # 检查是否已登录（会话有效）
-                url = self.page.url.lower()
-                if "login" not in url:
-                    time.sleep(1)
-                    body_text = self.page.inner_text("body")
-                    if "退出" in body_text or "注销" in body_text:
-                        self.logged_in = True
-                        return True, "已登录（会话有效）"
+                time.sleep(1)
+                if self._is_current_page_logged_in():
+                    self.logged_in = True
+                    return True, "已登录（会话有效）"
 
                 # 在登录页，填账号密码
                 time.sleep(1)
@@ -328,7 +362,10 @@ class CRMSession:
                     time.sleep(0.5)
 
                 if not captcha_input:
-                    return False, "验证码输入框未出现，请重新触发发送验证码"
+                    self._close_browser()
+                    self.logged_in = False
+                    self.needs_navigation = True
+                    return False, "验证码输入框未出现，已重置登录状态，请重新登录"
 
                 captcha_input.click(); time.sleep(0.3)
                 captcha_input.press("Control+a"); time.sleep(0.1)
@@ -355,7 +392,7 @@ class CRMSession:
                     self.logged_in = True
                     self.needs_navigation = True
                     return True, "登录成功"
-                return False, "验证码可能错误，请重试"
+                return False, "验证码可能错误，请重试，或点击重新登录"
 
             except Exception as e:
                 return False, str(e)
@@ -366,17 +403,17 @@ class CRMSession:
             return False, "Playwright 未安装"
         with self.lock:
             try:
+                if not captcha and self._reset_unfinished_login():
+                    return True, "已登录（会话有效）"
+
                 if not self._ensure_browser():
                     return False, "浏览器启动失败"
 
                 # 检查是否已登录
-                url = self.page.url.lower()
-                if "login" not in url:
-                    time.sleep(1)
-                    body_text = self.page.inner_text("body")
-                    if "退出" in body_text or "注销" in body_text:
-                        self.logged_in = True
-                        return True, "已登录（会话有效）"
+                time.sleep(1)
+                if self._is_current_page_logged_in():
+                    self.logged_in = True
+                    return True, "已登录（会话有效）"
 
                 # 在登录页，填账号密码
                 time.sleep(1)
