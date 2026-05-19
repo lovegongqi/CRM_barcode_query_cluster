@@ -68,6 +68,8 @@ http://127.0.0.1:5001/crm
 
 ## Docker 部署
 
+Docker 版会在容器内用 Xvfb 启动一个虚拟显示器，让 Playwright 以普通 Chromium 形态运行。这样云服务器不需要真实桌面，也能兼容 CRM 的老式 Crystal Reports 页面。
+
 ### 1. 云服务器安装 Docker
 
 如果服务器还没有 Docker，先安装 Docker 和 Compose。Ubuntu/Debian 常用方式：

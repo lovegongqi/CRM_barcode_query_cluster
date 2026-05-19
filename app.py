@@ -34,9 +34,10 @@ CRM_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 def load_crm_config():
     config_paths = [
         CRM_CONFIG_PATH,
-        os.path.join(os.path.dirname(__file__), "config.example.json"),
-        os.path.join(os.path.dirname(__file__), "config.docker.example.json"),
     ]
+    if os.path.exists("/.dockerenv"):
+        config_paths.append(os.path.join(os.path.dirname(__file__), "config.docker.example.json"))
+    config_paths.append(os.path.join(os.path.dirname(__file__), "config.example.json"))
     for path in config_paths:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -66,6 +67,7 @@ class CRMSession:
     def _ensure_browser(self):
         """启动或复用浏览器实例"""
         cfg = load_crm_config()
+        browser_cfg = cfg.get("browser", {})
         session_dir = cfg["session"]["state_path"]
         os.makedirs(session_dir, exist_ok=True)
 
@@ -85,8 +87,12 @@ class CRMSession:
             self.playwright = sync_playwright().start()
             self.context = self.playwright.chromium.launch_persistent_context(
                 user_data_dir=session_dir,
-                headless=cfg["browser"].get("headless", True),
-                viewport=cfg["browser"]["viewport"]
+                headless=browser_cfg.get("headless", True),
+                viewport=browser_cfg["viewport"],
+                user_agent=browser_cfg.get("user_agent"),
+                locale=browser_cfg.get("locale", "zh-CN"),
+                timezone_id=browser_cfg.get("timezone_id", "Asia/Shanghai"),
+                args=browser_cfg.get("args", [])
             )
         except Exception as e:
             error_msg = str(e)
@@ -98,8 +104,12 @@ class CRMSession:
                 self.playwright = sync_playwright().start()
                 self.context = self.playwright.chromium.launch_persistent_context(
                     user_data_dir=session_dir,
-                    headless=cfg["browser"].get("headless", True),
-                    viewport=cfg["browser"]["viewport"]
+                    headless=browser_cfg.get("headless", True),
+                    viewport=browser_cfg["viewport"],
+                    user_agent=browser_cfg.get("user_agent"),
+                    locale=browser_cfg.get("locale", "zh-CN"),
+                    timezone_id=browser_cfg.get("timezone_id", "Asia/Shanghai"),
+                    args=browser_cfg.get("args", [])
                 )
             else:
                 raise
