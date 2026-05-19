@@ -1,0 +1,15 @@
+services:
+  crm-barcode-query:
+    build: .
+    image: crm-barcode-query:latest
+    container_name: crm-barcode-query
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./accounts.json:/app/accounts.json:ro
+      - ./barcode:/app/barcode
+      - ./results:/app/results
+      - ./session:/app/session
+    shm_size: "1gb"
