@@ -22,14 +22,12 @@ Dockerfile
 docker-compose.yml
 config.example.json
 config.docker.example.json
-accounts.example.json
 ```
 
 不会上传到 GitHub 的本地文件：
 
 ```text
-accounts.json      # CRM 账号密码
-config.json        # 实际 CRM 地址和本地路径配置
+config.json        # 可选：覆盖默认 CRM 地址和本地路径配置
 barcode/           # 查询结果 HTML
 results/           # 导出结果
 session/           # 浏览器登录会话
@@ -47,14 +45,15 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-创建本地配置：
+如果需要覆盖默认配置，可以创建本地配置：
 
 ```bash
 cp config.example.json config.json
-cp accounts.example.json accounts.json
 ```
 
-编辑 `config.json` 和 `accounts.json`，然后启动：
+默认 CRM 入口已经写在示例配置里。账号和密码直接在网页登录弹窗里填写，不需要先写入 `accounts.json`。
+
+启动：
 
 ```bash
 python app.py
@@ -93,53 +92,14 @@ git clone https://github.com/lovegongqi/CRM_barcode_query.git
 cd CRM_barcode_query
 ```
 
-### 3. 创建运行配置
+### 3. 启动容器
 
 ```bash
-cp config.docker.example.json config.json
-cp accounts.example.json accounts.json
 mkdir -p barcode results session
-```
-
-编辑 `config.json`：
-
-```json
-{
-    "website": {
-        "url": "你的 CRM 地址",
-        "report_url": ""
-    },
-    "browser": {
-        "headless": true,
-        "viewport": {
-            "width": 1920,
-            "height": 1080
-        }
-    },
-    "session": {
-        "state_path": "/app/session",
-        "save_on_exit": true
-    }
-}
-```
-
-编辑 `accounts.json`：
-
-```json
-{
-    "你的CRM账号": {
-        "password": "你的CRM密码"
-    }
-}
-```
-
-注意：`config.json` 和 `accounts.json` 不会被 Git 上传，但在服务器上必须存在。
-
-### 4. 启动容器
-
-```bash
 docker compose up -d --build
 ```
+
+项目已经内置 CRM 入口，部署后打开网页，点击“登录 CRM”，在弹窗里现填账号、密码、验证码即可。`accounts.json` 不是必需文件。
 
 查看运行状态：
 
@@ -156,6 +116,26 @@ http://服务器IP:5001/crm
 ```
 
 如果云服务器有防火墙或安全组，需要放行 TCP `5001` 端口。
+
+### 4. 可选：覆盖配置
+
+正常使用不需要创建配置文件。若以后 CRM 入口或运行路径变化，再执行：
+
+```bash
+cp config.docker.example.json config.json
+```
+
+然后编辑 `docker-compose.yml`，取消这一行的注释：
+
+```yaml
+# - ./config.json:/app/config.json:ro
+```
+
+最后重建容器：
+
+```bash
+docker compose up -d --build
+```
 
 ### 5. 停止、重启、更新
 
@@ -221,8 +201,6 @@ docker compose up -d
 `docker-compose.yml` 已经把这些目录挂载到宿主机：
 
 ```text
-./config.json  -> /app/config.json
-./accounts.json -> /app/accounts.json
 ./barcode     -> /app/barcode
 ./results     -> /app/results
 ./session     -> /app/session
@@ -230,13 +208,12 @@ docker compose up -d
 
 所以容器重建后：
 
-- CRM 账号配置不会丢
 - 浏览器登录会话不会丢
 - 查询结果不会丢
 - 导出文件不会丢
 
 ## 安全建议
 
-- 不要把 `accounts.json` 和 `config.json` 上传到公开仓库。
+- 不要把自己的 `config.json` 上传到公开仓库。
 - 云服务器建议只给可信 IP 开放 `5001` 端口。
 - 如果要公网长期使用，建议前面加 Nginx + HTTPS + 访问密码。

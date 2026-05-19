@@ -30,17 +30,18 @@ except ImportError:
     HAS_PLAYWRIGHT = False
 
 CRM_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
-ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "accounts.json")
 
 def load_crm_config():
-    with open(CRM_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def load_accounts():
-    if os.path.exists(ACCOUNTS_FILE):
-        with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    config_paths = [
+        CRM_CONFIG_PATH,
+        os.path.join(os.path.dirname(__file__), "config.example.json"),
+        os.path.join(os.path.dirname(__file__), "config.docker.example.json"),
+    ]
+    for path in config_paths:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    raise FileNotFoundError("未找到 config.json 或示例配置文件")
 
 class CRMSession:
     def __init__(self):
@@ -51,6 +52,7 @@ class CRMSession:
         self.lock = threading.Lock()
         self.logged_in = False
         self.needs_navigation = True  # 标记是否需要导航到报表页面
+        self.last_report_error = ""
 
     def is_alive(self):
         try:
@@ -124,13 +126,6 @@ class CRMSession:
             return False, "Playwright 未安装"
         with self.lock:
             try:
-                accounts = load_accounts()
-                if username not in accounts:
-                    return False, f"账号 {username} 不在 accounts.json 中"
-                saved_pw = accounts[username].get("password", "")
-                if password != saved_pw:
-                    return False, "密码不匹配，请到 accounts.json 中核对"
-
                 self.logged_in = False
                 if not self._ensure_browser():
                     return False, "浏览器启动失败"
@@ -361,13 +356,6 @@ class CRMSession:
             return False, "Playwright 未安装"
         with self.lock:
             try:
-                accounts = load_accounts()
-                if username not in accounts:
-                    return False, f"账号 {username} 不在 accounts.json 中"
-                saved_pw = accounts[username].get("password", "")
-                if password != saved_pw:
-                    return False, "密码不匹配，请到 accounts.json 中核对"
-
                 if not self._ensure_browser():
                     return False, "浏览器启动失败"
 
@@ -586,12 +574,29 @@ class CRMSession:
                 return False
 
             report_page = None
+            saw_report_page = False
             for i, p in enumerate(pages):
                 try:
                     print(f"    标签页{i+1}: {p.url}")
                     if "/EcoCrystalReports/EcoCrystalRp" in p.url:
+                        saw_report_page = True
+                        error = self._get_report_page_error(p)
+                        if error:
+                            self.last_report_error = error
+                            print(f"  [关闭] 标签页{i+1} 是报表错误页: {error}")
+                            try:
+                                p.close()
+                            except Exception:
+                                pass
+                            continue
+                        input_box = self._find_barcode_input(p)
+                        if input_box:
+                            self.last_report_error = ""
+                            report_page = p
+                            print(f"  [找到] 标签页{i+1} 包含可用报表输入框")
+                            break
                         report_page = p
-                        print(f"  [找到] 标签页{i+1} 包含报表 URL")
+                        print(f"  [找到] 标签页{i+1} 包含报表 URL，继续等待输入框")
                 except Exception:
                     pass
 
@@ -602,6 +607,11 @@ class CRMSession:
                 time.sleep(2)
                 return True
 
+            if saw_report_page:
+                print("  [失败] 报表标签页存在，但没有可用页面")
+                return False
+
+            pages = self.context.pages
             if len(pages) == 1:
                 print("  [失败] 没有新标签页被打开")
                 return False
@@ -614,11 +624,12 @@ class CRMSession:
                 content = self.page.inner_text("body")
                 if "输入 barcode" in content or "确定" in content or "EcoCrystalRp" in self.page.url:
                     print("  [成功] 当前标签页是报表页")
+                    return True
                 else:
                     print(f"  [警告] 当前标签页可能不是报表，URL: {self.page.url}")
             except Exception as e:
                 print(f"  [错误] 检查标签页内容失败: {e}")
-            return True
+            return False
         except Exception as e:
             print(f"  [错误] switch_to_report_tab失败: {e}")
             return False
@@ -660,9 +671,10 @@ class CRMSession:
         except Exception as e:
             print(f"  [错误] close_report_tab失败: {e}")
 
-    def _find_barcode_input(self):
+    def _find_barcode_input(self, page=None):
         try:
-            inputs = self.page.query_selector_all("input[name='CrystalReportViewer1_p0DiscreteValue']")
+            target_page = page or self.page
+            inputs = target_page.query_selector_all("input[name='CrystalReportViewer1_p0DiscreteValue']")
             for el in inputs:
                 try:
                     if el.is_visible():
@@ -673,6 +685,57 @@ class CRMSession:
         except Exception:
             return None
 
+    def _get_report_page_error(self, page=None):
+        try:
+            target_page = page or self.page
+            if "/EcoCrystalReports/EcoCrystalRp" not in target_page.url:
+                return ""
+            body_text = target_page.inner_text("body", timeout=2000).strip()
+        except Exception:
+            return ""
+
+        compact_text = re.sub(r"\s+", " ", body_text)
+        if (
+            "CrystalReportViewer1.ReportSourceID" in body_text or
+            "CrystalReportSource" in body_text or
+            "找不到由" in body_text
+        ):
+            return compact_text[:160]
+        if compact_text.startswith("错误"):
+            return compact_text[:160]
+        return ""
+
+    def _find_open_report_page(self, require_input=False, close_errors=False):
+        report_page = None
+        try:
+            for p in reversed(self.context.pages):
+                try:
+                    if "/EcoCrystalReports/EcoCrystalRp" not in p.url:
+                        continue
+
+                    error = self._get_report_page_error(p)
+                    if error:
+                        self.last_report_error = error
+                        print(f"  [关闭] 报表错误页: {error}")
+                        if close_errors:
+                            try:
+                                p.close()
+                            except Exception:
+                                pass
+                        continue
+
+                    input_box = self._find_barcode_input(p)
+                    if input_box:
+                        self.last_report_error = ""
+                        return p
+                    if not require_input and not report_page:
+                        report_page = p
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return report_page
+
     def _reload_report_for_input(self):
         """刷新当前报表页，尝试回到条码输入界面"""
         try:
@@ -682,6 +745,11 @@ class CRMSession:
             self.page.reload(wait_until="domcontentloaded", timeout=30000)
             for i in range(20):
                 time.sleep(1)
+                error = self._get_report_page_error()
+                if error:
+                    self.last_report_error = error
+                    print(f"  [失败] 报表刷新后是错误页: {error}")
+                    return None
                 input_box = self._find_barcode_input()
                 try:
                     if input_box and input_box.is_visible():
@@ -710,6 +778,15 @@ class CRMSession:
                     self.page = p
                     self.page.bring_to_front()
                     time.sleep(1)
+                    error = self._get_report_page_error()
+                    if error:
+                        self.last_report_error = error
+                        print(f"  [关闭] 已打开的报表标签页是错误页: {error}")
+                        try:
+                            p.close()
+                        except Exception:
+                            pass
+                        continue
                     input_box = self._find_barcode_input()
                     if input_box and input_box.is_visible():
                         print("  [复用] 已在打开的报表标签页找到条码输入框")
@@ -731,74 +808,63 @@ class CRMSession:
             list_page = self.page
             self.page = list_page
             self.page.bring_to_front()
+            self.last_report_error = ""
             time.sleep(1)
 
             pages_before = len(self.context.pages)
             print(f"  [INFO] 打开前有 {pages_before} 个标签页")
 
             try:
-                result = self.page.evaluate("""() => {
-                    const elements = document.querySelectorAll('*');
-                    for (const el of elements) {
-                        if (el.textContent.trim() === '查询条码所有信息') {
-                            const dblclickEvent = new MouseEvent('dblclick', {
-                                bubbles: true, cancelable: true, view: window
-                            });
-                            el.dispatchEvent(dblclickEvent);
-                            return true;
-                        }
-                    }
-                    return false;
-                }""")
-                if not result:
-                    print("  [失败] JS未找到'查询条码所有信息'文字")
+                report_link = self.page.get_by_text("查询条码所有信息", exact=True).first
+                report_link.scroll_into_view_if_needed(timeout=5000)
+                box = report_link.bounding_box()
+                if not box:
+                    print("  [失败] 未找到'查询条码所有信息'位置")
                     return False
-                print("  [触发] JS dblclick 已触发，等待报表页...")
+                x = box['x'] + box['width'] / 2
+                y = box['y'] + box['height'] / 2
+                self.page.mouse.dblclick(x, y)
+                print("  [触发] mouse.dblclick 已触发，等待报表输入框...")
             except Exception as e:
-                print(f"  [错误] JS双击失败: {e}")
+                print(f"  [错误] mouse双击失败: {e}")
                 return False
 
             report_page = None
             for i in range(18):
                 time.sleep(1)
-                report_pages = []
-                for p in self.context.pages:
-                    try:
-                        if "/EcoCrystalReports/EcoCrystalRp" in p.url:
-                            report_pages.append(p)
-                    except Exception:
-                        pass
-                if report_pages:
-                    report_page = report_pages[-1]
-                    print(f"  [成功] 已发现报表标签页（当前共{len(self.context.pages)}个）")
+                report_page = self._find_open_report_page(require_input=True, close_errors=True)
+                if report_page:
+                    print(f"  [成功] 已发现可用报表标签页（当前共{len(self.context.pages)}个）")
                     break
                 print(f"  [等待] 第{i+1}秒，等待报表标签页出现...")
 
             if not report_page:
                 try:
-                    report_link = self.page.get_by_text("查询条码所有信息", exact=True).first
-                    report_link.scroll_into_view_if_needed(timeout=5000)
-                    box = report_link.bounding_box()
-                    if box:
-                        x = box['x'] + box['width'] / 2
-                        y = box['y'] + box['height'] / 2
-                        self.page.mouse.dblclick(x, y)
-                        print("  [兜底] mouse.dblclick 已触发，继续等待报表页...")
+                    result = self.page.evaluate("""() => {
+                        const elements = document.querySelectorAll('*');
+                        for (const el of elements) {
+                            if (el.textContent.trim() === '查询条码所有信息') {
+                                const dblclickEvent = new MouseEvent('dblclick', {
+                                    bubbles: true, cancelable: true, view: window
+                                });
+                                el.dispatchEvent(dblclickEvent);
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""")
+                    if result:
+                        print("  [兜底] JS dblclick 已触发，继续等待报表输入框...")
+                    else:
+                        print("  [失败] JS未找到'查询条码所有信息'文字")
                 except Exception as e:
-                    print(f"  [错误] mouse兜底双击失败: {e}")
+                    print(f"  [错误] JS兜底双击失败: {e}")
 
                 for i in range(15):
                     time.sleep(1)
-                    report_pages = []
-                    for p in self.context.pages:
-                        try:
-                            if "/EcoCrystalReports/EcoCrystalRp" in p.url:
-                                report_pages.append(p)
-                        except Exception:
-                            pass
-                    if report_pages:
-                        report_page = report_pages[-1]
-                        print(f"  [成功] 兜底后发现报表标签页（当前共{len(self.context.pages)}个）")
+                    report_page = self._find_open_report_page(require_input=True, close_errors=True)
+                    if report_page:
+                        print(f"  [成功] 兜底后发现可用报表标签页（当前共{len(self.context.pages)}个）")
                         break
                     print(f"  [等待] 兜底第{i+1}秒，等待报表标签页出现...")
 
@@ -806,8 +872,11 @@ class CRMSession:
                 print("  [失败] 未能打开'查询条码所有信息'新标签页")
                 return False
 
-            time.sleep(3)
-            return self.switch_to_report_tab()
+            self.page = report_page
+            self.page.bring_to_front()
+            self.last_report_error = ""
+            time.sleep(2)
+            return True
         except Exception as e:
             print(f"  [错误] 打开报表失败: {e}")
             return False
@@ -1003,11 +1072,15 @@ class CRMSession:
                 if self.needs_navigation:
                     print("  [导航] 准备打开报表页面...")
                     if not self.prepare_next_report():
+                        if self.last_report_error:
+                            return False, f"报表页面加载错误: {self.last_report_error}"
                         return False, "打开查询条码所有信息报表失败"
                     self.needs_navigation = False
 
                 # 切换到报表标签页
                 if not self.switch_to_report_tab():
+                    if self.last_report_error:
+                        return False, f"报表页面加载错误: {self.last_report_error}"
                     return False, "未找到报表标签页"
                 time.sleep(2)
 
@@ -1027,8 +1100,12 @@ class CRMSession:
                             self.close_report_tab()
                             self.needs_navigation = True
                             if not self.prepare_next_report():
+                                if self.last_report_error:
+                                    return False, f"报表页面加载错误: {self.last_report_error}"
                                 return False, "打开查询条码所有信息报表失败"
                             if not self.switch_to_report_tab():
+                                if self.last_report_error:
+                                    return False, f"报表页面加载错误: {self.last_report_error}"
                                 return False, "未找到报表标签页"
                             time.sleep(5)
                             print(f"  [DEBUG] 重新导航后URL: {self.page.url}")
