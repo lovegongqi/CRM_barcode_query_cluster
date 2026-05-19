@@ -1,0 +1,35 @@
+# Local secrets and runtime config
+accounts.json
+config.json
+.env
+
+# Generated query output
+barcode/
+results/
+
+# Browser/session state
+session/
+**/storage_state.json
+
+# Logs and process files
+*.log
+*.pid
+gunicorn-*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+
+# Packaging/build artifacts
+*.egg-info/
+build/
+dist/
+
+# OS/editor files
+.DS_Store
+.claude/

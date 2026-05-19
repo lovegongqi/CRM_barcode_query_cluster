@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRM 条码查询</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(180deg,#eaf1fb 0,#f7f9fc 320px,#f7f9fc 100%); color: #202938; min-height: 100vh; }
+        .container { max-width: 1040px; margin: 0 auto; padding: 24px; }
+        .header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+        .header h1 { font-size: 26px; color: #202938; margin-bottom: 6px; }
+        .header p { color: #667085; font-size: 13px; }
+        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+        .page-nav a { font-size: 13px; font-weight: 800; color: #667085; text-decoration: none; padding: 8px 14px; border: 1px solid #d9e1ec; border-radius: 999px; background: rgba(255,255,255,.8); }
+        .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
+        .page-nav a:hover { border-color:#bfdbfe; color:#2563eb; }
+        .page-nav a.active:hover { color:#fff; }
+        .status-bar { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; padding: 12px 16px; background: #fff; border-radius: 8px; border: 1px solid #e0e0e0; box-shadow: 0 6px 18px rgba(15,23,42,.06); }
+        .status-item { display: flex; align-items: center; gap: 8px; font-size: 14px; color:#334155; font-weight:700; }
+        .status-actions { margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+        .status-bar .progress-bar { flex-basis:100%; width:100%; margin-top:2px; }
+        .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: 0 0 10px; box-shadow: 0 0 0 3px rgba(148,163,184,.16); }
+        .status-dot.green { background: #28a745; }
+        .status-dot.red { background: #dc3545; }
+        .status-dot.gray { background: #999; }
+        .card { background: rgba(255,255,255,.96); border-radius: 8px; padding: 24px; border: 1px solid #d9e1ec; margin-bottom: 20px; box-shadow: 0 10px 28px rgba(15,23,42,.08); }
+        .card h2 { font-size: 16px; color: #333; margin-bottom: 16px; padding-bottom: 10px; border-bottom: 1px solid #eee; }
+        .form-row { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 16px; }
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-group label { font-size: 13px; color: #666; font-weight: 500; }
+        .form-group input { padding: 8px 12px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; outline: none; }
+        .form-group input:focus { border-color: #4472C4; }
+        .btn { min-height: 38px; padding: 8px 20px; border-radius: 8px; font-size: 14px; font-weight: 800; border: none; transition: all 0.2s; box-shadow: 0 1px 2px rgba(15,23,42,.08); }
+        .btn-primary { background: #2563eb; color: #fff; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-primary:disabled { background: #ccc; }
+        .btn-danger { background: #dc3545; color: #fff; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-success { background: #2563eb; color: #fff; }
+        .btn-success:hover { background: #1d4ed8; }
+        .btn-secondary { background: #6c757d; color: #fff; }
+        .btn-secondary:hover { background: #5a6268; }
+        textarea { width: 100%; height: 120px; padding: 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 13px; font-family: monospace; resize: vertical; outline: none; }
+        textarea:focus { border-color: #4472C4; }
+        .log-area { background: #0f172a; color: #d4d4d4; border-radius: 8px; padding: 14px; font-family: 'Courier New', monospace; font-size: 13px; max-height: 400px; overflow-y: auto; line-height: 1.8; }
+        .log-area .info { color: #4fc3f7; }
+        .log-area .success { color: #81c784; }
+        .log-area .error { color: #e57373; }
+        .log-area .warn { color: #ffb74d; }
+        .log-area .dim { color: #888; }
+        .result-list { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+        .result-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #ccc; }
+        .result-item.success { border-left-color: #28a745; }
+        .result-item.error { border-left-color: #dc3545; }
+        .result-item .barcode { font-family: monospace; font-size: 14px; font-weight: 600; color: #333; }
+        .result-item .status { font-size: 12px; }
+        .result-item .status.done { color: #28a745; }
+        .result-item .status.fail { color: #dc3545; }
+        .result-item .view-btn { margin-left: auto; padding: 4px 12px; background: #4472C4; color: #fff; border-radius: 4px; text-decoration: none; font-size: 12px; }
+        .result-item .view-btn:hover { background: #3657a8; }
+        .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 10px 24px; border-radius: 6px; font-size: 14px; z-index: 9999; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+        .toast.show { opacity: 1; }
+        .hint { font-size: 12px; color: #999; margin-top: 4px; }
+        .progress-bar { height: 4px; background: #e0e0e0; border-radius: 2px; margin-top: 8px; overflow: hidden; display: none; }
+        .progress-bar.show { display: block; }
+        .progress-bar .bar { height: 100%; background: #4472C4; transition: width 0.3s; width: 0%; }
+        .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; }
+        .auth-card { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+        .auth-card p { color:#667085; font-size:13px; margin-top:6px; }
+        .auth-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+        .modal-overlay {
+            position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+            background: rgba(15,23,42,.52); z-index: 1000; padding: 18px;
+        }
+        .modal-overlay.show { display: flex; }
+        .login-modal {
+            width: min(460px, 100%);
+            background: #fff;
+            border: 1px solid #d9e1ec;
+            border-radius: 10px;
+            box-shadow: 0 28px 70px rgba(15,23,42,.30);
+            overflow: hidden;
+        }
+        .login-modal-head {
+            display:flex; align-items:center; justify-content:space-between; gap:12px;
+            padding: 18px 20px; border-bottom: 1px solid #e5eaf2; background:#f8fbff;
+        }
+        .login-modal-head h3 { font-size: 17px; color:#202938; }
+        .modal-close { border:none; background:transparent; color:#667085; font-size:22px; line-height:1; }
+        .login-modal-body { padding: 18px 20px 20px; }
+        .login-modal-body .form-row { flex-direction: column; align-items: stretch; gap: 12px; }
+        .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+        .detail-modal {
+            width: min(1180px, 96vw);
+            height: min(86vh, 900px);
+            background: #fff;
+            border: 1px solid #d9e1ec;
+            border-radius: 10px;
+            box-shadow: 0 28px 70px rgba(15,23,42,.30);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .detail-modal-head {
+            display:flex; align-items:center; justify-content:space-between; gap:12px;
+            padding: 14px 18px; border-bottom: 1px solid #e5eaf2; background:#f8fbff;
+        }
+        .detail-modal-head h3 { font-size: 16px; color:#202938; }
+        .detail-frame { width:100%; flex:1; border:0; background:#fff; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (max-width: 760px) {
+            .container { padding: 14px; }
+            .header, .form-row { align-items: stretch; flex-direction: column; }
+            .page-nav { justify-content: flex-start; }
+            .form-group { width: 100%; }
+            .status-bar { align-items: center; flex-direction: row; flex-wrap: wrap; }
+            .status-actions { margin-left:auto; justify-content:flex-end; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>CRM 在线查询</h1>
+                <p>这个页面负责登录和批量查询，切回结果管理不会中断后端任务。</p>
+            </div>
+            <div class="page-nav">
+                <a href="/">结果管理</a>
+                <a class="active" href="/crm">在线查询</a>
+            </div>
+        </div>
+
+        <div class="status-bar" id="statusBar">
+            <div class="status-item">
+                <span class="status-dot gray" id="browserDot"></span>
+                <span id="browserStatus">浏览器</span>
+            </div>
+            <div class="status-item">
+                <span class="status-dot gray" id="loginDot"></span>
+                <span>登录状态：</span><span id="loginStatus">未登录</span>
+            </div>
+            <div class="status-actions">
+                <button class="btn btn-primary" id="loginBtn" onclick="openLoginModal()">登录 CRM</button>
+                <button class="btn btn-danger" id="logoutBtn" onclick="doLogout()" style="display:none">退出登录</button>
+            </div>
+            <div class="progress-bar" id="loginProgress">
+                <div class="bar" id="loginProgressBar"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>查询条码</h2>
+            <div class="form-group">
+                <label>条码查询（每行一个，输入一个也可以）</label>
+                <textarea id="batchInput" placeholder="6923445601003
+6923445601004
+6923445601005"></textarea>
+            </div>
+            <div class="form-row">
+                <button class="btn btn-success" id="batchQueryBtn" onclick="doBatchQuery()" disabled>开始查询</button>
+            </div>
+            <div class="progress-bar" id="queryProgress">
+                <div class="bar" id="queryProgressBar"></div>
+            </div>
+            <div class="result-list" id="resultList"></div>
+        </div>
+
+        <div class="card">
+            <h2>操作日志</h2>
+            <div class="log-area" id="logArea">
+                <div class="dim">等待操作...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <div class="modal-overlay" id="loginModal" onclick="if(event.target.id==='loginModal')cancelLogin()">
+        <div class="login-modal">
+            <div class="login-modal-head">
+                <h3>登录 CRM</h3>
+                <button class="modal-close" onclick="cancelLogin()">×</button>
+            </div>
+            <div class="login-modal-body">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>账号</label>
+                        <input type="text" id="loginUsername" placeholder="CRM 用户名">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="password" id="loginPassword" placeholder="密码">
+                    </div>
+                </div>
+                <div class="form-row" id="captchaRow" style="display:none">
+                    <div class="form-group" style="flex:1">
+                        <label>短信验证码</label>
+                        <input type="text" id="captchaInput" placeholder="输入收到短信验证码" maxlength="6">
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" onclick="cancelLogin()">取消</button>
+                    <button class="btn btn-primary" id="modalLoginBtn" onclick="doLogin()">登录</button>
+                    <button class="btn btn-primary" id="captchaSubmitBtn" onclick="doLoginStep2()" style="display:none">提交验证码</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="detailModal" onclick="if(event.target.id==='detailModal')closeDetailModal()">
+        <div class="detail-modal">
+            <div class="detail-modal-head">
+                <h3 id="detailModalTitle">条码详情</h3>
+                <button class="modal-close" onclick="closeDetailModal()">×</button>
+            </div>
+            <iframe class="detail-frame" id="detailFrame" src=""></iframe>
+        </div>
+    </div>
+
+    <script>
+        let queryQueue = [];
+        let isBatchRunning = false;
+        let queryCount = 0;
+        let pendingBatch = false; // 标记是否有待处理的批量查询
+        let pendingBarcodes = []; // 待处理的条码列表
+        let batchPollTimer = null;
+        let lastBatchLogCount = 0;
+        let renderedBatchResults = new Set();
+
+        function log(msg, type='') {
+            const area = document.getElementById('logArea');
+            const line = document.createElement('div');
+            line.className = type;
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            area.appendChild(line);
+            area.scrollTop = area.scrollHeight;
+        }
+
+        function appendServerLog(entry) {
+            const area = document.getElementById('logArea');
+            const line = document.createElement('div');
+            line.className = entry.level || '';
+            line.textContent = `[${entry.time}] ${entry.message}`;
+            area.appendChild(line);
+            area.scrollTop = area.scrollHeight;
+        }
+
+        function renderBatchResult(item) {
+            const key = item.barcode + '|' + item.success + '|' + (item.error || '');
+            if (renderedBatchResults.has(key)) return;
+            renderedBatchResults.add(key);
+            const list = document.getElementById('resultList');
+            const row = document.createElement('div');
+            row.className = 'result-item ' + (item.success ? 'success' : 'error');
+            if (item.success) {
+                row.innerHTML = `
+                    <span class="barcode">${item.barcode}</span>
+                    <span class="status done">✓ 成功</span>
+                    <a class="view-btn" href="${item.view_url}" onclick="showDetail(event, '${item.barcode}', '${item.view_url}')">查看详情</a>
+                `;
+            } else {
+                row.innerHTML = `
+                    <span class="barcode">${item.barcode}</span>
+                    <span class="status fail">✗ ${item.error}</span>
+                `;
+            }
+            list.prepend(row);
+        }
+
+        function showDetail(event, barcode, url) {
+            if (event) event.preventDefault();
+            const modal = document.getElementById('detailModal');
+            const frame = document.getElementById('detailFrame');
+            document.getElementById('detailModalTitle').textContent = '条码详情 - ' + barcode;
+            frame.src = url;
+            modal.classList.add('show');
+        }
+
+        function closeDetailModal() {
+            document.getElementById('detailModal').classList.remove('show');
+            document.getElementById('detailFrame').src = '';
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        function setProgress(id, pct) {
+            const bar = document.getElementById(id);
+            bar.style.width = pct + '%';
+        }
+
+        function openLoginModal() {
+            const modal = document.getElementById('loginModal');
+            modal.classList.add('show');
+            document.getElementById('captchaRow').style.display = 'none';
+            document.getElementById('captchaSubmitBtn').style.display = 'none';
+            document.getElementById('modalLoginBtn').style.display = '';
+            document.getElementById('captchaInput').value = '';
+            const savedUsername = localStorage.getItem('crm_username');
+            const savedPassword = localStorage.getItem('crm_password');
+            if (savedUsername) document.getElementById('loginUsername').value = savedUsername;
+            if (savedPassword) document.getElementById('loginPassword').value = savedPassword;
+            setTimeout(() => document.getElementById('loginUsername').focus(), 50);
+        }
+
+        function closeLoginModal() {
+            document.getElementById('loginModal').classList.remove('show');
+        }
+
+        async function cancelLogin() {
+            closeLoginModal();
+            document.getElementById('captchaRow').style.display = 'none';
+            document.getElementById('captchaSubmitBtn').style.display = 'none';
+            document.getElementById('modalLoginBtn').style.display = '';
+            document.getElementById('modalLoginBtn').disabled = false;
+            document.getElementById('modalLoginBtn').textContent = '登录';
+            document.getElementById('captchaSubmitBtn').disabled = false;
+            document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
+            document.getElementById('captchaInput').value = '';
+            document.getElementById('loginProgress').classList.remove('show');
+            try {
+                await fetch('/api/crm/login/cancel', {method:'POST'});
+            } catch(e) {
+                console.error(e);
+            }
+            checkStatus();
+        }
+
+        async function checkStatus() {
+            try {
+                const r = await fetch('/api/crm/status');
+                const d = await r.json();
+                const browserDot = document.getElementById('browserDot');
+                const loginDot = document.getElementById('loginDot');
+                const loginStatus = document.getElementById('loginStatus');
+                const loginBtn = document.getElementById('loginBtn');
+                const logoutBtn = document.getElementById('logoutBtn');
+                const batchQueryBtn = document.getElementById('batchQueryBtn');
+
+                if (d.browser_running) {
+                    browserDot.className = 'status-dot green';
+                    if (d.logged_in) {
+                        loginDot.className = 'status-dot green';
+                        loginStatus.textContent = '已登录';
+                        loginBtn.style.display = 'none';
+                        logoutBtn.style.display = '';
+                        batchQueryBtn.disabled = false;
+
+                        // 登录成功后，如果有待处理的批量查询，自动继续
+                        if (pendingBatch && pendingBarcodes.length > 0) {
+                            log('登录成功，自动继续批量查询...', 'info');
+                            const barcodesToQuery = [...pendingBarcodes];
+                            pendingBarcodes = [];
+                            pendingBatch = false;
+                            doBatchQueryCore(barcodesToQuery);
+                        }
+                    } else {
+                        loginDot.className = 'status-dot red';
+                        loginStatus.textContent = '未登录';
+                        loginBtn.style.display = '';
+                        logoutBtn.style.display = 'none';
+                        batchQueryBtn.disabled = true;
+                    }
+                } else {
+                    browserDot.className = 'status-dot gray';
+                    loginDot.className = 'status-dot gray';
+                    loginStatus.textContent = '未启动';
+                    loginBtn.style.display = '';
+                    logoutBtn.style.display = 'none';
+                    batchQueryBtn.disabled = true;
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function doLogin() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            if (!username || !password) { showToast('请输入账号密码'); return; }
+
+            const btn = document.getElementById('modalLoginBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> 登录中...';
+            document.getElementById('loginProgress').classList.add('show');
+            setProgress('loginProgressBar', 20);
+            log('开始登录 CRM...', 'info');
+
+            try {
+                const r = await fetch('/api/crm/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, password})
+                });
+                const d = await r.json();
+                setProgress('loginProgressBar', 100);
+                document.getElementById('loginProgress').classList.remove('show');
+
+                if (d.success) {
+                    // 先保存凭证，即使需要验证码手动完成
+                    localStorage.setItem('crm_username', username);
+                    localStorage.setItem('crm_password', password);
+                    if (d.message === 'captcha_required') {
+                        document.getElementById('captchaRow').style.display = '';
+                        document.getElementById('modalLoginBtn').style.display = 'none';
+                        document.getElementById('captchaSubmitBtn').style.display = '';
+                        document.getElementById('loginPassword').value = '';
+                        document.getElementById('captchaInput').focus();
+                        log('验证码已发送到手机，请在下方输入', 'success');
+                        showToast('验证码已发送，请输入短信验证码');
+                    } else if (d.message === '已登录（会话有效）' || d.message === '登录成功' || d.message === '登录成功（页面已跳转）') {
+                        log('登录成功！', 'success');
+                        showToast('登录成功');
+                        closeLoginModal();
+                        document.getElementById('loginBtn').style.display = 'none';
+                        document.getElementById('logoutBtn').style.display = '';
+                        document.getElementById('batchQueryBtn').disabled = false;
+                    } else {
+                        log(d.message, 'warn');
+                        showToast(d.message);
+                    }
+                } else {
+                    log('登录失败: ' + d.message, 'error');
+                    showToast('登录失败: ' + d.message);
+                }
+            } catch(e) {
+                log('登录出错: ' + e, 'error');
+                document.getElementById('loginProgress').classList.remove('show');
+            }
+            btn.disabled = false;
+            btn.textContent = '登录';
+            checkStatus();
+        }
+
+        async function doLoginStep2() {
+            const captcha = document.getElementById('captchaInput').value.trim();
+            if (!captcha) { showToast('请输入验证码'); return; }
+
+            const btn = document.getElementById('captchaSubmitBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> 提交中...';
+            log('提交验证码...', 'info');
+
+            try {
+                const r = await fetch('/api/crm/login-step2', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({captcha})
+                });
+                const d = await r.json();
+                if (d.success) {
+                    log('登录成功！', 'success');
+                    showToast('登录成功');
+                    closeLoginModal();
+                    document.getElementById('captchaRow').style.display = 'none';
+                    document.getElementById('loginBtn').style.display = 'none';
+                    document.getElementById('logoutBtn').style.display = '';
+                    document.getElementById('batchQueryBtn').disabled = false;
+                    document.getElementById('captchaInput').value = '';
+                } else {
+                    log('验证码错误: ' + d.message, 'error');
+                    showToast('验证码错误，请重试');
+                }
+            } catch(e) {
+                log('提交验证码出错: ' + e, 'error');
+            }
+            btn.disabled = false;
+            btn.textContent = '提交验证码';
+            checkStatus();
+        }
+
+        async function doLogout() {
+            log('正在退出...', 'warn');
+            localStorage.removeItem('crm_username');
+            localStorage.removeItem('crm_password');
+            sessionStorage.removeItem('pending_batch_barcodes');
+            await fetch('/api/crm/logout', {method:'POST'});
+            log('已退出', 'warn');
+            closeLoginModal();
+            checkStatus();
+            showToast('已退出登录');
+        }
+
+        async function queryBarcode() {
+            doBatchQuery();
+        }
+
+        async function doSingleQuery(barcode) {
+            document.getElementById('queryProgress').classList.add('show');
+            setProgress('queryProgressBar', 10);
+            log(`查询条码: ${barcode}`, 'info');
+
+            try {
+                const r = await fetch('/api/crm/query', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({barcode})
+                });
+                const d = await r.json();
+                setProgress('queryProgressBar', 100);
+                document.getElementById('queryProgress').classList.remove('show');
+
+                const list = document.getElementById('resultList');
+                const item = document.createElement('div');
+                item.className = 'result-item ' + (d.success ? 'success' : 'error');
+                if (d.success) {
+                    log(`查询成功: ${barcode}`, 'success');
+                    item.innerHTML = `
+                        <span class="barcode">${barcode}</span>
+                        <span class="status done">✓ 成功</span>
+                        <a class="view-btn" href="${d.view_url}" onclick="showDetail(event, '${barcode}', '${d.view_url}')">查看详情</a>
+                    `;
+                } else {
+                    log(`查询失败: ${barcode} - ${d.error}`, 'error');
+                    item.innerHTML = `
+                        <span class="barcode">${barcode}</span>
+                        <span class="status fail">✗ ${d.error}</span>
+                    `;
+                }
+                list.prepend(item);
+            } catch(e) {
+                log(`查询出错: ${barcode} - ${e}`, 'error');
+                document.getElementById('queryProgress').classList.remove('show');
+            }
+        }
+
+        async function doBatchQuery() {
+            const text = document.getElementById('batchInput').value.trim();
+            if (isBatchRunning) { showToast('批量查询进行中'); return; }
+            const barcodes = text.split('\n').map(b => b.trim()).filter(b => b);
+            // 去重，保持首次出现的顺序
+            const seen = new Set();
+            const uniqueBarcodes = barcodes.filter(b => {
+                if (seen.has(b)) return false;
+                seen.add(b);
+                return true;
+            });
+            const dupCount = barcodes.length - uniqueBarcodes.length;
+            if (dupCount > 0) {
+                log(`发现 ${dupCount} 个重复条码，已自动去除`, 'warn');
+            }
+            if (uniqueBarcodes.length === 0) { showToast('没有有效条码'); return; }
+
+            if (isBatchRunning) { showToast('批量查询进行中'); return; }
+
+            // 保存条码到全局变量和 sessionStorage
+            pendingBarcodes = [...uniqueBarcodes];
+            sessionStorage.setItem('pending_batch_barcodes', text);
+
+            // 检查登录状态，未登录则自动登录
+            const statusRes = await fetch('/api/crm/status');
+            const statusData = await statusRes.json();
+            if (!statusData.logged_in) {
+                const savedUsername = localStorage.getItem('crm_username');
+                const savedPassword = localStorage.getItem('crm_password');
+                if (savedUsername && savedPassword) {
+                    log('会话已过期，自动登录中...', 'warn');
+                    const loginRes = await fetch('/api/crm/login', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({username: savedUsername, password: savedPassword})
+                    });
+                    const loginData = await loginRes.json();
+                    if (loginData.success && loginData.message === 'captcha_required') {
+                        log('自动登录需要验证码，请在弹窗中输入', 'warn');
+                        showToast('请输入短信验证码');
+                        openLoginModal();
+                        document.getElementById('captchaRow').style.display = '';
+                        document.getElementById('modalLoginBtn').style.display = 'none';
+                        document.getElementById('captchaSubmitBtn').style.display = '';
+                        document.getElementById('captchaInput').focus();
+                        pendingBatch = true;
+                        return;
+                    }
+                    if (!loginData.success) {
+                        log('自动登录失败: ' + loginData.message + '，请在弹窗中完成登录', 'warn');
+                        showToast('请登录，登录成功后自动继续');
+                        openLoginModal();
+                        // 设置待处理标志，登录成功后 checkStatus 会自动继续
+                        pendingBatch = true;
+                        return;
+                    }
+                    log('自动登录成功', 'success');
+                } else {
+                    log('未登录且无保存的账号，请先登录', 'warn');
+                    showToast('请先登录，登录成功后自动继续');
+                    openLoginModal();
+                    // 设置待处理标志，登录成功后 checkStatus 会自动继续
+                    pendingBatch = true;
+                    return;
+                }
+            }
+
+            // 已登录，直接执行批量查询
+            doBatchQueryCore(uniqueBarcodes);
+        }
+
+        async function doBatchQueryCore(uniqueBarcodes) {
+            // 清除待处理状态
+            pendingBatch = false;
+            pendingBarcodes = [];
+            renderedBatchResults.clear();
+            lastBatchLogCount = 0;
+            document.getElementById('resultList').innerHTML = '';
+
+            const r = await fetch('/api/crm/batch/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({barcodes: uniqueBarcodes})
+            });
+            const d = await r.json();
+            if (!d.success) {
+                showToast(d.error || '启动批量查询失败');
+                log('启动批量查询失败: ' + (d.error || ''), 'error');
+                return;
+            }
+            isBatchRunning = true;
+            document.getElementById('batchQueryBtn').disabled = true;
+            document.getElementById('batchQueryBtn').innerHTML = '<span class="spinner"></span> 查询中...';
+            document.getElementById('queryProgress').classList.add('show');
+            pollBatchStatus();
+        }
+
+        async function pollBatchStatus() {
+            try {
+                const r = await fetch('/api/crm/batch/status');
+                const d = await r.json();
+                if (!d.success) return;
+
+                isBatchRunning = d.running;
+                const pct = d.total ? Math.round((d.current / d.total) * 100) : 0;
+                setProgress('queryProgressBar', pct);
+
+                (d.logs || []).slice(lastBatchLogCount).forEach(appendServerLog);
+                lastBatchLogCount = (d.logs || []).length;
+                (d.results || []).forEach(renderBatchResult);
+
+                if (d.running) {
+                    document.getElementById('batchQueryBtn').disabled = true;
+                    document.getElementById('batchQueryBtn').innerHTML = '<span class="spinner"></span> 查询中...';
+                    document.getElementById('queryProgress').classList.add('show');
+                    if (!batchPollTimer) {
+                        batchPollTimer = setInterval(pollBatchStatus, 1000);
+                    }
+                } else {
+                    document.getElementById('queryProgress').classList.remove('show');
+                    document.getElementById('batchQueryBtn').textContent = '开始查询';
+                    checkStatus();
+                    if (batchPollTimer) {
+                        clearInterval(batchPollTimer);
+                        batchPollTimer = null;
+                    }
+                    sessionStorage.removeItem('pending_batch_barcodes');
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        checkStatus();
+        setInterval(checkStatus, 5000);
+        pollBatchStatus();
+
+        // 页面加载时自动填入保存的用户名
+        const savedUsername = localStorage.getItem('crm_username');
+        if (savedUsername) {
+            document.getElementById('loginUsername').value = savedUsername;
+        }
+
+        // 页面加载时恢复未完成的批量条码
+        const savedBarcodeText = sessionStorage.getItem('pending_batch_barcodes');
+        if (savedBarcodeText) {
+            document.getElementById('batchInput').value = savedBarcodeText;
+            log('已恢复上次的条码列表', 'info');
+        }
+    </script>
+</body>
+</html>

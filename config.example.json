@@ -1,0 +1,25 @@
+{
+    "website": {
+        "url": "http://crmportal.example.com/",
+        "report_url": ""
+    },
+    "browser": {
+        "headless": true,
+        "viewport": {
+            "width": 1920,
+            "height": 1080
+        }
+    },
+    "session": {
+        "state_path": "/path/to/local/barcode_session",
+        "save_on_exit": true
+    },
+    "output": {
+        "results_dir": "results"
+    },
+    "barcodes": {
+        "input_file": "barcodes.xlsx",
+        "sheet_name": "Sheet1",
+        "barcode_column": "条码号"
+    }
+}
