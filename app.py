@@ -1446,6 +1446,7 @@ def _run_batch_job(barcodes):
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
@@ -1535,29 +1536,18 @@ FILTER_FIELDS = {
     'newisclosed1_sr2': '结单状态',
 }
 
-EXPORT_FIELDS_ORDER = [
-    ('newname1_sr1', '条码号'),
-    ('remark', '备注'),
-    ('newisclosed1_sr2', '结单状态'),
-    ('SHIPSTATUS1', '装箱单状态'),
-    ('newproductidName1_sr2', '机型'),
-    ('ProductNumber1', '物料编码'),
-    ('myproductdealer1_sr5', '所属经销商'),
-    ('newdealername1_sr2', '服务经销商'),
-    ('newstationidName1', '服务站'),
-    ('typestr1_sr2', '服务类型'),
-    ('statustr1_sr2', '服务单状态'),
-    ('servno1_sr2', '服务单号'),
-    ('name1_sr2', '客户'),
-    ('newtelephone1_sr2', '电话'),
-    ('newaddress1_sr2', '地址'),
-    ('zxd1', '装箱单号'),
-    ('shipdate1', '发货日期'),
-    ('newerpshipno1', '发货单号'),
-    ('newordsalesorderidName1', '订单号'),
-    ('buno1_sr8', '移库单号'),
-    ('transstockdate1_sr8', '移库日期'),
-]
+SUBREPORT_NAMES = {
+    1: '装箱单',
+    2: '服务单',
+    3: '保卡扫描',
+    4: '押金返还',
+    5: '产品档案',
+    6: '库存调整',
+    7: '调拨单',
+    8: '移库单',
+    9: '移机单',
+    10: '库存状态',
+}
 
 SUBREPORT_FIELD_MAP = {
     1: ['SHIPSTATUS1', 'zxd1', 'shipdate1', 'newerpshipno1', 'ProductNumber1',
@@ -1657,6 +1647,124 @@ def _get_field(fields, field_id):
     if isinstance(sub, dict):
         return sub.get(real_fid, '')
     return ''
+
+def _clean_export_value(value):
+    if value is None:
+        return ''
+    if isinstance(value, bool):
+        return '是' if value else '否'
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return html_mod.unescape(str(value)).replace('\xa0', ' ').strip()
+
+def _records_for_export(fields, sr_key):
+    raw = fields.get(sr_key)
+    if isinstance(raw, list):
+        records = raw
+    elif isinstance(raw, dict):
+        records = [raw]
+    else:
+        return []
+
+    result = []
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        cleaned = OrderedDict()
+        for key, value in record.items():
+            cell_value = _clean_export_value(value)
+            if cell_value:
+                cleaned[key] = cell_value
+        if not cleaned:
+            continue
+        signature = json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        result.append(cleaned)
+    return result
+
+def _prepare_export_rows(selected_barcodes):
+    export_rows = []
+    for item in selected_barcodes:
+        fields = item.get('fields') or {}
+        records_by_sr = {}
+        for sr_num in sorted(SUBREPORT_FIELD_MAP):
+            sr_key = f'sr{sr_num}'
+            records = _records_for_export(fields, sr_key)
+            if records:
+                records_by_sr[sr_key] = records
+
+        barcode = _clean_export_value(item.get('barcode')) or _get_field(fields, 'newname1_sr1')
+        export_rows.append({
+            'barcode': barcode,
+            'remark': _clean_export_value(item.get('remark')),
+            'time': _clean_export_value(item.get('time') or item.get('archiveTime')),
+            'records_by_sr': records_by_sr,
+        })
+    return export_rows
+
+def _build_export_columns(export_rows):
+    columns = [
+        {'group': '基础信息', 'label': '条码', 'type': 'base', 'key': 'barcode'},
+        {'group': '基础信息', 'label': '备注', 'type': 'base', 'key': 'remark'},
+        {'group': '基础信息', 'label': '查询时间', 'type': 'base', 'key': 'time'},
+    ]
+
+    for sr_num in sorted(SUBREPORT_FIELD_MAP):
+        sr_key = f'sr{sr_num}'
+        max_count = max((len(row['records_by_sr'].get(sr_key, [])) for row in export_rows), default=0)
+        if max_count == 0:
+            continue
+
+        present_fields = OrderedDict()
+        for row in export_rows:
+            for record in row['records_by_sr'].get(sr_key, []):
+                for field_id in record:
+                    present_fields[field_id] = True
+
+        preferred = [field_id for field_id in SUBREPORT_FIELD_MAP.get(sr_num, []) if field_id in present_fields]
+        extras = [field_id for field_id in present_fields if field_id not in preferred]
+        field_ids = preferred + extras
+        group_name = SUBREPORT_NAMES.get(sr_num, f'子报表{sr_num}')
+
+        for record_index in range(max_count):
+            group_label = f'{group_name} {record_index + 1}' if max_count > 1 else group_name
+            for field_id in field_ids:
+                columns.append({
+                    'group': group_label,
+                    'label': FIELD_IDS.get(field_id, field_id),
+                    'type': 'field',
+                    'sr_key': sr_key,
+                    'record_index': record_index,
+                    'field_id': field_id,
+                })
+    return columns
+
+def _export_cell_value(row, column):
+    if column['type'] == 'base':
+        return row.get(column['key'], '')
+    records = row['records_by_sr'].get(column['sr_key'], [])
+    if column['record_index'] >= len(records):
+        return ''
+    return records[column['record_index']].get(column['field_id'], '')
+
+def _display_width(value):
+    text = str(value or '')
+    return sum(2 if ord(ch) > 127 else 1 for ch in text)
+
+def _suggest_column_width(label, values):
+    max_width = _display_width(label)
+    for value in values:
+        max_width = max(max_width, _display_width(value))
+    if '地址' in label:
+        return min(max(max_width + 2, 24), 42)
+    if any(word in label for word in ['名称', '经销商', '客户', '机型', '物料描述', '备注']):
+        return min(max(max_width + 2, 18), 34)
+    if any(word in label for word in ['日期', '时间']):
+        return min(max(max_width + 2, 14), 20)
+    return min(max(max_width + 2, 12), 28)
 
 def get_filter_options(barcodes):
     options = {}
@@ -1856,35 +1964,56 @@ def api_export_xlsx():
     wb = Workbook()
     ws = wb.active
     ws.title = "条码查询结果"
+    ws.sheet_view.showGridLines = False
 
+    group_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    group_font = Font(color="FFFFFF", bold=True, size=12)
     header_font = Font(color="FFFFFF", bold=True, size=11)
     thin_border = Border(
         left=Side(style='thin'), right=Side(style='thin'),
         top=Side(style='thin'), bottom=Side(style='thin')
     )
 
-    headers = [label for _, label in EXPORT_FIELDS_ORDER]
-    for col_idx, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_idx, value=header)
+    export_rows = _prepare_export_rows(selected_barcodes)
+    columns = _build_export_columns(export_rows)
+
+    for col_idx, column in enumerate(columns, 1):
+        group_cell = ws.cell(row=1, column=col_idx, value=column['group'])
+        group_cell.fill = group_fill
+        group_cell.font = group_font
+        group_cell.alignment = Alignment(horizontal='center', vertical='center')
+        group_cell.border = thin_border
+
+        cell = ws.cell(row=2, column=col_idx, value=column['label'])
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center')
         cell.border = thin_border
 
-    for row_idx, barcode_data in enumerate(selected_barcodes, 2):
-        fields = barcode_data.get('fields', {})
-        for col_idx, (field_id, _) in enumerate(EXPORT_FIELDS_ORDER, 1):
-            if field_id == 'remark':
-                value = barcode_data.get('remark', '')
-            else:
-                value = _get_field(fields, field_id)
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            cell.border = thin_border
-            cell.alignment = Alignment(vertical='center', wrap_text=True)
+    merge_start = 1
+    for col_idx in range(2, len(columns) + 2):
+        if col_idx <= len(columns) and columns[col_idx - 1]['group'] == columns[merge_start - 1]['group']:
+            continue
+        if col_idx - 1 > merge_start:
+            ws.merge_cells(start_row=1, start_column=merge_start, end_row=1, end_column=col_idx - 1)
+        merge_start = col_idx
 
-    for col_idx in range(1, len(EXPORT_FIELDS_ORDER) + 1):
-        ws.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else chr(64 + (col_idx-1)//26) + chr(65 + (col_idx-1)%26)].width = 18
+    for row_idx, export_row in enumerate(export_rows, 3):
+        for col_idx, column in enumerate(columns, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=_export_cell_value(export_row, column))
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical='top', wrap_text=True)
+
+    for col_idx, column in enumerate(columns, 1):
+        values = [_export_cell_value(row, column) for row in export_rows[:200]]
+        ws.column_dimensions[get_column_letter(col_idx)].width = _suggest_column_width(column['label'], values)
+
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 28
+    ws.freeze_panes = 'A3'
+    if columns:
+        ws.auto_filter.ref = f"A2:{get_column_letter(len(columns))}{len(export_rows) + 2}"
 
     output_path = os.path.join(BARCODE_DIR, 'export_result.xlsx')
     wb.save(output_path)
