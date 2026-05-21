@@ -1368,6 +1368,9 @@ class CRMWorker:
 
 crm_session = CRMWorker()
 
+DEFAULT_BATCH_RETRY_LIMIT = 5
+MAX_BATCH_RETRY_LIMIT = 5
+
 batch_job_lock = threading.Lock()
 batch_job = {
     'running': False,
@@ -1377,9 +1380,23 @@ batch_job = {
     'current': 0,
     'success': 0,
     'failed': 0,
+    'retry_limit': DEFAULT_BATCH_RETRY_LIMIT,
     'logs': [],
     'results': [],
 }
+
+def _normalize_retry_limit(value):
+    try:
+        retry_limit = int(value)
+    except (TypeError, ValueError):
+        retry_limit = DEFAULT_BATCH_RETRY_LIMIT
+    return max(0, min(retry_limit, MAX_BATCH_RETRY_LIMIT))
+
+def _brief_batch_error(error, limit=240):
+    text = re.sub(r'\s+', ' ', str(error or '')).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
 
 def _batch_log(message, level='dim'):
     with batch_job_lock:
@@ -1390,8 +1407,19 @@ def _batch_log(message, level='dim'):
         })
         batch_job['logs'] = batch_job['logs'][-300:]
 
-def _run_batch_job(barcodes):
-    _batch_log(f"开始批量查询 {len(barcodes)} 个条码...", 'info')
+def _batch_stop_requested(idx):
+    with batch_job_lock:
+        if not batch_job['stop_requested']:
+            return False
+        batch_job['running'] = False
+        batch_job['stop_requested'] = False
+    _batch_log(f"已停止，停在第 {idx} 个条码", 'warn')
+    return True
+
+def _run_batch_job(barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIMIT):
+    retry_limit = _normalize_retry_limit(retry_limit)
+    retry_text = f"，失败最多重试 {retry_limit} 次" if retry_limit else ""
+    _batch_log(f"开始批量查询 {len(barcodes)} 个条码{retry_text}...", 'info')
     for idx, barcode in enumerate(barcodes, start=1):
         with batch_job_lock:
             if batch_job['stop_requested']:
@@ -1406,19 +1434,40 @@ def _run_batch_job(barcodes):
             _batch_log(f"已停止，停在第 {stopped_at} 个条码", 'warn')
             return
 
-        _batch_log(f"正在查询第 {idx}/{len(barcodes)} 个：{barcode}", 'info')
-        success, result = crm_session.query_barcode(barcode)
+        success = False
+        result = ""
+        attempts = retry_limit + 1
+        for attempt in range(1, attempts + 1):
+            if _batch_stop_requested(idx):
+                return
+            if attempt == 1:
+                _batch_log(f"正在查询第 {idx}/{len(barcodes)} 个：{barcode}", 'info')
+            else:
+                _batch_log(f"{barcode} 第 {attempt - 1}/{retry_limit} 次重试中...", 'warn')
+
+            success, result = crm_session.query_barcode(barcode)
+            if success:
+                break
+
+            if attempt <= retry_limit:
+                _batch_log(
+                    f"{barcode} 查询失败，将重试 {attempt}/{retry_limit}: {_brief_batch_error(result)}",
+                    'warn'
+                )
+                time.sleep(2)
+
         with batch_job_lock:
             if success:
                 batch_job['success'] += 1
                 batch_job['results'].append({
                     'barcode': barcode,
                     'success': True,
+                    'attempts': attempt,
                     'view_url': f'/barcode/{barcode}.html',
                 })
                 batch_job['logs'].append({
                     'time': datetime.now().strftime('%H:%M:%S'),
-                    'message': f"✓ {barcode} 查询成功",
+                    'message': f"✓ {barcode} 查询成功" + (f"（重试第 {attempt - 1} 次）" if attempt > 1 else ""),
                     'level': 'success',
                 })
             else:
@@ -1426,11 +1475,12 @@ def _run_batch_job(barcodes):
                 batch_job['results'].append({
                     'barcode': barcode,
                     'success': False,
-                    'error': result,
+                    'attempts': attempts,
+                    'error': _brief_batch_error(result),
                 })
                 batch_job['logs'].append({
                     'time': datetime.now().strftime('%H:%M:%S'),
-                    'message': f"✗ {barcode} 查询失败: {result}",
+                    'message': f"✗ {barcode} 查询失败（已重试 {retry_limit} 次）: {_brief_batch_error(result)}",
                     'level': 'error',
                 })
             batch_job['logs'] = batch_job['logs'][-300:]
@@ -2149,6 +2199,7 @@ def api_crm_batch_start():
     data = request.get_json()
     barcodes = data.get('barcodes') or []
     barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    retry_limit = _normalize_retry_limit(data.get('retry_limit', DEFAULT_BATCH_RETRY_LIMIT))
     if not barcodes:
         return jsonify({'success': False, 'error': '条码不能为空'})
 
@@ -2163,13 +2214,14 @@ def api_crm_batch_start():
             'current': 0,
             'success': 0,
             'failed': 0,
+            'retry_limit': retry_limit,
             'logs': [],
             'results': [],
         })
 
-    t = threading.Thread(target=_run_batch_job, args=(barcodes,), daemon=True)
+    t = threading.Thread(target=_run_batch_job, args=(barcodes, retry_limit), daemon=True)
     t.start()
-    return jsonify({'success': True, 'total': len(barcodes)})
+    return jsonify({'success': True, 'total': len(barcodes), 'retry_limit': retry_limit})
 
 @app.route("/api/crm/batch/status")
 def api_crm_batch_status():
@@ -2182,6 +2234,7 @@ def api_crm_batch_status():
             'current': batch_job['current'],
             'success_count': batch_job['success'],
             'failed_count': batch_job['failed'],
+            'retry_limit': batch_job['retry_limit'],
             'logs': list(batch_job['logs']),
             'results': list(batch_job['results']),
         })

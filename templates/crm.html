@@ -31,6 +31,9 @@
         .form-group label { font-size: 13px; color: #666; font-weight: 500; }
         .form-group input { padding: 8px 12px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; outline: none; }
         .form-group input:focus { border-color: #4472C4; }
+        .query-actions { align-items: flex-end; }
+        .retry-group { width: 150px; }
+        .retry-group input { height: 38px; }
         .btn { min-height: 38px; padding: 8px 20px; border-radius: 8px; font-size: 14px; font-weight: 800; border: none; transition: all 0.2s; box-shadow: 0 1px 2px rgba(15,23,42,.08); }
         .btn-primary { background: #2563eb; color: #fff; }
         .btn-primary:hover { background: #1d4ed8; }
@@ -131,8 +134,12 @@
 6923445601004
 6923445601005"></textarea>
             </div>
-            <div class="form-row">
+            <div class="form-row query-actions">
                 <button class="btn btn-success" id="batchQueryBtn" onclick="doBatchQuery()" disabled>开始查询</button>
+                <div class="form-group retry-group">
+                    <label>失败重试上限</label>
+                    <input type="number" id="retryLimitInput" min="0" max="5" value="5">
+                </div>
             </div>
             <div class="progress-bar" id="queryProgress">
                 <div class="bar" id="queryProgressBar"></div>
@@ -184,6 +191,7 @@
     <script>
         let queryQueue = [];
         let isBatchRunning = false;
+        let batchStartPending = false;
         let queryCount = 0;
         let pendingBatch = false; // 标记是否有待处理的批量查询
         let pendingBarcodes = []; // 待处理的条码列表
@@ -218,6 +226,15 @@
         function setProgress(id, pct) {
             const bar = document.getElementById(id);
             bar.style.width = pct + '%';
+        }
+
+        function getRetryLimit() {
+            const input = document.getElementById('retryLimitInput');
+            let value = Number.parseInt(input.value, 10);
+            if (Number.isNaN(value)) value = 5;
+            value = Math.max(0, Math.min(5, value));
+            input.value = value;
+            return value;
         }
 
         function openLoginModal() {
@@ -278,7 +295,7 @@
                         loginStatus.textContent = '已登录';
                         loginBtn.style.display = 'none';
                         logoutBtn.style.display = '';
-                        batchQueryBtn.disabled = false;
+                        batchQueryBtn.disabled = isBatchRunning || batchStartPending;
 
                         // 登录成功后，如果有待处理的批量查询，自动继续
                         if (pendingBatch && pendingBarcodes.length > 0) {
@@ -477,7 +494,7 @@
 
         async function doBatchQuery() {
             const text = document.getElementById('batchInput').value.trim();
-            if (isBatchRunning) { showToast('批量查询进行中'); return; }
+            if (isBatchRunning || batchStartPending) { showToast('批量查询进行中'); return; }
             const barcodes = text.split('\n').map(b => b.trim()).filter(b => b);
             // 去重，保持首次出现的顺序
             const seen = new Set();
@@ -492,26 +509,45 @@
             }
             if (uniqueBarcodes.length === 0) { showToast('没有有效条码'); return; }
 
-            if (isBatchRunning) { showToast('批量查询进行中'); return; }
+            if (isBatchRunning || batchStartPending) { showToast('批量查询进行中'); return; }
+            batchStartPending = true;
 
             // 保存条码到全局变量和 sessionStorage
             pendingBarcodes = [...uniqueBarcodes];
             sessionStorage.setItem('pending_batch_barcodes', text);
 
             // 检查登录状态，未登录则自动登录
-            const statusRes = await fetch('/api/crm/status');
-            const statusData = await statusRes.json();
+            let statusData;
+            try {
+                const statusRes = await fetch('/api/crm/status');
+                statusData = await statusRes.json();
+            } catch(e) {
+                batchStartPending = false;
+                log('检查登录状态出错: ' + e, 'error');
+                showToast('检查登录状态失败');
+                return;
+            }
             if (!statusData.logged_in) {
                 const savedUsername = localStorage.getItem('crm_username');
                 const savedPassword = localStorage.getItem('crm_password');
                 if (savedUsername && savedPassword) {
                     log('会话已过期，自动登录中...', 'warn');
-                    const loginRes = await fetch('/api/crm/login', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({username: savedUsername, password: savedPassword})
-                    });
-                    const loginData = await loginRes.json();
+                    let loginData;
+                    try {
+                        const loginRes = await fetch('/api/crm/login', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({username: savedUsername, password: savedPassword})
+                        });
+                        loginData = await loginRes.json();
+                    } catch(e) {
+                        batchStartPending = false;
+                        log('自动登录出错: ' + e, 'error');
+                        showToast('自动登录失败，请手动登录');
+                        openLoginModal();
+                        pendingBatch = true;
+                        return;
+                    }
                     if (loginData.success && loginData.message === 'captcha_required') {
                         log('自动登录需要验证码，请在弹窗中输入', 'warn');
                         showToast('请输入短信验证码');
@@ -522,6 +558,7 @@
                         document.getElementById('resetLoginBtn').style.display = '';
                         document.getElementById('captchaInput').focus();
                         pendingBatch = true;
+                        batchStartPending = false;
                         return;
                     }
                     if (!loginData.success) {
@@ -530,6 +567,7 @@
                         openLoginModal();
                         // 设置待处理标志，登录成功后 checkStatus 会自动继续
                         pendingBatch = true;
+                        batchStartPending = false;
                         return;
                     }
                     log('自动登录成功', 'success');
@@ -539,6 +577,7 @@
                     openLoginModal();
                     // 设置待处理标志，登录成功后 checkStatus 会自动继续
                     pendingBatch = true;
+                    batchStartPending = false;
                     return;
                 }
             }
@@ -552,13 +591,23 @@
             pendingBatch = false;
             pendingBarcodes = [];
             lastBatchLogCount = 0;
+            const retryLimit = getRetryLimit();
 
-            const r = await fetch('/api/crm/batch/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({barcodes: uniqueBarcodes})
-            });
-            const d = await r.json();
+            let d;
+            try {
+                const r = await fetch('/api/crm/batch/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({barcodes: uniqueBarcodes, retry_limit: retryLimit})
+                });
+                d = await r.json();
+            } catch(e) {
+                batchStartPending = false;
+                showToast('启动批量查询出错');
+                log('启动批量查询出错: ' + e, 'error');
+                return;
+            }
+            batchStartPending = false;
             if (!d.success) {
                 showToast(d.error || '启动批量查询失败');
                 log('启动批量查询失败: ' + (d.error || ''), 'error');
@@ -567,6 +616,7 @@
             isBatchRunning = true;
             document.getElementById('batchQueryBtn').disabled = true;
             document.getElementById('batchQueryBtn').innerHTML = '<span class="spinner"></span> 查询中...';
+            document.getElementById('retryLimitInput').disabled = true;
             document.getElementById('queryProgress').classList.add('show');
             pollBatchStatus();
         }
@@ -594,6 +644,7 @@
                 } else {
                     document.getElementById('queryProgress').classList.remove('show');
                     document.getElementById('batchQueryBtn').textContent = '开始查询';
+                    document.getElementById('retryLimitInput').disabled = false;
                     checkStatus();
                     if (batchPollTimer) {
                         clearInterval(batchPollTimer);
