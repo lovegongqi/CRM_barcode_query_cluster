@@ -1824,6 +1824,17 @@ class CRMSession:
                         return False, f"添加条码明细失败：{msg}"
                     added_barcodes.append(detail["barcode"])
 
+                if distributor == FROZEN_WAREHOUSE_NAME:
+                    emit("目标为江西天麓冻结仓库，移库单只保存不确认，等待审批", "success")
+                    return True, {
+                        "order_no": order_no,
+                        "products": added_products,
+                        "barcodes": added_barcodes,
+                        "confirmed": False,
+                        "pending_approval": True,
+                        "message": "移库单已保存，江西天麓冻结仓库需审批，未点击确认",
+                    }
+
                 emit("点击确认移库，等待 CRM 提示...")
                 ok, msg = self._confirm_transfer()
                 if not ok:
@@ -1834,6 +1845,8 @@ class CRMSession:
                     "order_no": order_no,
                     "products": added_products,
                     "barcodes": added_barcodes,
+                    "confirmed": True,
+                    "pending_approval": False,
                     "message": msg or self._visible_message(),
                 }
             except Exception as e:
@@ -2000,8 +2013,11 @@ def _run_transfer_job(summary, distributor, transfer_type, remark):
                 transfer_job['error'] = _brief_batch_error(result, 800)
         if success:
             order_no = result.get('order_no') if isinstance(result, dict) else ''
-            _apply_transfer_local_dealer(summary, transfer_type, distributor)
-            _transfer_log(f"移库完成：{order_no or '已完成'}", 'success')
+            if isinstance(result, dict) and result.get('pending_approval'):
+                _transfer_log(f"移库单已保存待审批：{order_no or '已保存'}", 'success')
+            else:
+                _apply_transfer_local_dealer(summary, transfer_type, distributor)
+                _transfer_log(f"移库完成：{order_no or '已完成'}", 'success')
         else:
             _transfer_log(f"移库失败：{result}", 'error')
     except Exception as e:
@@ -2114,6 +2130,7 @@ ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
 DATA_FILE = os.path.join(BARCODE_DIR, "barcode_data.json")
 PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")
 OWN_DEALER_NAME = "江西省天麓工贸有限公司"
+FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
 
 FIELD_IDS = {
     'newisclosed1': '结单状态',
@@ -3063,13 +3080,19 @@ def api_crm_transfer_status():
     with transfer_job_lock:
         result = transfer_job.get('result') or {}
         order_no = result.get('order_no') if isinstance(result, dict) else ''
+        if transfer_job['success'] and isinstance(result, dict) and result.get('pending_approval'):
+            message = f"移库单已保存待审批：{order_no or '已保存'}"
+        elif transfer_job['success']:
+            message = f"移库单已创建：{order_no or '已保存'}"
+        else:
+            message = transfer_job['error']
         return jsonify({
             'success': True,
             'running': transfer_job['running'],
             'done': transfer_job['done'],
             'transfer_success': transfer_job['success'],
             'error': transfer_job['error'],
-            'message': f"移库单已创建：{order_no or '已保存'}" if transfer_job['success'] else transfer_job['error'],
+            'message': message,
             'result': transfer_job['result'],
             'summary': transfer_job['summary'],
             'logs': list(transfer_job['logs']),
