@@ -2565,6 +2565,53 @@ def _barcode_product_info_from_library(barcode):
         'matched_prefix': matched['prefix'],
     }
 
+def _missing_product_library_representatives(selected_barcodes):
+    wanted = OrderedDict()
+    for barcode in selected_barcodes:
+        barcode = _clean_export_value(barcode)
+        if barcode and barcode not in wanted:
+            wanted[barcode] = True
+
+    all_items = {item['barcode']: item for item in scan_barcodes()}
+    groups = OrderedDict()
+    for barcode in wanted:
+        if match_product_library(barcode):
+            continue
+
+        item = all_items.get(barcode)
+        if item:
+            info = _barcode_product_info(item)
+            if info.get('product_code') and info.get('product_name'):
+                continue
+
+        prefix = product_prefix_from_barcode(barcode)
+        if prefix and prefix not in groups:
+            groups[prefix] = barcode
+    return groups
+
+def ensure_product_library_for_barcodes(selected_barcodes, log=None):
+    representatives = _missing_product_library_representatives(selected_barcodes)
+    result = {'queried': [], 'failed': []}
+    if not representatives:
+        return result
+
+    def emit(message, level='info'):
+        if log:
+            log(message, level)
+
+    emit(f"发现 {len(representatives)} 个产品前缀未维护，先各查询 1 个代表条码补充产品库")
+    for prefix, barcode in representatives.items():
+        emit(f"前缀 {prefix} 未匹配产品库，查询代表条码 {barcode}")
+        success, message = crm_session.query_barcode(barcode, log)
+        if success and match_product_library(barcode):
+            result['queried'].append({'prefix': prefix, 'barcode': barcode})
+            emit(f"前缀 {prefix} 已写入产品库", 'success')
+        else:
+            error = _brief_batch_error(message, 300)
+            result['failed'].append({'prefix': prefix, 'barcode': barcode, 'error': error})
+            emit(f"前缀 {prefix} 产品库补充失败：{error}", 'warn')
+    return result
+
 def _apply_transfer_local_dealer(summary, transfer_type, distributor):
     new_dealer = OWN_DEALER_NAME if transfer_type == "移入" else distributor
     if not new_dealer:
@@ -2907,7 +2954,19 @@ def api_transfer_summary():
     if not barcodes:
         return jsonify({'success': False, 'error': '请先选择要移库的条码'})
 
+    auto_library = {'queried': [], 'failed': []}
+    representatives = _missing_product_library_representatives(barcodes)
+    if representatives:
+        with transfer_job_lock:
+            if transfer_job['running']:
+                return jsonify({'success': False, 'error': '已有移库任务正在执行，请等待完成后再汇总'})
+        with batch_job_lock:
+            if batch_job['running']:
+                return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再汇总'})
+        auto_library = ensure_product_library_for_barcodes(barcodes)
+
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
+    summary['auto_library'] = auto_library
     if summary['missing']:
         return jsonify({
             'success': False,
@@ -2942,6 +3001,16 @@ def api_crm_transfer():
         return jsonify({'success': False, 'error': '请先选择要移库的条码'})
     if not distributor:
         return jsonify({'success': False, 'error': '目标分销商不能为空'})
+
+    representatives = _missing_product_library_representatives(barcodes)
+    if representatives:
+        with transfer_job_lock:
+            if transfer_job['running']:
+                return jsonify({'success': False, 'error': '已有移库任务正在执行，请等待完成后再提交'})
+        with batch_job_lock:
+            if batch_job['running']:
+                return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再移库'})
+        ensure_product_library_for_barcodes(barcodes)
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
     if summary['missing']:

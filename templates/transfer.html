@@ -156,6 +156,7 @@ function renderSummary(summary) {
 async function previewTransfer() {
     const barcodes = parseBarcodes();
     if (!barcodes.length) return alert('请输入条码');
+    appendLog('开始汇总预览，缺少产品库前缀时会自动查询代表条码...', 'info');
     const res = await fetch('/api/transfer/summary', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -167,8 +168,16 @@ async function previewTransfer() {
     });
     const data = await res.json();
     if (data.summary) renderSummary(data.summary);
+    const autoLibrary = data.summary && data.summary.auto_library;
+    if (autoLibrary && autoLibrary.queried && autoLibrary.queried.length) {
+        appendLog(`已自动补充产品库：${autoLibrary.queried.map(row => row.prefix + '←' + row.barcode).join('，')}`, 'success');
+    }
+    if (autoLibrary && autoLibrary.failed && autoLibrary.failed.length) {
+        appendLog(`产品库自动补充失败：${autoLibrary.failed.map(row => row.prefix + '←' + row.barcode).join('，')}`, 'warn');
+    }
     lastSummary = data.success ? data.summary : null;
     document.getElementById('submitBtn').disabled = !data.success;
+    if (data.success) appendLog('汇总预览完成，可以提交移库', 'success');
     if (!data.success) appendLog(data.error || '预览失败', 'error');
 }
 
