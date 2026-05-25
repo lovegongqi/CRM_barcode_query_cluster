@@ -2629,6 +2629,13 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None):
             emit(f"前缀 {prefix} 产品库补充失败：{error}", 'warn')
     return result
 
+def _crm_ready_for_auto_query():
+    if not crm_session.is_alive():
+        return False, "CRM 浏览器未启动，请先到在线查询页面登录 CRM"
+    if not crm_session.logged_in:
+        return False, "CRM 当前未登录，请先到在线查询页面完成登录"
+    return True, ""
+
 def _apply_transfer_local_dealer(summary, transfer_type, distributor):
     new_dealer = OWN_DEALER_NAME if transfer_type == "移入" else distributor
     if not new_dealer:
@@ -2980,6 +2987,9 @@ def api_transfer_summary():
         with batch_job_lock:
             if batch_job['running']:
                 return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再汇总'})
+        ready, ready_message = _crm_ready_for_auto_query()
+        if not ready:
+            return jsonify({'success': False, 'error': ready_message})
         auto_library = ensure_product_library_for_barcodes(barcodes)
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
@@ -3027,6 +3037,9 @@ def api_crm_transfer():
         with batch_job_lock:
             if batch_job['running']:
                 return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再移库'})
+        ready, ready_message = _crm_ready_for_auto_query()
+        if not ready:
+            return jsonify({'success': False, 'error': ready_message})
         ensure_product_library_for_barcodes(barcodes)
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
