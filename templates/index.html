@@ -1122,8 +1122,9 @@
             <div class="page-nav">
                 <a href="/crm">在线查询</a>
                 <a class="active" href="/">结果管理</a>
-                <a href="/product-library">产品库</a>
                 <a href="/transfer">移库</a>
+                <a href="/accounts">账号管理</a>
+                <a href="/product-library">产品库</a>
             </div>
         </div>
 
@@ -1737,7 +1738,16 @@
         function goSelectedTransfer() {
             const barcodes = getSelectedBarcodeArray();
             if (barcodes.length === 0) { showToast('请先选择要移库的条码'); return; }
+            const selectedItems = allBarcodes.filter(item => selectedBarcodes.has(item.barcode));
+            const serviceDealer = selectedItems
+                .map(item => {
+                    const fields = item.fields || {};
+                    const sr2 = Array.isArray(fields.sr2) ? (fields.sr2[0] || {}) : (fields.sr2 || {});
+                    return (sr2.newdealername1 || '').trim();
+                })
+                .find(Boolean) || '';
             sessionStorage.setItem('transferBarcodes', JSON.stringify(barcodes));
+            if (serviceDealer) sessionStorage.setItem('transferDistributor', serviceDealer);
             window.location.href = '/transfer';
         }
 

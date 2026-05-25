@@ -13,6 +13,7 @@ import time
 import html as html_mod
 import threading
 import queue
+import uuid
 from collections import OrderedDict
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response
 from datetime import datetime
@@ -2210,6 +2211,7 @@ BARCODE_DIR = "barcode"
 ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
 DATA_FILE = os.path.join(BARCODE_DIR, "barcode_data.json")
 PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")
+ACCOUNTS_FILE = os.path.join(BARCODE_DIR, "accounts.json")
 OWN_DEALER_NAME = "江西省天麓工贸有限公司"
 FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
 
@@ -2601,10 +2603,24 @@ def match_product_library(barcode):
             }
     return None
 
+def lookup_product_by_barcode(barcode):
+    barcode = _clean_export_value(barcode)
+    if not barcode:
+        return None
+    for item in scan_barcodes():
+        if item.get('barcode') == barcode:
+            info = _barcode_product_info(item)
+            if info.get('product_code') and info.get('product_name'):
+                info['matched_prefix'] = product_prefix_from_barcode(barcode)
+                return info
+            break
+    return _barcode_product_info_from_library(barcode)
+
 def _barcode_product_info(item):
     fields = item.get('fields') or {}
     sr10 = _first_record(fields, 'sr10')
     sr5 = _first_record(fields, 'sr5')
+    sr2 = _first_record(fields, 'sr2')
     sr1 = _first_record(fields, 'sr1')
 
     product_code = (
@@ -2626,12 +2642,14 @@ def _barcode_product_info(item):
     )
     installed = _clean_export_value(sr5.get('instlled1'))
     product_status = _clean_export_value(sr10.get('newstatus1'))
+    service_dealer = _clean_export_value(sr2.get('newdealername1'))
 
     info = {
         'barcode': _clean_export_value(item.get('barcode')),
         'product_code': product_code,
         'product_name': product_name,
         'current_dealer': current_dealer,
+        'service_dealer': service_dealer,
         'installed': installed,
         'product_status': product_status,
         'source': 'query_result',
@@ -2646,10 +2664,11 @@ def _barcode_product_info_from_library(barcode):
             'barcode': _clean_export_value(barcode),
             'product_code': '',
             'product_name': '',
-            'current_dealer': '',
-            'installed': '',
-            'product_status': '',
-            'source': 'unmatched',
+        'current_dealer': '',
+        'service_dealer': '',
+        'installed': '',
+        'product_status': '',
+        'source': 'unmatched',
             'matched_prefix': '',
         }
     return {
@@ -2657,6 +2676,7 @@ def _barcode_product_info_from_library(barcode):
         'product_code': matched['product_code'],
         'product_name': matched['product_name'],
         'current_dealer': '',
+        'service_dealer': '',
         'installed': '',
         'product_status': '',
         'source': 'product_library',
@@ -2821,6 +2841,30 @@ def update_barcode_info(barcode, info):
     data = load_data()
     data[barcode] = info
     save_data(data)
+
+def load_accounts():
+    if os.path.exists(ACCOUNTS_FILE):
+        try:
+            with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except Exception:
+            pass
+    return []
+
+def save_accounts(accounts):
+    os.makedirs(BARCODE_DIR, exist_ok=True)
+    with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(accounts, f, ensure_ascii=False, indent=2)
+
+def account_public(row):
+    return {
+        'id': row.get('id', ''),
+        'username': row.get('username', ''),
+        'display_name': row.get('display_name', ''),
+        'permissions': row.get('permissions', []),
+        'updated_at': row.get('updated_at', ''),
+    }
 
 def archive_barcode(barcode):
     src = os.path.join(BARCODE_DIR, barcode + '.html')
@@ -3288,10 +3332,30 @@ def transfer_page():
 def product_library_page():
     return render_template("product_library.html")
 
+@app.route("/accounts")
+def accounts_page():
+    return render_template("accounts.html")
+
 @app.route("/api/product-library", methods=["GET"])
 def api_product_library():
     rows = sorted(load_product_library().values(), key=lambda row: row.get('prefix', ''))
     return jsonify({'success': True, 'products': rows})
+
+@app.route("/api/product-library/lookup")
+def api_product_library_lookup():
+    barcode = str(request.args.get('barcode') or '').strip()
+    if not barcode:
+        return jsonify({'success': False, 'error': '请输入条码'})
+    info = lookup_product_by_barcode(barcode)
+    if not info or info.get('source') == 'unmatched':
+        return jsonify({
+            'success': False,
+            'error': '产品库没有匹配到该条码前缀',
+            'barcode': barcode,
+            'prefix': product_prefix_from_barcode(barcode),
+            'need_query': True,
+        })
+    return jsonify({'success': True, 'info': info})
 
 @app.route("/api/product-library", methods=["POST"])
 def api_product_library_save():
@@ -3310,6 +3374,58 @@ def api_product_library_delete(prefix):
     if prefix in data:
         del data[prefix]
         save_product_library(data)
+    return jsonify({'success': True})
+
+@app.route("/api/accounts", methods=["GET"])
+def api_accounts():
+    return jsonify({'success': True, 'accounts': [account_public(row) for row in load_accounts()]})
+
+@app.route("/api/accounts", methods=["POST"])
+def api_accounts_save():
+    data = request.get_json() or {}
+    account_id = str(data.get('id') or '').strip()
+    username = str(data.get('username') or '').strip()
+    display_name = str(data.get('display_name') or '').strip()
+    password = str(data.get('password') or '').strip()
+    permissions = data.get('permissions') or []
+    if not username:
+        return jsonify({'success': False, 'error': '账号不能为空'})
+    if not isinstance(permissions, list):
+        permissions = []
+    allowed = {'crm', 'results', 'transfer', 'accounts', 'product-library'}
+    permissions = [p for p in permissions if p in allowed]
+    accounts = load_accounts()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if account_id:
+        for row in accounts:
+            if row.get('id') == account_id:
+                row.update({
+                    'username': username,
+                    'display_name': display_name,
+                    'permissions': permissions,
+                    'updated_at': now,
+                })
+                if password:
+                    row['password'] = password
+                save_accounts(accounts)
+                return jsonify({'success': True})
+    if any(row.get('username') == username for row in accounts):
+        return jsonify({'success': False, 'error': '账号已存在'})
+    accounts.append({
+        'id': uuid.uuid4().hex,
+        'username': username,
+        'display_name': display_name,
+        'password': password,
+        'permissions': permissions,
+        'updated_at': now,
+    })
+    save_accounts(accounts)
+    return jsonify({'success': True})
+
+@app.route("/api/accounts/<account_id>", methods=["DELETE"])
+def api_accounts_delete(account_id):
+    accounts = [row for row in load_accounts() if row.get('id') != account_id]
+    save_accounts(accounts)
     return jsonify({'success': True})
 
 @app.route("/api/crm/status")

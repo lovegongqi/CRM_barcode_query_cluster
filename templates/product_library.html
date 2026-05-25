@@ -14,6 +14,11 @@
         .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
         .page-nav a { font-size:13px; font-weight:800; color:#667085; text-decoration:none; padding:8px 14px; border:1px solid #d9e1ec; border-radius:999px; background:#fff; }
         .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
+        .status-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:12px 14px; margin-bottom:16px; box-shadow:0 6px 18px rgba(15,23,42,.05); }
+        .status-text { font-size:13px; font-weight:800; color:#334155; }
+        .status-text .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#94a3b8; margin-right:6px; }
+        .status-text .dot.green { background:#16a34a; }
+        .status-text .dot.red { background:#dc2626; }
         .card { background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,.06); margin-bottom:16px; }
         .card h2 { font-size:16px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #e5e7eb; }
         label { display:block; font-size:12px; color:#667085; font-weight:700; margin-bottom:6px; }
@@ -23,6 +28,7 @@
         .library-form { display:grid; grid-template-columns: .7fr 1fr 1.2fr auto; gap:8px; align-items:end; margin-bottom:12px; }
         .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
         .btn-primary { background:#2563eb; color:#fff; }
+        .btn-secondary { background:#e5e7eb; color:#334155; }
         .btn-danger { background:#dc2626; color:#fff; }
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
@@ -40,9 +46,25 @@
         <div class="page-nav">
             <a href="/crm">在线查询</a>
             <a href="/">结果管理</a>
-            <a class="active" href="/product-library">产品库</a>
             <a href="/transfer">移库</a>
+            <a href="/accounts">账号管理</a>
+            <a class="active" href="/product-library">产品库</a>
         </div>
+    </div>
+
+    <div class="status-bar">
+        <div class="status-text"><span class="dot" id="loginDot"></span>CRM 登录状态：<span id="loginStatus">检测中</span></div>
+        <button class="btn btn-primary" onclick="location.href='/crm'">登录 CRM</button>
+    </div>
+
+    <div class="card">
+        <h2>条码识别</h2>
+        <div class="library-form">
+            <div style="grid-column:span 2"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" oninput="scheduleLookup()"></div>
+            <button class="btn btn-primary" onclick="lookupBarcode()">识别</button>
+            <button class="btn btn-secondary" onclick="goQueryBarcode()">去查询</button>
+        </div>
+        <div id="lookupBox" class="note">输入条码后会优先匹配已查询结果和产品库前缀。</div>
     </div>
 
     <div class="card">
@@ -109,6 +131,45 @@ async function deleteLibrary(prefix) {
 }
 
 loadLibrary();
+
+let lookupTimer = null;
+function scheduleLookup() {
+    clearTimeout(lookupTimer);
+    lookupTimer = setTimeout(() => {
+        const barcode = document.getElementById('lookupBarcode').value.trim();
+        if (barcode.length >= 6) lookupBarcode();
+    }, 350);
+}
+
+async function lookupBarcode() {
+    const barcode = document.getElementById('lookupBarcode').value.trim();
+    if (!barcode) return alert('请输入条码');
+    const res = await fetch('/api/product-library/lookup?barcode=' + encodeURIComponent(barcode));
+    const data = await res.json();
+    const box = document.getElementById('lookupBox');
+    if (data.success) {
+        const info = data.info || {};
+        box.innerHTML = `产品名称：<strong>${escapeHtml(info.product_name)}</strong><br>产品编码：<strong>${escapeHtml(info.product_code)}</strong><br>匹配来源：${escapeHtml(info.source === 'query_result' ? '查询结果' : '产品库')} ${info.matched_prefix ? '，前缀 ' + escapeHtml(info.matched_prefix) : ''}`;
+        return;
+    }
+    box.innerHTML = `没有匹配到前缀 <strong>${escapeHtml(data.prefix || '')}</strong>。是否去在线查询该条码？ <button class="btn btn-primary" onclick="goQueryBarcode()">去查询</button>`;
+}
+
+function goQueryBarcode() {
+    const barcode = document.getElementById('lookupBarcode').value.trim();
+    if (barcode) sessionStorage.setItem('queryBarcodes', barcode);
+    location.href = '/crm';
+}
+
+async function refreshCrmStatus() {
+    const data = await fetch('/api/crm/status').then(r => r.json()).catch(() => ({}));
+    const dot = document.getElementById('loginDot');
+    const text = document.getElementById('loginStatus');
+    dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
+    text.textContent = data.logged_in ? '已登录' : '未登录';
+}
+
+refreshCrmStatus();
 </script>
 </body>
 </html>

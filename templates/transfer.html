@@ -14,6 +14,11 @@
         .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
         .page-nav a { font-size:13px; font-weight:800; color:#667085; text-decoration:none; padding:8px 14px; border:1px solid #d9e1ec; border-radius:999px; background:#fff; }
         .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
+        .status-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:12px 14px; margin-bottom:16px; box-shadow:0 6px 18px rgba(15,23,42,.05); }
+        .status-text { font-size:13px; font-weight:800; color:#334155; }
+        .status-text .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#94a3b8; margin-right:6px; }
+        .status-text .dot.green { background:#16a34a; }
+        .status-text .dot.red { background:#dc2626; }
         .grid { display:grid; grid-template-columns: 1fr; gap:16px; align-items:start; }
         .card { background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,.06); margin-bottom:16px; }
         .card h2 { font-size:16px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #e5e7eb; }
@@ -51,9 +56,15 @@
         <div class="page-nav">
             <a href="/crm">在线查询</a>
             <a href="/">结果管理</a>
-            <a href="/product-library">产品库</a>
             <a class="active" href="/transfer">移库</a>
+            <a href="/accounts">账号管理</a>
+            <a href="/product-library">产品库</a>
         </div>
+    </div>
+
+    <div class="status-bar">
+        <div class="status-text"><span class="dot" id="loginDot"></span>CRM 登录状态：<span id="loginStatus">检测中</span></div>
+        <button class="btn btn-primary" onclick="location.href='/crm'">登录 CRM</button>
     </div>
 
     <div class="grid">
@@ -315,9 +326,24 @@ function loadIncomingBarcodes() {
         document.getElementById('barcodeInput').value = Array.from(new Set(barcodes)).join('\n');
         appendLog(`已从结果管理带入 ${barcodes.length} 个条码`, 'info');
     }
+    const distributor = sessionStorage.getItem('transferDistributor') || '';
+    if (distributor) {
+        document.getElementById('transferDistributor').value = distributor;
+        sessionStorage.removeItem('transferDistributor');
+        appendLog(`已自动填入服务经销商：${distributor}`, 'info');
+    }
+}
+
+async function refreshCrmStatus() {
+    const data = await fetch('/api/crm/status').then(r => r.json()).catch(() => ({}));
+    const dot = document.getElementById('loginDot');
+    const text = document.getElementById('loginStatus');
+    dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
+    text.textContent = data.logged_in ? '已登录' : '未登录';
 }
 
 loadIncomingBarcodes();
+refreshCrmStatus();
 pollStatus();
 </script>
 </body>

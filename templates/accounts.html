@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>账号管理</title>
+    <style>
+        * { box-sizing: border-box; margin:0; padding:0; }
+        body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f4f7fb; color:#202938; min-height:100vh; }
+        .container { max-width:1120px; margin:0 auto; padding:24px; }
+        .header { display:flex; justify-content:space-between; gap:16px; align-items:flex-end; margin-bottom:20px; }
+        h1 { font-size:26px; margin-bottom:6px; }
+        .muted { color:#667085; font-size:13px; }
+        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+        .page-nav a { font-size:13px; font-weight:800; color:#667085; text-decoration:none; padding:8px 14px; border:1px solid #d9e1ec; border-radius:999px; background:#fff; }
+        .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
+        .status-bar, .card { background:#fff; border:1px solid #d9e1ec; border-radius:8px; box-shadow:0 8px 24px rgba(15,23,42,.06); }
+        .status-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; margin-bottom:16px; }
+        .status-text { font-size:13px; font-weight:800; color:#334155; }
+        .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#94a3b8; margin-right:6px; }
+        .dot.green { background:#16a34a; } .dot.red { background:#dc2626; }
+        .card { padding:18px; margin-bottom:16px; }
+        .card h2 { font-size:16px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #e5e7eb; }
+        label { display:block; font-size:12px; color:#667085; font-weight:700; margin-bottom:6px; }
+        input { width:100%; border:1px solid #cfd8e3; border-radius:6px; padding:9px 10px; font-size:14px; outline:none; background:#fff; }
+        input:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
+        .form-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+        .permissions { display:flex; gap:10px; flex-wrap:wrap; margin:12px 0; }
+        .permissions label { display:flex; align-items:center; gap:6px; color:#334155; font-size:13px; margin:0; }
+        .permissions input { width:auto; }
+        .actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+        .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
+        .btn-primary { background:#2563eb; color:#fff; }
+        .btn-secondary { background:#e5e7eb; color:#334155; }
+        .btn-danger { background:#dc2626; color:#fff; }
+        table { width:100%; border-collapse:collapse; font-size:13px; }
+        th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
+        th { background:#f8fafc; color:#475569; }
+        @media (max-width:860px) { .header { flex-direction:column; align-items:flex-start; } .form-grid { grid-template-columns:1fr; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div>
+            <h1>账号管理</h1>
+            <p class="muted">维护工具账号和允许访问的页面。当前版本先保存权限配置，不强制拦截访问。</p>
+        </div>
+        <div class="page-nav">
+            <a href="/crm">在线查询</a>
+            <a href="/">结果管理</a>
+            <a href="/transfer">移库</a>
+            <a class="active" href="/accounts">账号管理</a>
+            <a href="/product-library">产品库</a>
+        </div>
+    </div>
+
+    <div class="status-bar">
+        <div class="status-text"><span class="dot" id="loginDot"></span>CRM 登录状态：<span id="loginStatus">检测中</span></div>
+        <button class="btn btn-primary" onclick="location.href='/crm'">登录 CRM</button>
+    </div>
+
+    <div class="card">
+        <h2>账号设置</h2>
+        <input type="hidden" id="accountId">
+        <div class="form-grid">
+            <div><label>账号</label><input id="username" placeholder="登录账号"></div>
+            <div><label>显示名称</label><input id="displayName" placeholder="可选"></div>
+            <div><label>密码</label><input id="password" type="password" placeholder="新增必填，编辑留空不改"></div>
+        </div>
+        <div class="permissions">
+            <label><input type="checkbox" value="crm"> 在线查询</label>
+            <label><input type="checkbox" value="results"> 结果管理</label>
+            <label><input type="checkbox" value="transfer"> 移库</label>
+            <label><input type="checkbox" value="accounts"> 账号管理</label>
+            <label><input type="checkbox" value="product-library"> 产品库</label>
+        </div>
+        <div class="actions">
+            <button class="btn btn-secondary" onclick="resetForm()">清空</button>
+            <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>账号列表</h2>
+        <div id="accountsBox"></div>
+    </div>
+</div>
+
+<script>
+function escapeHtml(text) {
+    return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+function selectedPermissions() {
+    return Array.from(document.querySelectorAll('.permissions input:checked')).map(el => el.value);
+}
+
+function setPermissions(values) {
+    document.querySelectorAll('.permissions input').forEach(el => el.checked = values.includes(el.value));
+}
+
+function resetForm() {
+    document.getElementById('accountId').value = '';
+    document.getElementById('username').value = '';
+    document.getElementById('displayName').value = '';
+    document.getElementById('password').value = '';
+    setPermissions([]);
+}
+
+async function loadAccounts() {
+    const data = await fetch('/api/accounts').then(res => res.json());
+    const rows = data.accounts || [];
+    document.getElementById('accountsBox').innerHTML = `
+        <table>
+            <thead><tr><th>账号</th><th>显示名称</th><th>权限页面</th><th>更新</th><th></th></tr></thead>
+            <tbody>${rows.map(row => `
+                <tr>
+                    <td>${escapeHtml(row.username)}</td>
+                    <td>${escapeHtml(row.display_name || '')}</td>
+                    <td>${escapeHtml((row.permissions || []).join('，'))}</td>
+                    <td>${escapeHtml(row.updated_at || '')}</td>
+                    <td>
+                        <button class="btn btn-secondary" onclick='editAccount(${JSON.stringify(row)})'>编辑</button>
+                        <button class="btn btn-danger" onclick="deleteAccount('${escapeHtml(row.id)}')">删除</button>
+                    </td>
+                </tr>
+            `).join('') || '<tr><td colspan="5">暂无账号</td></tr>'}</tbody>
+        </table>`;
+}
+
+function editAccount(row) {
+    document.getElementById('accountId').value = row.id || '';
+    document.getElementById('username').value = row.username || '';
+    document.getElementById('displayName').value = row.display_name || '';
+    document.getElementById('password').value = '';
+    setPermissions(row.permissions || []);
+}
+
+async function saveAccount() {
+    const payload = {
+        id: document.getElementById('accountId').value.trim(),
+        username: document.getElementById('username').value.trim(),
+        display_name: document.getElementById('displayName').value.trim(),
+        password: document.getElementById('password').value,
+        permissions: selectedPermissions()
+    };
+    const data = await fetch('/api/accounts', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+    }).then(res => res.json());
+    if (!data.success) return alert(data.error || '保存失败');
+    resetForm();
+    loadAccounts();
+}
+
+async function deleteAccount(id) {
+    if (!confirm('确定删除这个账号？')) return;
+    await fetch('/api/accounts/' + encodeURIComponent(id), {method:'DELETE'});
+    loadAccounts();
+}
+
+async function refreshCrmStatus() {
+    const data = await fetch('/api/crm/status').then(r => r.json()).catch(() => ({}));
+    const dot = document.getElementById('loginDot');
+    const text = document.getElementById('loginStatus');
+    dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
+    text.textContent = data.logged_in ? '已登录' : '未登录';
+}
+
+loadAccounts();
+refreshCrmStatus();
+</script>
+</body>
+</html>
