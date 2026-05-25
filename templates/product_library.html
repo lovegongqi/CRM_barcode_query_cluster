@@ -63,7 +63,7 @@
     </div>
     <div class="status-bar wrap">
         <div class="status-text">工具账号：<span id="accountStatus">检测中</span></div>
-        <button class="btn btn-secondary" onclick="logoutAccount()">退出登录</button>
+        <a class="btn btn-secondary" href="/logout" style="text-decoration:none;display:inline-flex;align-items:center;">退出登录</a>
     </div>
 
     <div class="card">
@@ -226,11 +226,6 @@ async function refreshCrmStatus() {
     const text = document.getElementById('loginStatus');
     dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
     text.textContent = data.logged_in ? '已登录' : '未登录';
-}
-
-async function logoutAccount() {
-    await fetch('/api/app-auth/logout', {method:'POST'});
-    location.href = '/login';
 }
 
 refreshCrmStatus();

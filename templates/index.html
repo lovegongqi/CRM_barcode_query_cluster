@@ -1137,7 +1137,8 @@
                 </div>
                 <div class="status-pills">
                     <span class="status-pill"><span class="dot gray" id="browserDot"></span>浏览器</span>
-                    <span class="status-pill"><span class="dot gray" id="loginDot"></span>登录状态：<span id="loginStatus">未启动</span></span>
+                    <span class="status-pill"><span class="dot gray" id="loginDot"></span>CRM：<span id="loginStatus">未启动</span></span>
+                    <span class="status-pill">工具账号：<span id="appAccountStatus">检测中</span> <a href="/logout">退出</a></span>
                 </div>
             </div>
             <div class="workspace-grid">
@@ -2034,7 +2035,6 @@ ${section(9, '移机单', 'moveid1', [
 
         loadAllData();
         setInterval(() => loadAllData(false), 30000);
-        pollTransferStatus();
 
         // ===== 查询功能（CRM 集成） =====
         let isBatchRunning = false;
@@ -2051,6 +2051,7 @@ ${section(9, '移机单', 'moveid1', [
 
         async function checkStatus() {
             try {
+                refreshAppAccountStatus();
                 const r = await fetch('/api/crm/status');
                 const d = await r.json();
                 const browserDot = document.getElementById('browserDot');
@@ -2094,6 +2095,12 @@ ${section(9, '移机单', 'moveid1', [
             } catch(e) {
                 console.error(e);
             }
+        }
+
+        async function refreshAppAccountStatus() {
+            const data = await fetch('/api/app-auth/status').then(r => r.json()).catch(() => ({}));
+            const el = document.getElementById('appAccountStatus');
+            if (el) el.textContent = data.account ? data.account.username : '未登录';
         }
 
         async function doLogin() {

@@ -3561,7 +3561,7 @@ def api_product_library_delete(prefix):
 def api_accounts():
     if not is_admin_account():
         return jsonify({'success': False, 'error': '只有管理员可以查看账号列表', 'account': current_account_public(), 'accounts': []})
-    return jsonify({'success': True, 'accounts': [account_public(row) for row in load_accounts()]})
+    return jsonify({'success': True, 'account': current_account_public(), 'accounts': [account_public(row) for row in load_accounts()]})
 
 @app.route("/api/accounts", methods=["POST"])
 def api_accounts_save():
@@ -3636,6 +3636,11 @@ def api_app_auth_login():
 def api_app_auth_logout():
     session.pop('account_username', None)
     return jsonify({'success': True})
+
+@app.route("/logout")
+def app_logout_page():
+    session.pop('account_username', None)
+    return redirect("/login")
 
 @app.route("/api/app-auth/password", methods=["POST"])
 def api_app_auth_password():

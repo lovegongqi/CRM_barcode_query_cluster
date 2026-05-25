@@ -118,7 +118,11 @@
             </div>
             <div class="status-item">
                 <span class="status-dot gray" id="loginDot"></span>
-                <span>登录状态：</span><span id="loginStatus">未登录</span>
+                <span>CRM：</span><span id="loginStatus">未登录</span>
+            </div>
+            <div class="status-item">
+                <span>工具账号：</span><span id="appAccountStatus">检测中</span>
+                <a href="/logout">退出</a>
             </div>
             <div class="status-actions">
                 <button class="btn btn-primary" id="loginBtn" onclick="openLoginModal()">登录 CRM</button>
@@ -282,6 +286,7 @@
 
         async function checkStatus() {
             try {
+                refreshAppAccountStatus();
                 const r = await fetch('/api/crm/status');
                 const d = await r.json();
                 const browserDot = document.getElementById('browserDot');
@@ -326,6 +331,12 @@
             } catch(e) {
                 console.error(e);
             }
+        }
+
+        async function refreshAppAccountStatus() {
+            const data = await fetch('/api/app-auth/status').then(r => r.json()).catch(() => ({}));
+            const el = document.getElementById('appAccountStatus');
+            if (el) el.textContent = data.account ? data.account.username : '未登录';
         }
 
         async function doLogin() {

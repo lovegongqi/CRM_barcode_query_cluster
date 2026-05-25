@@ -64,7 +64,7 @@
         <h2>当前工具账号</h2>
         <div class="status-text">当前工具账号：<span id="accountStatus">检测中</span></div>
         <div class="actions" style="margin-top:12px;">
-            <button class="btn btn-secondary" onclick="logoutAccount()">退出登录</button>
+            <a class="btn btn-secondary" href="/logout" style="text-decoration:none;display:inline-flex;align-items:center;">退出登录</a>
         </div>
     </div>
 
@@ -187,11 +187,6 @@ async function deleteAccount(id) {
     const data = await fetch('/api/accounts/' + encodeURIComponent(id), {method:'DELETE'}).then(res => res.json());
     if (!data.success) return alert(data.error || '删除失败');
     loadAccounts();
-}
-
-async function logoutAccount() {
-    await fetch('/api/app-auth/logout', {method:'POST'});
-    location.href = '/login';
 }
 
 async function changePassword() {
