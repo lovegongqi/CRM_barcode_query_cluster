@@ -14,7 +14,7 @@
         .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
         .page-nav a { font-size:13px; font-weight:800; color:#667085; text-decoration:none; padding:8px 14px; border:1px solid #d9e1ec; border-radius:999px; background:#fff; }
         .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
-        .grid { display:grid; grid-template-columns: 1.2fr .8fr; gap:16px; align-items:start; }
+        .grid { display:grid; grid-template-columns: 1fr; gap:16px; align-items:start; }
         .card { background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,.06); margin-bottom:16px; }
         .card h2 { font-size:16px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #e5e7eb; }
         label { display:block; font-size:12px; color:#667085; font-weight:700; margin-bottom:6px; }
@@ -37,9 +37,8 @@
         .blocked { background:#fff1f2; border-color:#fecaca; color:#991b1b; }
         .log { background:#0f172a; color:#d4d4d4; border-radius:8px; padding:12px; font-family:"Courier New", monospace; font-size:12px; max-height:260px; overflow:auto; line-height:1.7; }
         .log .info { color:#4fc3f7; } .log .success { color:#81c784; } .log .error { color:#e57373; } .log .warn { color:#ffb74d; } .log .dim { color:#94a3b8; }
-        .library-form { display:grid; grid-template-columns: .7fr 1fr 1.2fr auto; gap:8px; align-items:end; margin-bottom:12px; }
         .pill { display:inline-block; padding:2px 7px; border-radius:999px; background:#e0f2fe; color:#0369a1; font-size:12px; font-weight:700; }
-        @media (max-width: 860px) { .grid, .fields, .library-form { grid-template-columns:1fr; } .header { flex-direction:column; align-items:flex-start; } }
+        @media (max-width: 860px) { .grid, .fields { grid-template-columns:1fr; } .header { flex-direction:column; align-items:flex-start; } }
     </style>
 </head>
 <body>
@@ -52,6 +51,7 @@
         <div class="page-nav">
             <a href="/crm">在线查询</a>
             <a href="/">结果管理</a>
+            <a href="/product-library">产品库</a>
             <a class="active" href="/transfer">移库</a>
         </div>
     </div>
@@ -90,20 +90,6 @@
             <div class="card">
                 <h2>移库日志</h2>
                 <div class="log" id="transferLog"><div class="dim">等待操作...</div></div>
-            </div>
-        </div>
-
-        <div>
-            <div class="card">
-                <h2>产品库</h2>
-                <div class="note">前缀默认是条码去掉最后 10 位。已查询条码会自动更新产品库，也可以手动添加或覆盖。</div>
-                <div class="library-form">
-                    <div><label>条码前缀</label><input id="libPrefix" placeholder="如 16"></div>
-                    <div><label>产品编码</label><input id="libCode" placeholder="916000024"></div>
-                    <div><label>产品名称</label><input id="libName" placeholder="软水机6系列 609ECM"></div>
-                    <button class="btn btn-primary" onclick="saveLibrary()">保存</button>
-                </div>
-                <div id="libraryBox"></div>
             </div>
         </div>
     </div>
@@ -310,7 +296,28 @@ async function deleteLibrary(prefix) {
     loadLibrary();
 }
 
-loadLibrary();
+function loadIncomingBarcodes() {
+    let barcodes = [];
+    const params = new URLSearchParams(location.search);
+    const queryBarcodes = params.get('barcodes');
+    if (queryBarcodes) {
+        barcodes = queryBarcodes.split(/[\s,，;；]+/).map(x => x.trim()).filter(Boolean);
+    }
+    if (!barcodes.length) {
+        try {
+            barcodes = JSON.parse(sessionStorage.getItem('transferBarcodes') || '[]');
+            sessionStorage.removeItem('transferBarcodes');
+        } catch(e) {
+            barcodes = [];
+        }
+    }
+    if (barcodes.length) {
+        document.getElementById('barcodeInput').value = Array.from(new Set(barcodes)).join('\n');
+        appendLog(`已从结果管理带入 ${barcodes.length} 个条码`, 'info');
+    }
+}
+
+loadIncomingBarcodes();
 pollStatus();
 </script>
 </body>

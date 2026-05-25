@@ -1122,6 +1122,7 @@
             <div class="page-nav">
                 <a href="/crm">在线查询</a>
                 <a class="active" href="/">结果管理</a>
+                <a href="/product-library">产品库</a>
                 <a href="/transfer">移库</a>
             </div>
         </div>
@@ -1211,7 +1212,7 @@
                     <button class="btn btn-danger-soft" onclick="batchDelete()">删除选中</button>
                     <button class="btn btn-copy" onclick="copyAllBarcodes()">复制全部</button>
                     <button class="btn btn-export" onclick="exportXlsx()">导出 XLSX</button>
-                    <button class="btn btn-transfer" onclick="openTransferModal()">选中条码移库</button>
+                    <button class="btn btn-transfer" onclick="goSelectedTransfer()">选中条码移库</button>
                     <button class="btn btn-secondary-soft" onclick="clearAllFilters()">清空筛选</button>
                 </div>
             </div>
@@ -1276,43 +1277,6 @@
         <div class="remark-popup-btns">
             <button class="btn btn-default" onclick="closeRemark()">取消</button>
             <button class="btn btn-primary" onclick="saveRemark()">保存</button>
-        </div>
-    </div>
-
-    <!-- 移库弹窗 -->
-    <div class="modal-overlay" id="transferModal">
-        <div class="modal-content" style="max-width:900px;">
-            <div class="modal-header">
-                <span class="modal-title-text">选中条码移库</span>
-                <button class="modal-close" onclick="closeTransferModal()">✕</button>
-            </div>
-            <div class="modal-body">
-                <div class="transfer-grid">
-                    <div class="transfer-field">
-                        <label>移库类型</label>
-                        <select id="transferType">
-                            <option value="移出">移出</option>
-                            <option value="移入">移入</option>
-                        </select>
-                    </div>
-                    <div class="transfer-field">
-                        <label>目标分销商</label>
-                        <input type="text" id="transferDistributor" placeholder="输入目标分销商名称">
-                    </div>
-                    <div class="transfer-field">
-                        <label>备注</label>
-                        <input type="text" id="transferRemark" placeholder="可选">
-                    </div>
-                </div>
-                <div class="transfer-note" id="transferNote">选择条码后会先汇总产品名称、产品编码和数量，确认无误后再提交 CRM 移库。</div>
-                <div class="transfer-summary" id="transferSummaryBox" style="display:none"></div>
-                <div class="query-log transfer-log transfer-log-box" id="transferLogModal"></div>
-                <div class="transfer-actions">
-                    <button class="btn btn-secondary-soft" onclick="closeTransferModal()">取消</button>
-                    <button class="btn btn-transfer" id="transferPreviewBtn" onclick="previewTransfer()">汇总预览</button>
-                    <button class="btn btn-copy" id="transferSubmitBtn" onclick="submitTransfer()" disabled>提交移库</button>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -1770,209 +1734,11 @@
             btn.textContent = '导出 XLSX';
         }
 
-        let lastTransferSummary = null;
-        let transferPollTimer = null;
-
-        function openTransferModal() {
+        function goSelectedTransfer() {
             const barcodes = getSelectedBarcodeArray();
             if (barcodes.length === 0) { showToast('请先选择要移库的条码'); return; }
-            lastTransferSummary = null;
-            document.getElementById('transferSummaryBox').style.display = 'none';
-            document.getElementById('transferSummaryBox').innerHTML = '';
-            document.getElementById('transferSubmitBtn').disabled = true;
-            document.getElementById('transferNote').textContent = `已选择 ${barcodes.length} 个条码，先汇总预览后再提交 CRM 移库。`;
-            document.getElementById('transferModal').classList.add('overlay-show');
-            pollTransferStatus();
-            previewTransfer();
-        }
-
-        function closeTransferModal() {
-            document.getElementById('transferModal').classList.remove('overlay-show');
-        }
-
-        function renderTransferSummary(summary) {
-            const box = document.getElementById('transferSummaryBox');
-            const totalQty = (summary.groups || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
-            const rows = (summary.groups || []).map(row => `
-                <tr>
-                    <td>${escapeHtml(row.product_name || '')}</td>
-                    <td>${escapeHtml(row.product_code || '')}</td>
-                    <td>${row.quantity || 0}</td>
-                </tr>
-            `).join('');
-            const blockedRows = (summary.blocked || []).map(row => `
-                <tr>
-                    <td>${escapeHtml(row.barcode || '')}</td>
-                    <td colspan="2">${escapeHtml(row.reason || '')}</td>
-                </tr>
-            `).join('');
-            const blockedTable = blockedRows ? `
-                <div class="transfer-note" style="margin-top:10px;border-color:#fecaca;background:#fff1f2;color:#991b1b;">
-                    以下条码不能自动移库，需要先换可移库条码或调整移库方向。
-                </div>
-                <table>
-                    <thead>
-                        <tr><th>条码</th><th colspan="2">原因</th></tr>
-                    </thead>
-                    <tbody>${blockedRows}</tbody>
-                </table>
-            ` : '';
-            box.innerHTML = `
-                <table>
-                    <thead>
-                        <tr><th>产品名称</th><th>产品编码</th><th>移库数量</th></tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
-                <div class="transfer-note" style="border:none;border-top:1px solid #e2e8f0;border-radius:0;">
-                    已选条码 ${summary.total || 0} 个，汇总产品 ${(summary.groups || []).length} 条，数量合计 ${totalQty}。
-                </div>
-                ${blockedTable}
-            `;
-            box.style.display = '';
-        }
-
-        function transferLog(message, level='dim') {
-            document.querySelectorAll('.transfer-log-box').forEach(box => {
-                box.style.display = '';
-                const line = document.createElement('div');
-                line.className = level;
-                line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
-                box.appendChild(line);
-                box.scrollTop = box.scrollHeight;
-            });
-        }
-
-        function renderTransferLogs(logs) {
-            if (!logs || logs.length === 0) {
-                document.querySelectorAll('.transfer-log-box').forEach(box => {
-                    box.innerHTML = '';
-                    box.style.display = 'none';
-                });
-                return;
-            }
-            const html = logs.map(row => {
-                const level = escapeHtml(row.level || 'dim');
-                return `<div class="${level}">[${escapeHtml(row.time || '')}] ${escapeHtml(row.message || '')}</div>`;
-            }).join('');
-            document.querySelectorAll('.transfer-log-box').forEach(box => {
-                box.style.display = '';
-                box.innerHTML = html;
-                box.scrollTop = box.scrollHeight;
-            });
-        }
-
-        async function pollTransferStatus() {
-            try {
-                const res = await fetch('/api/crm/transfer/status');
-                const data = await res.json();
-                renderTransferLogs(data.logs || []);
-                if (data.summary) renderTransferSummary(data.summary);
-                if (data.done) {
-                    clearInterval(transferPollTimer);
-                    transferPollTimer = null;
-                    const btn = document.getElementById('transferSubmitBtn');
-                    btn.textContent = '提交移库';
-                    btn.disabled = false;
-                    if (data.transfer_success) {
-                        showToast(data.message || '移库成功');
-                        transferLog(data.message || '移库成功', 'success');
-                        loadAllData(false);
-                    } else {
-                        showToast(data.error || '移库失败');
-                    }
-                    return;
-                }
-                if (!data.running && transferPollTimer) {
-                    clearInterval(transferPollTimer);
-                    transferPollTimer = null;
-                    document.getElementById('transferSubmitBtn').textContent = '提交移库';
-                    document.getElementById('transferSubmitBtn').disabled = false;
-                }
-            } catch(e) {
-                transferLog('读取移库状态失败: ' + e.message, 'error');
-            }
-        }
-
-        async function previewTransfer() {
-            const barcodes = getSelectedBarcodeArray();
-            if (barcodes.length === 0) { showToast('请先选择条码'); return; }
-            const btn = document.getElementById('transferPreviewBtn');
-            btn.textContent = '汇总中...';
-            btn.disabled = true;
-            document.getElementById('transferSubmitBtn').disabled = true;
-            try {
-                const res = await fetch('/api/transfer/summary', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        barcodes,
-                        distributor: document.getElementById('transferDistributor').value.trim(),
-                        transfer_type: document.getElementById('transferType').value
-                    })
-                });
-                const data = await res.json();
-                if (!data.success) {
-                    lastTransferSummary = null;
-                    if (data.summary) renderTransferSummary(data.summary);
-                    showToast(data.error || '汇总失败');
-                    return;
-                }
-                lastTransferSummary = data.summary;
-                renderTransferSummary(data.summary);
-                document.getElementById('transferSubmitBtn').disabled = false;
-                showToast('移库汇总已生成');
-            } catch(e) {
-                showToast('汇总出错: ' + e.message);
-            } finally {
-                btn.textContent = '汇总预览';
-                btn.disabled = false;
-            }
-        }
-
-        async function submitTransfer() {
-            if (!lastTransferSummary) { showToast('请先汇总预览'); return; }
-            const barcodes = getSelectedBarcodeArray();
-            if (barcodes.length === 0) { showToast('请先选择要移库的条码'); return; }
-            const distributor = document.getElementById('transferDistributor').value.trim();
-            if (!distributor) { showToast('请填写目标分销商'); return; }
-
-            const btn = document.getElementById('transferSubmitBtn');
-            btn.textContent = '提交中...';
-            btn.disabled = true;
-            renderTransferLogs([]);
-            transferLog('已提交移库任务，等待后台接管 CRM...', 'info');
-            try {
-                const res = await fetch('/api/crm/transfer', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        barcodes,
-                        distributor,
-                        transfer_type: document.getElementById('transferType').value,
-                        remark: document.getElementById('transferRemark').value.trim()
-                    })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(data.message || '移库任务已开始');
-                    transferLog(data.message || '移库任务已开始', 'success');
-                    if (transferPollTimer) clearInterval(transferPollTimer);
-                    transferPollTimer = setInterval(pollTransferStatus, 1200);
-                    pollTransferStatus();
-                } else {
-                    if (data.summary) renderTransferSummary(data.summary);
-                    transferLog(data.error || '移库提交失败', 'error');
-                    showToast(data.error || '移库提交失败');
-                    btn.textContent = '提交移库';
-                    btn.disabled = false;
-                }
-            } catch(e) {
-                transferLog('移库提交出错: ' + e.message, 'error');
-                showToast('移库提交出错: ' + e.message);
-                btn.textContent = '提交移库';
-                btn.disabled = false;
-            }
+            sessionStorage.setItem('transferBarcodes', JSON.stringify(barcodes));
+            window.location.href = '/transfer';
         }
 
         function showDetail(barcode) {

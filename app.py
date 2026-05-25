@@ -3284,6 +3284,10 @@ def crm_page():
 def transfer_page():
     return render_template("transfer.html")
 
+@app.route("/product-library")
+def product_library_page():
+    return render_template("product_library.html")
+
 @app.route("/api/product-library", methods=["GET"])
 def api_product_library():
     rows = sorted(load_product_library().values(), key=lambda row: row.get('prefix', ''))
