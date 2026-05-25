@@ -14,8 +14,11 @@
         label { display:block; font-size:12px; color:#667085; font-weight:800; margin:12px 0 6px; }
         input { width:100%; border:1px solid #cfd8e3; border-radius:6px; padding:10px 11px; font-size:15px; outline:none; background:#fff; }
         input:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
+        input.invalid { border-color:#dc2626; box-shadow:0 0 0 3px rgba(220,38,38,.12); }
         .btn { width:100%; min-height:40px; margin-top:16px; border:none; border-radius:8px; background:#2563eb; color:#fff; font-weight:900; cursor:pointer; }
-        .error { display:none; margin-top:12px; color:#b91c1c; background:#fee2e2; border:1px solid #fecaca; border-radius:8px; padding:9px 10px; font-size:13px; }
+        .btn:disabled { opacity:.65; cursor:not-allowed; }
+        .error { display:none; margin-top:12px; color:#b91c1c; background:#fee2e2; border:1px solid #fecaca; border-radius:8px; padding:9px 10px; font-size:13px; font-weight:700; }
+        .error.show { display:block; }
         .hint { margin-top:14px; color:#94a3b8; font-size:12px; line-height:1.6; }
     </style>
 </head>
@@ -25,31 +28,75 @@
             <h1>登录工作台</h1>
             <p>请输入工具账号后继续使用 CRM 条码查询系统。</p>
             <label>账号</label>
-            <input id="username" placeholder="请输入账号" autocomplete="username">
+            <input id="username" placeholder="请输入账号" autocomplete="username" oninput="clearError()">
             <label>密码</label>
-            <input id="password" type="password" placeholder="密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')login()">
-            <button class="btn" onclick="login()">登录</button>
-            <div class="error" id="errorBox"></div>
+            <input id="password" type="password" placeholder="密码" autocomplete="current-password" oninput="clearError()" onkeydown="if(event.key==='Enter')login()">
+            <div class="error" id="errorBox" role="alert" aria-live="assertive"></div>
+            <button class="btn" id="loginBtn" type="button" onclick="login()">登录</button>
         </div>
     </div>
 <script>
+let loggingIn = false;
+
 function showError(message) {
     const box = document.getElementById('errorBox');
     box.textContent = message;
-    box.style.display = '';
+    box.classList.add('show');
+    box.setAttribute('tabindex', '-1');
+    box.focus({preventScroll: true});
+}
+
+function clearError() {
+    const box = document.getElementById('errorBox');
+    box.classList.remove('show');
+    box.textContent = '';
+    document.getElementById('username').classList.remove('invalid');
+    document.getElementById('password').classList.remove('invalid');
+}
+
+function markInvalid(...ids) {
+    ids.forEach(id => document.getElementById(id).classList.add('invalid'));
 }
 
 async function login() {
+    if (loggingIn) return;
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
-    const data = await fetch('/api/app-auth/login', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({username, password})
-    }).then(res => res.json()).catch(e => ({success:false, error:e.message}));
-    if (!data.success) return showError(data.error || '登录失败');
-    const next = new URLSearchParams(location.search).get('next');
-    location.href = next && next.startsWith('/') ? next : '/';
+    if (!username) {
+        markInvalid('username');
+        showError('请输入账号');
+        return;
+    }
+    if (!password) {
+        markInvalid('password');
+        showError('请输入密码');
+        return;
+    }
+    const btn = document.getElementById('loginBtn');
+    loggingIn = true;
+    btn.disabled = true;
+    btn.textContent = '登录中...';
+    try {
+        const res = await fetch('/api/app-auth/login', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({username, password})
+        });
+        const data = await res.json().catch(() => ({success:false, error:'登录失败，请稍后重试'}));
+        if (!data.success) {
+            markInvalid('username', 'password');
+            showError(data.error || '账号或密码错误');
+            return;
+        }
+        const next = new URLSearchParams(location.search).get('next');
+        location.href = next && next.startsWith('/') ? next : '/';
+    } catch (e) {
+        showError('登录请求失败，请检查网络后重试');
+    } finally {
+        loggingIn = false;
+        btn.disabled = false;
+        btn.textContent = '登录';
+    }
 }
 
 fetch('/api/app-auth/status')
