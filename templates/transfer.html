@@ -54,11 +54,9 @@
             <p class="muted">直接粘贴条码即可移库。未查询条码会按产品库前缀匹配产品名称和编码。</p>
         </div>
         <div class="page-nav">
-            <a href="/crm">在线查询</a>
-            <a href="/">结果管理</a>
-            <a class="active" href="/transfer">移库</a>
-            <a href="/accounts">账号管理</a>
-            <a href="/product-library">产品库</a>
+            {% for link in nav_links %}
+            <a href="{{ link.href }}" class="{{ 'active' if link.href == '/transfer' else '' }}">{{ link.label }}</a>
+            {% endfor %}
         </div>
     </div>
 

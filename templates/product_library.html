@@ -49,11 +49,9 @@
             <p class="muted">维护条码前缀、产品编码和产品名称。已查询条码会自动更新这里。</p>
         </div>
         <div class="page-nav">
-            <a href="/crm">在线查询</a>
-            <a href="/">结果管理</a>
-            <a href="/transfer">移库</a>
-            <a href="/accounts">账号管理</a>
-            <a class="active" href="/product-library">产品库</a>
+            {% for link in nav_links %}
+            <a href="{{ link.href }}" class="{{ 'active' if link.href == '/product-library' else '' }}">{{ link.label }}</a>
+            {% endfor %}
         </div>
     </div>
 

@@ -2938,6 +2938,26 @@ def current_account_public():
     row = current_account()
     return account_public(row) if row else None
 
+PAGE_LINKS = [
+    {'permission': 'crm', 'label': '在线查询', 'href': '/crm'},
+    {'permission': 'results', 'label': '结果管理', 'href': '/'},
+    {'permission': 'transfer', 'label': '移库', 'href': '/transfer'},
+    {'permission': 'accounts', 'label': '账号管理', 'href': '/accounts'},
+    {'permission': 'product-library', 'label': '产品库', 'href': '/product-library'},
+]
+
+def visible_page_links():
+    row = current_account()
+    if not row:
+        return []
+    if row.get('username') == 'admin':
+        return PAGE_LINKS
+    permissions = set(row.get('permissions') or [])
+    links = [link for link in PAGE_LINKS if link['permission'] in permissions]
+    if not any(link['permission'] == 'accounts' for link in links):
+        links.append({'permission': 'account-self', 'label': '账号管理', 'href': '/accounts'})
+    return links
+
 def is_admin_account():
     row = current_account()
     return bool(row and row.get('username') == 'admin')
@@ -2990,7 +3010,7 @@ def require_app_login():
     if permission != "account-self" and not account_has_permission(permission):
         if path.startswith("/api/"):
             return jsonify({'success': False, 'error': '当前账号无权访问该功能'}), 403
-        return Response("当前账号无权访问该页面", status=403, mimetype="text/plain")
+        return render_template("no_permission.html", account=current_account_public(), links=visible_page_links()), 403
     return None
 
 def archive_barcode(barcode):
@@ -3076,7 +3096,7 @@ def scan_archived():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", nav_links=visible_page_links())
 
 @app.route("/api/barcodes", methods=["GET"])
 def api_get_barcodes():
@@ -3452,19 +3472,19 @@ def api_unarchive_barcode(barcode):
 
 @app.route("/crm")
 def crm_page():
-    return render_template("crm.html")
+    return render_template("crm.html", nav_links=visible_page_links())
 
 @app.route("/transfer")
 def transfer_page():
-    return render_template("transfer.html")
+    return render_template("transfer.html", nav_links=visible_page_links())
 
 @app.route("/product-library")
 def product_library_page():
-    return render_template("product_library.html")
+    return render_template("product_library.html", nav_links=visible_page_links())
 
 @app.route("/accounts")
 def accounts_page():
-    return render_template("accounts.html")
+    return render_template("accounts.html", nav_links=visible_page_links())
 
 @app.route("/login")
 def login_page():
