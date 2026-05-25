@@ -3318,6 +3318,9 @@ def api_crm_transfer():
         return jsonify({'success': False, 'error': '请先选择要移库的条码'})
     if not distributor:
         return jsonify({'success': False, 'error': '目标分销商不能为空'})
+    with library_query_lock:
+        if library_query_job['running']:
+            return jsonify({'success': False, 'error': '产品库条码查询正在执行，请等待完成后再移库'})
 
     representatives = _missing_product_library_representatives(barcodes)
     if representatives:
@@ -3726,6 +3729,9 @@ def api_crm_query():
     with transfer_job_lock:
         if transfer_job['running']:
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
+    with library_query_lock:
+        if library_query_job['running']:
+            return jsonify({'success': False, 'error': '产品库条码查询正在执行，请等待完成后再查询'})
     success, result = crm_session.query_barcode(barcode)
     if success:
         return jsonify({
@@ -3747,6 +3753,9 @@ def api_crm_batch_start():
     with transfer_job_lock:
         if transfer_job['running']:
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
+    with library_query_lock:
+        if library_query_job['running']:
+            return jsonify({'success': False, 'error': '产品库条码查询正在执行，请等待完成后再批量查询'})
 
     with batch_job_lock:
         if batch_job['running']:
