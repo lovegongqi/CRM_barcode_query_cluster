@@ -2959,6 +2959,8 @@ def required_permission_for_path(path):
         return "transfer"
     if path == "/product-library" or path.startswith("/api/product-library"):
         return "product-library"
+    if path == "/accounts":
+        return "account-self"
     if path.startswith("/api/barcodes") or path.startswith("/api/filter-options") or path.startswith("/api/export"):
         return "results"
     if path.startswith("/api/crm"):
@@ -2970,7 +2972,7 @@ def require_app_login():
     path = request.path
     if path.startswith("/api/app-auth"):
         return None
-    if path == "/accounts":
+    if path == "/login":
         return None
     if path.startswith("/api/accounts"):
         if not current_account():
@@ -2984,8 +2986,8 @@ def require_app_login():
     if not current_account():
         if path.startswith("/api/"):
             return jsonify({'success': False, 'error': '请先登录工具账号'}), 401
-        return redirect("/accounts?next=" + path)
-    if not account_has_permission(permission):
+        return redirect("/login?next=" + path)
+    if permission != "account-self" and not account_has_permission(permission):
         if path.startswith("/api/"):
             return jsonify({'success': False, 'error': '当前账号无权访问该功能'}), 403
         return Response("当前账号无权访问该页面", status=403, mimetype="text/plain")
@@ -3460,6 +3462,10 @@ def product_library_page():
 @app.route("/accounts")
 def accounts_page():
     return render_template("accounts.html")
+
+@app.route("/login")
+def login_page():
+    return render_template("login.html")
 
 @app.route("/api/product-library", methods=["GET"])
 def api_product_library():

@@ -61,16 +61,11 @@
     </div>
 
     <div class="card">
-        <h2>工具账号登录</h2>
-        <div class="form-grid">
-            <div><label>账号</label><input id="authUsername" placeholder="admin"></div>
-            <div><label>密码</label><input id="authPassword" type="password" placeholder="密码"></div>
-            <div style="display:flex;gap:8px;align-items:end;">
-                <button class="btn btn-primary" onclick="loginAccount()">登录</button>
-                <button class="btn btn-secondary" onclick="logoutAccount()">退出</button>
-            </div>
+        <h2>当前工具账号</h2>
+        <div class="status-text">当前工具账号：<span id="accountStatus">检测中</span></div>
+        <div class="actions" style="margin-top:12px;">
+            <button class="btn btn-secondary" onclick="logoutAccount()">退出登录</button>
         </div>
-        <div class="status-text" style="margin-top:10px;">当前工具账号：<span id="accountStatus">未登录</span></div>
     </div>
 
     <div class="card" id="passwordCard" style="display:none">
@@ -194,28 +189,9 @@ async function deleteAccount(id) {
     loadAccounts();
 }
 
-async function loginAccount() {
-    const data = await fetch('/api/app-auth/login', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-            username: document.getElementById('authUsername').value.trim(),
-            password: document.getElementById('authPassword').value
-        })
-    }).then(res => res.json());
-    if (!data.success) return alert(data.error || '登录失败');
-    document.getElementById('authPassword').value = '';
-    const next = new URLSearchParams(location.search).get('next');
-    if (next && next.startsWith('/')) {
-        location.href = next;
-        return;
-    }
-    loadAccounts();
-}
-
 async function logoutAccount() {
     await fetch('/api/app-auth/logout', {method:'POST'});
-    loadAccounts();
+    location.href = '/login';
 }
 
 async function changePassword() {

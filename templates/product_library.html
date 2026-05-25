@@ -62,13 +62,8 @@
         <button class="btn btn-primary" onclick="location.href='/crm'">登录 CRM</button>
     </div>
     <div class="status-bar wrap">
-        <div class="status-text">工具账号：<span id="accountStatus">未登录</span></div>
-        <div class="auth-form">
-            <div><label>账号</label><input id="authUsername" placeholder="admin"></div>
-            <div><label>密码</label><input id="authPassword" type="password" placeholder="密码"></div>
-            <button class="btn btn-primary" onclick="loginAccount()">登录</button>
-            <button class="btn btn-secondary" onclick="logoutAccount()">退出</button>
-        </div>
+        <div class="status-text">工具账号：<span id="accountStatus">检测中</span></div>
+        <button class="btn btn-secondary" onclick="logoutAccount()">退出登录</button>
     </div>
 
     <div class="card">
@@ -233,23 +228,9 @@ async function refreshCrmStatus() {
     text.textContent = data.logged_in ? '已登录' : '未登录';
 }
 
-async function loginAccount() {
-    const data = await fetch('/api/app-auth/login', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-            username: document.getElementById('authUsername').value.trim(),
-            password: document.getElementById('authPassword').value
-        })
-    }).then(res => res.json());
-    if (!data.success) return alert(data.error || '登录失败');
-    document.getElementById('authPassword').value = '';
-    loadLibrary();
-}
-
 async function logoutAccount() {
     await fetch('/api/app-auth/logout', {method:'POST'});
-    loadLibrary();
+    location.href = '/login';
 }
 
 refreshCrmStatus();
