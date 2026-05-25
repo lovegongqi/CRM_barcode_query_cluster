@@ -44,7 +44,7 @@
     <div class="header">
         <div>
             <h1>账号管理</h1>
-            <p class="muted">维护工具账号和允许访问的页面。当前版本先保存权限配置，不强制拦截访问。</p>
+            <p class="muted">管理员维护账号和页面权限。默认管理员：admin / 88293529。</p>
         </div>
         <div class="page-nav">
             <a href="/crm">在线查询</a>
@@ -61,6 +61,28 @@
     </div>
 
     <div class="card">
+        <h2>工具账号登录</h2>
+        <div class="form-grid">
+            <div><label>账号</label><input id="authUsername" placeholder="admin"></div>
+            <div><label>密码</label><input id="authPassword" type="password" placeholder="密码"></div>
+            <div style="display:flex;gap:8px;align-items:end;">
+                <button class="btn btn-primary" onclick="loginAccount()">登录</button>
+                <button class="btn btn-secondary" onclick="logoutAccount()">退出</button>
+            </div>
+        </div>
+        <div class="status-text" style="margin-top:10px;">当前工具账号：<span id="accountStatus">未登录</span></div>
+    </div>
+
+    <div class="card" id="passwordCard" style="display:none">
+        <h2>修改自己的密码</h2>
+        <div class="form-grid">
+            <div><label>原密码</label><input id="oldPassword" type="password"></div>
+            <div><label>新密码</label><input id="newPassword" type="password"></div>
+            <div style="display:flex;align-items:end;"><button class="btn btn-primary" onclick="changePassword()">修改密码</button></div>
+        </div>
+    </div>
+
+    <div class="card" id="accountEditCard" style="display:none">
         <h2>账号设置</h2>
         <input type="hidden" id="accountId">
         <div class="form-grid">
@@ -81,7 +103,7 @@
         </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="accountListCard" style="display:none">
         <h2>账号列表</h2>
         <div id="accountsBox"></div>
     </div>
@@ -110,6 +132,16 @@ function resetForm() {
 
 async function loadAccounts() {
     const data = await fetch('/api/accounts').then(res => res.json());
+    const account = data.account || null;
+    document.getElementById('accountStatus').textContent = account ? `${account.username}${account.is_admin ? '（管理员）' : ''}` : '未登录';
+    document.getElementById('passwordCard').style.display = account ? '' : 'none';
+    const canManage = !!(account && account.is_admin);
+    document.getElementById('accountEditCard').style.display = canManage ? '' : 'none';
+    document.getElementById('accountListCard').style.display = canManage ? '' : 'none';
+    if (!data.success) {
+        document.getElementById('accountsBox').innerHTML = `<div class="status-text">${escapeHtml(data.error || '请先以管理员登录')}</div>`;
+        return;
+    }
     const rows = data.accounts || [];
     document.getElementById('accountsBox').innerHTML = `
         <table>
@@ -157,8 +189,43 @@ async function saveAccount() {
 
 async function deleteAccount(id) {
     if (!confirm('确定删除这个账号？')) return;
-    await fetch('/api/accounts/' + encodeURIComponent(id), {method:'DELETE'});
+    const data = await fetch('/api/accounts/' + encodeURIComponent(id), {method:'DELETE'}).then(res => res.json());
+    if (!data.success) return alert(data.error || '删除失败');
     loadAccounts();
+}
+
+async function loginAccount() {
+    const data = await fetch('/api/app-auth/login', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+            username: document.getElementById('authUsername').value.trim(),
+            password: document.getElementById('authPassword').value
+        })
+    }).then(res => res.json());
+    if (!data.success) return alert(data.error || '登录失败');
+    document.getElementById('authPassword').value = '';
+    loadAccounts();
+}
+
+async function logoutAccount() {
+    await fetch('/api/app-auth/logout', {method:'POST'});
+    loadAccounts();
+}
+
+async function changePassword() {
+    const data = await fetch('/api/app-auth/password', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+            old_password: document.getElementById('oldPassword').value,
+            new_password: document.getElementById('newPassword').value
+        })
+    }).then(res => res.json());
+    if (!data.success) return alert(data.error || '修改失败');
+    document.getElementById('oldPassword').value = '';
+    document.getElementById('newPassword').value = '';
+    alert('密码已修改');
 }
 
 async function refreshCrmStatus() {

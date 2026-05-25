@@ -15,6 +15,7 @@
         .page-nav a { font-size:13px; font-weight:800; color:#667085; text-decoration:none; padding:8px 14px; border:1px solid #d9e1ec; border-radius:999px; background:#fff; }
         .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
         .status-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:12px 14px; margin-bottom:16px; box-shadow:0 6px 18px rgba(15,23,42,.05); }
+        .status-bar.wrap { align-items:flex-end; flex-wrap:wrap; }
         .status-text { font-size:13px; font-weight:800; color:#334155; }
         .status-text .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#94a3b8; margin-right:6px; }
         .status-text .dot.green { background:#16a34a; }
@@ -26,6 +27,8 @@
         input:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
         .note { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#475569; font-size:12px; line-height:1.6; padding:10px 12px; margin-bottom:12px; }
         .library-form { display:grid; grid-template-columns: .7fr 1fr 1.2fr auto; gap:8px; align-items:end; margin-bottom:12px; }
+        .auth-form { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
+        .auth-form input { width:160px; }
         .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
         .btn-primary { background:#2563eb; color:#fff; }
         .btn-secondary { background:#e5e7eb; color:#334155; }
@@ -56,6 +59,15 @@
         <div class="status-text"><span class="dot" id="loginDot"></span>CRM 登录状态：<span id="loginStatus">检测中</span></div>
         <button class="btn btn-primary" onclick="location.href='/crm'">登录 CRM</button>
     </div>
+    <div class="status-bar wrap">
+        <div class="status-text">工具账号：<span id="accountStatus">未登录</span></div>
+        <div class="auth-form">
+            <div><label>账号</label><input id="authUsername" placeholder="admin"></div>
+            <div><label>密码</label><input id="authPassword" type="password" placeholder="密码"></div>
+            <button class="btn btn-primary" onclick="loginAccount()">登录</button>
+            <button class="btn btn-secondary" onclick="logoutAccount()">退出</button>
+        </div>
+    </div>
 
     <div class="card">
         <h2>条码识别</h2>
@@ -67,7 +79,7 @@
         <div id="lookupBox" class="note">输入条码后会优先匹配已查询结果和产品库前缀。</div>
     </div>
 
-    <div class="card">
+    <div class="card" id="editCard" style="display:none">
         <h2>产品匹配规则</h2>
         <div class="note">前缀默认是条码去掉最后 10 位。比如 162501010001 的默认产品前缀是 16。</div>
         <div class="library-form">
@@ -89,6 +101,8 @@ async function loadLibrary() {
     const res = await fetch('/api/product-library');
     const data = await res.json();
     const rows = data.products || [];
+    document.getElementById('editCard').style.display = data.can_edit ? '' : 'none';
+    document.getElementById('accountStatus').textContent = data.account ? `${data.account.username}${data.can_edit ? '（管理员）' : ''}` : '未登录';
     document.getElementById('libraryBox').innerHTML = `
         <table>
             <thead><tr><th>前缀</th><th>产品编码</th><th>产品名称</th><th>来源条码</th><th>更新</th><th></th></tr></thead>
@@ -99,7 +113,7 @@ async function loadLibrary() {
                     <td>${escapeHtml(row.product_name)}</td>
                     <td>${escapeHtml(row.source_barcode || '')}</td>
                     <td>${escapeHtml(row.updated_at || '')}</td>
-                    <td><button class="btn btn-danger" onclick="deleteLibrary('${escapeHtml(row.prefix)}')">删除</button></td>
+                    <td>${data.can_edit ? `<button class="btn btn-danger" onclick="deleteLibrary('${escapeHtml(row.prefix)}')">删除</button>` : '只读'}</td>
                 </tr>
             `).join('') || '<tr><td colspan="6">暂无产品库规则</td></tr>'}</tbody>
         </table>`;
@@ -126,7 +140,8 @@ async function saveLibrary() {
 
 async function deleteLibrary(prefix) {
     if (!confirm('确定删除前缀 ' + prefix + ' ？')) return;
-    await fetch('/api/product-library/' + encodeURIComponent(prefix), {method: 'DELETE'});
+    const data = await fetch('/api/product-library/' + encodeURIComponent(prefix), {method: 'DELETE'}).then(res => res.json());
+    if (!data.success) return alert(data.error || '删除失败');
     loadLibrary();
 }
 
@@ -167,6 +182,25 @@ async function refreshCrmStatus() {
     const text = document.getElementById('loginStatus');
     dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
     text.textContent = data.logged_in ? '已登录' : '未登录';
+}
+
+async function loginAccount() {
+    const data = await fetch('/api/app-auth/login', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+            username: document.getElementById('authUsername').value.trim(),
+            password: document.getElementById('authPassword').value
+        })
+    }).then(res => res.json());
+    if (!data.success) return alert(data.error || '登录失败');
+    document.getElementById('authPassword').value = '';
+    loadLibrary();
+}
+
+async function logoutAccount() {
+    await fetch('/api/app-auth/logout', {method:'POST'});
+    loadLibrary();
 }
 
 refreshCrmStatus();

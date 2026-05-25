@@ -15,7 +15,7 @@ import threading
 import queue
 import uuid
 from collections import OrderedDict
-from flask import Flask, render_template, request, jsonify, send_from_directory, Response
+from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session
 from datetime import datetime
 
 try:
@@ -2206,6 +2206,7 @@ except ImportError:
     HAS_OPENPYXL = False
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crm-barcode-query-local-secret")
 
 BARCODE_DIR = "barcode"
 ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
@@ -2843,14 +2844,27 @@ def update_barcode_info(barcode, info):
     save_data(data)
 
 def load_accounts():
+    default_admin = {
+        'id': 'admin',
+        'username': 'admin',
+        'display_name': '管理员',
+        'password': '88293529',
+        'permissions': ['crm', 'results', 'transfer', 'accounts', 'product-library'],
+        'updated_at': '',
+    }
     if os.path.exists(ACCOUNTS_FILE):
         try:
             with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            return data if isinstance(data, list) else []
+            accounts = data if isinstance(data, list) else []
+            if not any(row.get('username') == 'admin' for row in accounts):
+                accounts.insert(0, default_admin)
+                save_accounts(accounts)
+            return accounts
         except Exception:
             pass
-    return []
+    save_accounts([default_admin])
+    return [default_admin]
 
 def save_accounts(accounts):
     os.makedirs(BARCODE_DIR, exist_ok=True)
@@ -2864,7 +2878,22 @@ def account_public(row):
         'display_name': row.get('display_name', ''),
         'permissions': row.get('permissions', []),
         'updated_at': row.get('updated_at', ''),
+        'is_admin': row.get('username') == 'admin',
     }
+
+def current_account():
+    username = session.get('account_username')
+    if not username:
+        return None
+    return next((row for row in load_accounts() if row.get('username') == username), None)
+
+def current_account_public():
+    row = current_account()
+    return account_public(row) if row else None
+
+def is_admin_account():
+    row = current_account()
+    return bool(row and row.get('username') == 'admin')
 
 def archive_barcode(barcode):
     src = os.path.join(BARCODE_DIR, barcode + '.html')
@@ -3339,7 +3368,7 @@ def accounts_page():
 @app.route("/api/product-library", methods=["GET"])
 def api_product_library():
     rows = sorted(load_product_library().values(), key=lambda row: row.get('prefix', ''))
-    return jsonify({'success': True, 'products': rows})
+    return jsonify({'success': True, 'products': rows, 'can_edit': is_admin_account(), 'account': current_account_public()})
 
 @app.route("/api/product-library/lookup")
 def api_product_library_lookup():
@@ -3359,6 +3388,8 @@ def api_product_library_lookup():
 
 @app.route("/api/product-library", methods=["POST"])
 def api_product_library_save():
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以修改产品库'})
     data = request.get_json() or {}
     prefix = str(data.get('prefix') or '').strip()
     product_code = str(data.get('product_code') or '').strip()
@@ -3370,6 +3401,8 @@ def api_product_library_save():
 
 @app.route("/api/product-library/<prefix>", methods=["DELETE"])
 def api_product_library_delete(prefix):
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以删除产品库规则'})
     data = load_product_library()
     if prefix in data:
         del data[prefix]
@@ -3378,10 +3411,14 @@ def api_product_library_delete(prefix):
 
 @app.route("/api/accounts", methods=["GET"])
 def api_accounts():
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以查看账号列表', 'account': current_account_public(), 'accounts': []})
     return jsonify({'success': True, 'accounts': [account_public(row) for row in load_accounts()]})
 
 @app.route("/api/accounts", methods=["POST"])
 def api_accounts_save():
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以维护账号'})
     data = request.get_json() or {}
     account_id = str(data.get('id') or '').strip()
     username = str(data.get('username') or '').strip()
@@ -3424,7 +3461,52 @@ def api_accounts_save():
 
 @app.route("/api/accounts/<account_id>", methods=["DELETE"])
 def api_accounts_delete(account_id):
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以删除账号'})
+    if account_id == 'admin':
+        return jsonify({'success': False, 'error': '默认管理员账号不能删除'})
     accounts = [row for row in load_accounts() if row.get('id') != account_id]
+    save_accounts(accounts)
+    return jsonify({'success': True})
+
+@app.route("/api/app-auth/status")
+def api_app_auth_status():
+    return jsonify({'success': True, 'account': current_account_public(), 'is_admin': is_admin_account()})
+
+@app.route("/api/app-auth/login", methods=["POST"])
+def api_app_auth_login():
+    data = request.get_json() or {}
+    username = str(data.get('username') or '').strip()
+    password = str(data.get('password') or '')
+    row = next((item for item in load_accounts() if item.get('username') == username), None)
+    if not row or str(row.get('password') or '') != password:
+        return jsonify({'success': False, 'error': '账号或密码错误'})
+    session['account_username'] = username
+    return jsonify({'success': True, 'account': account_public(row)})
+
+@app.route("/api/app-auth/logout", methods=["POST"])
+def api_app_auth_logout():
+    session.pop('account_username', None)
+    return jsonify({'success': True})
+
+@app.route("/api/app-auth/password", methods=["POST"])
+def api_app_auth_password():
+    row = current_account()
+    if not row:
+        return jsonify({'success': False, 'error': '请先登录工具账号'})
+    data = request.get_json() or {}
+    old_password = str(data.get('old_password') or '')
+    new_password = str(data.get('new_password') or '')
+    if str(row.get('password') or '') != old_password:
+        return jsonify({'success': False, 'error': '原密码不正确'})
+    if not new_password:
+        return jsonify({'success': False, 'error': '新密码不能为空'})
+    accounts = load_accounts()
+    for item in accounts:
+        if item.get('username') == row.get('username'):
+            item['password'] = new_password
+            item['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            break
     save_accounts(accounts)
     return jsonify({'success': True})
 
