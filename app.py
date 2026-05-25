@@ -1312,10 +1312,7 @@ class CRMSession:
                         f.write(html_content)
                     try:
                         fields = extract_fields_from_html(output_file)
-                        update_product_library_from_info(_barcode_product_info({
-                            'barcode': barcode,
-                            'fields': fields,
-                        }))
+                        refresh_product_library_from_query_fields(barcode, fields, emit)
                     except Exception as e:
                         emit(f"产品库自动更新失败：{e}", "warn")
                     self.needs_navigation = False
@@ -2659,6 +2656,7 @@ def lookup_product_by_barcode(barcode):
         if item.get('barcode') == barcode:
             info = _barcode_product_info(item)
             if info.get('product_code') and info.get('product_name'):
+                update_product_library_from_info(info)
                 info['matched_prefix'] = product_prefix_from_barcode(barcode)
                 return info
             break
@@ -2702,8 +2700,24 @@ def _barcode_product_info(item):
         'product_status': product_status,
         'source': 'query_result',
     }
-    update_product_library_from_info(info)
     return info
+
+def refresh_product_library_from_query_fields(barcode, fields, log=None):
+    info = _barcode_product_info({
+        'barcode': barcode,
+        'fields': fields,
+    })
+    prefix = product_prefix_from_barcode(barcode)
+    if update_product_library_from_info(info):
+        if log:
+            log(
+                f"产品库已按本次查询刷新：前缀 {prefix}，{info.get('product_code')} / {info.get('product_name')}",
+                "success"
+            )
+        return True
+    if log:
+        log(f"产品库未刷新：条码 {barcode} 缺少产品编码或产品名称", "warn")
+    return False
 
 def _barcode_product_info_from_library(barcode):
     matched = match_product_library(barcode)
@@ -2748,6 +2762,7 @@ def _missing_product_library_representatives(selected_barcodes):
         if item:
             info = _barcode_product_info(item)
             if info.get('product_code') and info.get('product_name'):
+                update_product_library_from_info(info)
                 continue
 
         prefix = product_prefix_from_barcode(barcode)
