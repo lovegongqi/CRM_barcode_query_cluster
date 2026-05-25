@@ -33,6 +33,8 @@
         .btn-primary { background:#2563eb; color:#fff; }
         .btn-secondary { background:#e5e7eb; color:#334155; }
         .btn-danger { background:#dc2626; color:#fff; }
+        .log { background:#0f172a; color:#d4d4d4; border-radius:8px; padding:12px; font-family:"Courier New", monospace; font-size:12px; max-height:260px; overflow:auto; line-height:1.7; margin-top:12px; }
+        .log .info { color:#4fc3f7; } .log .success { color:#81c784; } .log .error { color:#e57373; } .log .warn { color:#ffb74d; } .log .dim { color:#94a3b8; }
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
         th { background:#f8fafc; color:#475569; }
@@ -74,9 +76,10 @@
         <div class="library-form">
             <div style="grid-column:span 2"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" oninput="scheduleLookup()"></div>
             <button class="btn btn-primary" onclick="lookupBarcode()">识别</button>
-            <button class="btn btn-secondary" onclick="goQueryBarcode()">去查询</button>
+            <button class="btn btn-secondary" onclick="confirmQueryBarcode()">确认查询</button>
         </div>
         <div id="lookupBox" class="note">输入条码后会优先匹配已查询结果和产品库前缀。</div>
+        <div class="log" id="queryLog" style="display:none"></div>
     </div>
 
     <div class="card" id="editCard" style="display:none">
@@ -148,6 +151,7 @@ async function deleteLibrary(prefix) {
 loadLibrary();
 
 let lookupTimer = null;
+let queryTimer = null;
 function scheduleLookup() {
     clearTimeout(lookupTimer);
     lookupTimer = setTimeout(() => {
@@ -167,13 +171,58 @@ async function lookupBarcode() {
         box.innerHTML = `产品名称：<strong>${escapeHtml(info.product_name)}</strong><br>产品编码：<strong>${escapeHtml(info.product_code)}</strong><br>匹配来源：${escapeHtml(info.source === 'query_result' ? '查询结果' : '产品库')} ${info.matched_prefix ? '，前缀 ' + escapeHtml(info.matched_prefix) : ''}`;
         return;
     }
-    box.innerHTML = `没有匹配到前缀 <strong>${escapeHtml(data.prefix || '')}</strong>。是否去在线查询该条码？ <button class="btn btn-primary" onclick="goQueryBarcode()">去查询</button>`;
+    box.innerHTML = `没有匹配到前缀 <strong>${escapeHtml(data.prefix || '')}</strong>。是否立即查询该条码并自动补充产品库？ <button class="btn btn-primary" onclick="confirmQueryBarcode()">确认查询</button>`;
 }
 
-function goQueryBarcode() {
+async function confirmQueryBarcode() {
     const barcode = document.getElementById('lookupBarcode').value.trim();
-    if (barcode) sessionStorage.setItem('queryBarcodes', barcode);
-    location.href = '/crm';
+    if (!barcode) return alert('请输入条码');
+    appendQueryLog('准备启动 CRM 查询...', 'info');
+    const data = await fetch('/api/product-library/query/start', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({barcode})
+    }).then(res => res.json());
+    if (!data.success) {
+        appendQueryLog(data.error || '查询启动失败', 'error');
+        return;
+    }
+    if (queryTimer) clearInterval(queryTimer);
+    queryTimer = setInterval(pollQueryStatus, 1000);
+    pollQueryStatus();
+}
+
+function appendQueryLog(message, level='dim') {
+    const box = document.getElementById('queryLog');
+    box.style.display = '';
+    const line = document.createElement('div');
+    line.className = level;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+}
+
+function renderQueryLogs(logs) {
+    const box = document.getElementById('queryLog');
+    if (!logs || !logs.length) return;
+    box.style.display = '';
+    box.innerHTML = logs.map(row => `<div class="${escapeHtml(row.level || 'dim')}">[${escapeHtml(row.time || '')}] ${escapeHtml(row.message || '')}</div>`).join('');
+    box.scrollTop = box.scrollHeight;
+}
+
+async function pollQueryStatus() {
+    const data = await fetch('/api/product-library/query/status').then(res => res.json());
+    renderQueryLogs(data.logs || []);
+    if (!data.done) return;
+    clearInterval(queryTimer);
+    queryTimer = null;
+    if (data.query_success) {
+        appendQueryLog('查询完成，正在重新识别条码...', 'success');
+        loadLibrary();
+        lookupBarcode();
+    } else {
+        appendQueryLog(data.error || '查询失败', 'error');
+    }
 }
 
 async function refreshCrmStatus() {

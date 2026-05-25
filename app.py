@@ -1954,6 +1954,18 @@ batch_job = {
     'results': [],
 }
 
+library_query_lock = threading.Lock()
+library_query_job = {
+    'running': False,
+    'done': False,
+    'success': False,
+    'barcode': '',
+    'error': '',
+    'logs': [],
+    'started_at': '',
+    'finished_at': '',
+}
+
 transfer_job_lock = threading.Lock()
 transfer_job = {
     'running': False,
@@ -2000,6 +2012,41 @@ def _batch_log(message, level='dim'):
             'level': level,
         })
         batch_job['logs'] = batch_job['logs'][-300:]
+
+def _library_query_log(message, level='dim'):
+    with library_query_lock:
+        library_query_job['logs'].append({
+            'time': datetime.now().strftime('%H:%M:%S'),
+            'message': message,
+            'level': level,
+        })
+        library_query_job['logs'] = library_query_job['logs'][-300:]
+
+def _run_library_query_job(barcode):
+    _library_query_log(f"开始查询条码：{barcode}", 'info')
+    try:
+        success, result = crm_session.query_barcode(barcode, _library_query_log)
+        with library_query_lock:
+            library_query_job['running'] = False
+            library_query_job['done'] = True
+            library_query_job['success'] = bool(success)
+            library_query_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            if success:
+                library_query_job['error'] = ''
+            else:
+                library_query_job['error'] = _brief_batch_error(result, 800)
+        if success:
+            _library_query_log(f"条码查询完成：{barcode}", 'success')
+        else:
+            _library_query_log(f"条码查询失败：{result}", 'error')
+    except Exception as e:
+        with library_query_lock:
+            library_query_job['running'] = False
+            library_query_job['done'] = True
+            library_query_job['success'] = False
+            library_query_job['error'] = _brief_batch_error(e, 800)
+            library_query_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _library_query_log(f"条码查询出错：{e}", 'error')
 
 def _transfer_log(message, level='dim'):
     with transfer_job_lock:
@@ -3385,6 +3432,52 @@ def api_product_library_lookup():
             'need_query': True,
         })
     return jsonify({'success': True, 'info': info})
+
+@app.route("/api/product-library/query/start", methods=["POST"])
+def api_product_library_query_start():
+    data = request.get_json() or {}
+    barcode = str(data.get('barcode') or '').strip()
+    if not barcode:
+        return jsonify({'success': False, 'error': '请输入条码'})
+    with transfer_job_lock:
+        if transfer_job['running']:
+            return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询'})
+    with batch_job_lock:
+        if batch_job['running']:
+            return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待完成'})
+    ready, ready_message = _crm_ready_for_auto_query()
+    if not ready:
+        return jsonify({'success': False, 'error': ready_message})
+    with library_query_lock:
+        if library_query_job['running']:
+            return jsonify({'success': False, 'error': '已有产品库条码查询正在执行'})
+        library_query_job.update({
+            'running': True,
+            'done': False,
+            'success': False,
+            'barcode': barcode,
+            'error': '',
+            'logs': [],
+            'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'finished_at': '',
+        })
+    threading.Thread(target=_run_library_query_job, args=(barcode,), daemon=True).start()
+    return jsonify({'success': True, 'message': '条码查询已开始'})
+
+@app.route("/api/product-library/query/status")
+def api_product_library_query_status():
+    with library_query_lock:
+        return jsonify({
+            'success': True,
+            'running': library_query_job['running'],
+            'done': library_query_job['done'],
+            'query_success': library_query_job['success'],
+            'barcode': library_query_job['barcode'],
+            'error': library_query_job['error'],
+            'logs': list(library_query_job['logs']),
+            'started_at': library_query_job['started_at'],
+            'finished_at': library_query_job['finished_at'],
+        })
 
 @app.route("/api/product-library", methods=["POST"])
 def api_product_library_save():
