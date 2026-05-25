@@ -55,10 +55,6 @@
         </div>
     </div>
 
-    <div class="status-bar">
-        <div class="status-text"><span class="dot" id="loginDot"></span>CRM 登录状态：<span id="loginStatus">检测中</span></div>
-        <button class="btn btn-primary" onclick="location.href='/crm'">登录 CRM</button>
-    </div>
     <div class="status-bar wrap">
         <div class="status-text">工具账号：<span id="accountStatus">检测中</span></div>
         <a class="btn btn-secondary" href="/logout" style="text-decoration:none;display:inline-flex;align-items:center;">退出登录</a>
@@ -218,15 +214,6 @@ async function pollQueryStatus() {
     }
 }
 
-async function refreshCrmStatus() {
-    const data = await fetch('/api/crm/status').then(r => r.json()).catch(() => ({}));
-    const dot = document.getElementById('loginDot');
-    const text = document.getElementById('loginStatus');
-    dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
-    text.textContent = data.logged_in ? '已登录' : '未登录';
-}
-
-refreshCrmStatus();
 </script>
 </body>
 </html>

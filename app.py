@@ -3523,9 +3523,9 @@ def api_product_library_query_start():
     with batch_job_lock:
         if batch_job['running']:
             return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待完成'})
-    ready, ready_message = _crm_ready_for_auto_query()
+    ready, _ready_message = _crm_ready_for_auto_query()
     if not ready:
-        return jsonify({'success': False, 'error': ready_message})
+        return jsonify({'success': False, 'error': '请先让管理员到在线查询页面登录 CRM 后再查询'})
     with library_query_lock:
         if library_query_job['running']:
             return jsonify({'success': False, 'error': '已有产品库条码查询正在执行'})
