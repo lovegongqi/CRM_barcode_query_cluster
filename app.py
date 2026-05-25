@@ -97,7 +97,13 @@ class CRMSession:
         except Exception as e:
             error_msg = str(e)
             print(f"  [DEBUG] Browser launch error: {error_msg[:200]}")
-            if "ProcessSingleton" in error_msg or "Failed to create a ProcessSingleton" in error_msg:
+            if any(key in error_msg for key in [
+                "ProcessSingleton",
+                "Failed to create a ProcessSingleton",
+                "profile appears to be in use",
+                "Chromium has locked the profile",
+                "SingletonLock",
+            ]):
                 # 锁文件导致的错误，清理后重试
                 self._close_browser()
                 self._cleanup_singleton_lock(session_dir)
@@ -122,13 +128,24 @@ class CRMSession:
         return True
 
     def _cleanup_singleton_lock(self, session_dir):
-        """删除 SingletonLock 文件"""
-        lock_file = os.path.join(session_dir, "SingletonLock")
-        if os.path.exists(lock_file):
-            try:
-                os.remove(lock_file)
-            except Exception:
-                pass
+        """删除 Chromium 残留的单实例锁文件。"""
+        singleton_names = {"SingletonLock", "SingletonSocket", "SingletonCookie"}
+        profile_lock_paths = {
+            os.path.abspath(os.path.join(session_dir, "LOCK")),
+            os.path.abspath(os.path.join(session_dir, "Default", "LOCK")),
+        }
+        for root, _, files in os.walk(session_dir):
+            for filename in files:
+                lock_path = os.path.join(root, filename)
+                if filename not in singleton_names and os.path.abspath(lock_path) not in profile_lock_paths:
+                    continue
+                if not os.path.lexists(lock_path):
+                    continue
+                try:
+                    os.remove(lock_path)
+                    print(f"  [DEBUG] 已清理浏览器锁文件: {lock_path}")
+                except Exception as e:
+                    print(f"  [DEBUG] 清理浏览器锁文件失败: {lock_path} {e}")
 
     def _is_current_page_logged_in(self):
         try:
@@ -1110,13 +1127,18 @@ class CRMSession:
             print(f"  [错误] 导航到报表失败: {e}")
             return False
 
-    def query_barcode(self, barcode):
+    def query_barcode(self, barcode, log=None):
+        def emit(message, level='info'):
+            if log:
+                log(message, level)
+
         with self.lock:
             if not self.is_alive():
                 return False, "浏览器未启动"
             try:
                 # 导航到报表页面（只在第一次查询时）
                 if self.needs_navigation:
+                    emit("准备打开条码报表页面")
                     print("  [导航] 准备打开报表页面...")
                     if not self.prepare_next_report():
                         if self.last_report_error:
@@ -1125,6 +1147,7 @@ class CRMSession:
                     self.needs_navigation = False
 
                 # 切换到报表标签页
+                emit("切换到条码报表页")
                 if not self.switch_to_report_tab():
                     if self.last_report_error:
                         return False, f"报表页面加载错误: {self.last_report_error}"
@@ -1139,10 +1162,13 @@ class CRMSession:
 
                 # 如果找不到，尝试重新导航
                 if not input_box or not input_box.is_visible():
+                    emit("未找到条码输入框，尝试刷新报表页", "warn")
                     input_box = self._reload_report_for_input()
                     if not input_box or not input_box.is_visible():
+                        emit("刷新后仍未找到输入框，检查已打开报表标签", "warn")
                         input_box = self._find_input_in_open_report_tabs()
                         if not input_box or not input_box.is_visible():
+                            emit("报表标签不可用，重新打开条码报表", "warn")
                             print("  [导航] 所有查询标签页不可用，关闭后重走流程...")
                             self.close_report_tab()
                             self.needs_navigation = True
@@ -1185,9 +1211,11 @@ class CRMSession:
                 time.sleep(0.1)
                 input_box.press("Backspace")
                 time.sleep(0.1)
+                emit(f"输入条码：{barcode}")
                 input_box.type(barcode, delay=100)
                 print(f"  已输入条码: {barcode}")
 
+                emit("提交报表查询")
                 print("  提交查询...")
                 clicked = False
                 try:
@@ -1222,6 +1250,7 @@ class CRMSession:
                 if not clicked:
                     return False, "提交查询失败"
 
+                emit("等待 CRM 生成报表")
                 print("  等待报表处理...")
                 max_wait = 60
                 data_ready = False
@@ -1245,9 +1274,11 @@ class CRMSession:
                         }""")
                         if js_check.get('ready'):
                             data_ready = True
+                            emit("报表数据已加载")
                             print(f"  报表已加载完成（{js_check['length']} 字符）")
                             break
                         elif (wait_i + 1) % 10 == 0:
+                            emit(f"报表仍在加载，已等待 {wait_i + 1} 秒", "dim")
                             print(f"  ...已等待 {wait_i + 1} 秒，继续等待...")
                     except:
                         pass
@@ -1272,11 +1303,20 @@ class CRMSession:
                     pass
 
                 if html_content and len(html_content.strip()) > 1000:
+                    emit("保存条码查询结果")
                     html_dir = os.path.join(os.path.dirname(__file__), "barcode")
                     os.makedirs(html_dir, exist_ok=True)
                     output_file = os.path.join(html_dir, f"{barcode}.html")
                     with open(output_file, "w", encoding="utf-8") as f:
                         f.write(html_content)
+                    try:
+                        fields = extract_fields_from_html(output_file)
+                        update_product_library_from_info(_barcode_product_info({
+                            'barcode': barcode,
+                            'fields': fields,
+                        }))
+                    except Exception as e:
+                        emit(f"产品库自动更新失败：{e}", "warn")
                     self.needs_navigation = False
                     return True, barcode
                 else:
@@ -1285,6 +1325,518 @@ class CRMSession:
 
             except Exception as e:
                 self.needs_navigation = True
+                return False, str(e)
+
+    def _move_create_url(self):
+        cfg = load_crm_config()
+        base = cfg["website"]["url"].rstrip("/")
+        return f"{base}/?#/moveRelated/create"
+
+    def _set_input_by_label(self, label, value):
+        return self.page.evaluate("""({ label, value }) => {
+            const clean = (text) => (text || '').replace(/\\s+/g, '');
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const wanted = clean(label);
+            const candidates = Array.from(document.querySelectorAll('label, span, div, p, td')).reverse();
+            for (const node of candidates) {
+                if (!visible(node)) continue;
+                const text = clean(node.innerText || node.textContent || '');
+                if (!text || !text.includes(wanted)) continue;
+                const roots = [];
+                const closest = node.closest('.el-form-item, .ant-form-item, tr, .form-group');
+                if (closest) roots.push(closest);
+                for (let root = node.parentElement, i = 0; i < 5 && root; i++, root = root.parentElement) {
+                    if (!roots.includes(root)) roots.push(root);
+                }
+                for (const root of roots) {
+                    const input = Array.from(root.querySelectorAll('input:not([disabled]), textarea:not([disabled])')).find(visible);
+                    if (!input) continue;
+                    input.focus();
+                    input.value = value;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+            }
+            return false;
+        }""", {"label": label, "value": str(value)})
+
+    def _input_by_label(self, label):
+        handle = self.page.evaluate_handle("""(label) => {
+            const clean = (text) => (text || '').replace(/\\s+/g, '');
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const wanted = clean(label);
+            const formItems = Array.from(document.querySelectorAll('.el-form-item, .ant-form-item, .form-group, tr'))
+                .filter(visible)
+                .reverse();
+            for (const item of formItems) {
+                const labelEl = item.querySelector('.el-form-item__label, label, th, td:first-child');
+                const labelText = clean(labelEl ? (labelEl.innerText || labelEl.textContent || '') : '');
+                if (!labelText || !labelText.includes(wanted)) continue;
+                const input = Array.from(item.querySelectorAll('input:not([disabled]), textarea:not([disabled])')).find(visible);
+                if (input) return input;
+            }
+            const candidates = Array.from(document.querySelectorAll('label, span, div, p, td')).reverse();
+            for (const node of candidates) {
+                if (!visible(node)) continue;
+                const text = clean(node.innerText || node.textContent || '');
+                if (!text || !text.includes(wanted)) continue;
+                const roots = [];
+                const closest = node.closest('.el-form-item, .ant-form-item, tr, .form-group');
+                if (closest) roots.push(closest);
+                for (let root = node.parentElement, i = 0; i < 5 && root; i++, root = root.parentElement) {
+                    if (!roots.includes(root)) roots.push(root);
+                }
+                for (const root of roots) {
+                    const inputs = Array.from(root.querySelectorAll('input:not([disabled]), textarea:not([disabled])'));
+                    const input = inputs.find(visible);
+                    if (input) return input;
+                }
+            }
+            return null;
+        }""", label)
+        element = handle.as_element()
+        return element if element else None
+
+    def _click_form_control_by_label(self, label):
+        try:
+            return self.page.evaluate("""(label) => {
+                const clean = (text) => (text || '').replace(/\\s+/g, '');
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const wanted = clean(label);
+                const items = Array.from(document.querySelectorAll('.el-form-item, .ant-form-item, .form-group, tr'))
+                    .filter(visible)
+                    .reverse();
+                for (const item of items) {
+                    const labelEl = item.querySelector('.el-form-item__label, label, th, td:first-child');
+                    const labelText = clean(labelEl ? (labelEl.innerText || labelEl.textContent || '') : '');
+                    if (!labelText || !labelText.includes(wanted)) continue;
+                    const target = Array.from(item.querySelectorAll('.el-select, .el-input, input, textarea'))
+                        .find(visible);
+                    if (!target) return false;
+                    target.scrollIntoView({ block: 'center', inline: 'center' });
+                    target.click();
+                    return true;
+                }
+                return false;
+            }""", label)
+        except Exception:
+            return False
+
+    def _input_value_by_label(self, label):
+        try:
+            return self.page.evaluate("""(label) => {
+                const clean = (text) => (text || '').replace(/\\s+/g, '');
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const wanted = clean(label);
+                const items = Array.from(document.querySelectorAll('.el-form-item, .ant-form-item, .form-group, tr'))
+                    .filter(visible)
+                    .reverse();
+                for (const item of items) {
+                    const labelEl = item.querySelector('.el-form-item__label, label, th, td:first-child');
+                    const labelText = clean(labelEl ? (labelEl.innerText || labelEl.textContent || '') : '');
+                    if (!labelText || !labelText.includes(wanted)) continue;
+                    const input = Array.from(item.querySelectorAll('input, textarea, .el-select__tags-text')).find(visible);
+                    if (!input) return '';
+                    return clean(input.value || input.innerText || input.textContent || '');
+                }
+                return '';
+            }""", label)
+        except Exception:
+            return ""
+
+    def _click_dropdown_text(self, text, timeout=10):
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                clicked = self.page.evaluate("""(text) => {
+                    const nodes = Array.from(document.querySelectorAll(
+                        '.el-select-dropdown__item, .el-autocomplete-suggestion li, li, [role="option"]'
+                    ));
+                    const target = nodes.find(el => {
+                        const visible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                        return visible && (el.innerText || el.textContent || '').trim().includes(text);
+                    });
+                    if (!target) return false;
+                    target.click();
+                    return true;
+                }""", text)
+                if clicked:
+                    time.sleep(0.5)
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return False
+
+    def _select_input_by_label(self, label, value):
+        input_el = self._input_by_label(label)
+        if not input_el:
+            return False
+        try:
+            input_el.scroll_into_view_if_needed(timeout=3000)
+            input_el.click(timeout=5000)
+        except Exception:
+            clicked = self.page.evaluate("""(el) => {
+                if (!el) return false;
+                el.focus();
+                el.click();
+                return true;
+            }""", input_el)
+            if not clicked:
+                return False
+        time.sleep(0.2)
+        input_el.press("Control+a")
+        input_el.type(str(value), delay=80)
+        time.sleep(1.5)
+        if self._click_dropdown_text(str(value), timeout=8):
+            return True
+        if self._click_form_control_by_label(label):
+            time.sleep(0.5)
+            input_el = self._input_by_label(label)
+            if input_el:
+                try:
+                    input_el.press("Control+a")
+                    input_el.type(str(value), delay=80)
+                    time.sleep(1.2)
+                except Exception:
+                    pass
+            if self._click_dropdown_text(str(value), timeout=5):
+                return True
+        input_el.press("ArrowDown")
+        time.sleep(0.3)
+        input_el.press("Enter")
+        time.sleep(0.5)
+        return bool(self._input_value_by_label(label))
+
+    def _select_transfer_type(self, transfer_type):
+        if not self._click_form_control_by_label("移库类型"):
+            input_el = self._input_by_label("移库类型")
+            if not input_el:
+                return False
+            try:
+                input_el.scroll_into_view_if_needed(timeout=3000)
+                input_el.click(timeout=5000)
+            except Exception:
+                clicked = self.page.evaluate("""(el) => {
+                    if (!el) return false;
+                    el.focus();
+                    el.click();
+                    return true;
+                }""", input_el)
+                if not clicked:
+                    return False
+        time.sleep(0.5)
+        if self._click_dropdown_text(transfer_type, timeout=5):
+            time.sleep(0.5)
+            return self._input_value_by_label("移库类型") == transfer_type
+        input_el = self._input_by_label("移库类型")
+        if not input_el:
+            return False
+        input_el.press("ArrowDown")
+        time.sleep(0.2)
+        input_el.press("Enter")
+        time.sleep(0.5)
+        return self._input_value_by_label("移库类型") == transfer_type
+
+    def _click_top_button(self, text):
+        try:
+            btn = self.page.get_by_text(text, exact=True).first
+            btn.click(timeout=5000)
+            time.sleep(1)
+            return True
+        except Exception:
+            pass
+        return self.page.evaluate("""(text) => {
+            const nodes = Array.from(document.querySelectorAll('button, a, span'));
+            const target = nodes.find(el => {
+                const visible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                return visible && (el.innerText || el.textContent || '').trim().includes(text);
+            });
+            if (!target) return false;
+            target.click();
+            return true;
+        }""", text)
+
+    def _click_section_action(self, section_title, action_text):
+        clicked = self.page.evaluate("""({ sectionTitle, actionText }) => {
+            const clean = (text) => (text || '').replace(/\\s+/g, '');
+            const sections = Array.from(document.querySelectorAll('*')).filter(el => {
+                const visible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                return visible && clean(el.innerText || el.textContent || '') === clean(sectionTitle);
+            });
+            for (const section of sections) {
+                let root = section.parentElement;
+                for (let i = 0; i < 6 && root; i++, root = root.parentElement) {
+                    const buttons = Array.from(root.querySelectorAll('button, a'));
+                    const target = buttons.find(btn => {
+                        const visible = !!(btn.offsetWidth || btn.offsetHeight || btn.getClientRects().length);
+                        return visible && (btn.innerText || btn.textContent || '').includes(actionText);
+                    });
+                    if (target) {
+                        target.click();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }""", {"sectionTitle": section_title, "actionText": action_text})
+        if clicked:
+            time.sleep(1)
+        return clicked
+
+    def _click_dialog_button(self, text):
+        clicked = self.page.evaluate("""(text) => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                .filter(visible)
+                .reverse();
+            dialogs.push(document.body);
+            for (const dialog of dialogs) {
+                const buttons = Array.from(dialog.querySelectorAll('button, a'));
+                const target = buttons.reverse().find(btn => {
+                    return visible(btn) && (btn.innerText || btn.textContent || '').trim().includes(text);
+                });
+                if (target) {
+                    target.click();
+                    return true;
+                }
+            }
+            return false;
+        }""", text)
+        if clicked:
+            time.sleep(1.2)
+        return clicked
+
+    def _visible_message(self):
+        try:
+            text = self.page.evaluate("""() => {
+                const selectors = ['.el-message', '.el-notification', '.el-form-item__error', '.el-dialog', '.toast'];
+                return selectors.flatMap(sel => Array.from(document.querySelectorAll(sel)))
+                    .filter(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length))
+                    .map(el => (el.innerText || el.textContent || '').trim())
+                    .filter(Boolean)
+                    .join(' | ');
+            }""")
+            return re.sub(r"\s+", " ", text or "").strip()
+        except Exception:
+            return ""
+
+    def _form_diagnostics(self):
+        try:
+            return self.page.evaluate("""() => {
+                const clean = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const errors = Array.from(document.querySelectorAll('.el-form-item__error, .is-error .el-form-item__label'))
+                    .filter(visible)
+                    .map(el => clean(el.innerText || el.textContent || ''))
+                    .filter(Boolean);
+                const fields = Array.from(document.querySelectorAll('.el-form-item, tr, .form-group, .ant-form-item'))
+                    .filter(visible)
+                    .map(root => {
+                        const label = clean((root.querySelector('label, .el-form-item__label, th, td:first-child') || {}).innerText || '');
+                        if (!label) return null;
+                        const valueNode = root.querySelector('input, textarea, .el-input__inner, .el-select__tags-text, .el-select .el-input__inner');
+                        const value = valueNode ? clean(valueNode.value || valueNode.innerText || valueNode.textContent || '') : '';
+                        const errorNode = root.querySelector('.el-form-item__error');
+                        const error = errorNode ? clean(errorNode.innerText || errorNode.textContent || '') : '';
+                        return { label, value, error };
+                    })
+                    .filter(row => row && (row.label || row.value || row.error))
+                    .slice(0, 30);
+                return { errors, fields };
+            }""")
+        except Exception:
+            return {}
+
+    def _format_form_diagnostics(self):
+        diag = self._form_diagnostics() or {}
+        parts = []
+        errors = [str(x) for x in diag.get("errors", []) if str(x).strip()]
+        if errors:
+            parts.append("页面错误：" + " / ".join(errors[:8]))
+        field_parts = []
+        for row in diag.get("fields", [])[:16]:
+            label = str(row.get("label") or "").strip()
+            value = str(row.get("value") or "").strip()
+            error = str(row.get("error") or "").strip()
+            if not label:
+                continue
+            field = f"{label}={value or '空'}"
+            if error:
+                field += f"({error})"
+            field_parts.append(field)
+        if field_parts:
+            parts.append("字段：" + "；".join(field_parts))
+        return "；".join(parts)
+
+    def _order_number(self):
+        try:
+            return self.page.evaluate("""() => {
+                const clean = (text) => (text || '').replace(/\\s+/g, '');
+                const candidates = Array.from(document.querySelectorAll('label, span, div, p, td'));
+                for (const node of candidates) {
+                    if (!clean(node.innerText || node.textContent || '').includes('移库单号')) continue;
+                    let root = node;
+                    for (let i = 0; i < 8 && root; i++, root = root.parentElement) {
+                        const input = root.querySelector('input');
+                        if (input && input.value) return input.value.trim();
+                    }
+                }
+                return '';
+            }""")
+        except Exception:
+            return ""
+
+    def _save_transfer_header(self):
+        if not self._click_top_button("保存"):
+            return False, "未找到保存按钮"
+        for _ in range(20):
+            time.sleep(0.8)
+            order_no = self._order_number()
+            if order_no:
+                return True, order_no
+            msg = self._visible_message()
+            if msg and any(key in msg for key in ["成功", "保存"]):
+                order_no = self._order_number()
+                return True, order_no or "已保存"
+            if msg and any(key in msg for key in ["失败", "错误", "必填", "请选择", "不能为空"]):
+                diag = self._format_form_diagnostics()
+                return False, f"{msg}；{diag}" if diag else msg
+        msg = self._visible_message() or "保存后未获取到移库单号"
+        diag = self._format_form_diagnostics()
+        return False, f"{msg}；{diag}" if diag else msg
+
+    def _add_transfer_detail(self, group):
+        if not self._click_section_action("移库明细", "新增"):
+            return False, "未找到移库明细新增按钮"
+        if not self._select_input_by_label("产品名称", group["product_name"]):
+            return False, "移库明细未找到产品名称输入框"
+        self._set_input_by_label("移库数量", group["quantity"])
+        if not self._click_dialog_button("确定"):
+            return False, "移库明细未找到确定按钮"
+        msg = self._visible_message()
+        if msg and any(key in msg for key in ["失败", "错误", "必填", "请选择", "不能为空"]):
+            return False, msg
+        return True, ""
+
+    def _add_barcode_detail(self, detail):
+        if not self._click_section_action("条码明细", "新增"):
+            return False, "未找到条码明细新增按钮"
+        product_name = detail.get("product_name", "")
+        if product_name and not self._select_input_by_label("产品名称", product_name):
+            return False, "条码明细未找到产品名称输入框"
+        filled = False
+        for label in ["产品条码", "条码"]:
+            if self._set_input_by_label(label, detail["barcode"]):
+                filled = True
+                break
+        if not filled:
+            return False, "条码明细未找到产品条码输入框"
+        if not self._click_dialog_button("确定"):
+            return False, "条码明细未找到确定按钮"
+        msg = self._visible_message()
+        if msg and any(key in msg for key in ["失败", "错误", "必填", "请选择", "不能为空", "已安装"]):
+            return False, msg
+        return True, ""
+
+    def _confirm_transfer(self):
+        if not self._click_top_button("确认"):
+            return False, "未找到确认按钮"
+        for _ in range(3):
+            time.sleep(0.8)
+            if not self._visible_message() and not self.page.locator(".el-dialog:visible").count():
+                break
+            self._click_dialog_button("确定")
+
+        for _ in range(15):
+            time.sleep(0.8)
+            msg = self._visible_message()
+            if msg and any(key in msg for key in ["失败", "错误", "必填", "请选择", "不能为空", "已安装"]):
+                return False, msg
+            if msg and any(key in msg for key in ["成功", "已确认", "移库成功"]):
+                return True, msg
+        return False, self._visible_message() or "确认后未检测到成功提示"
+
+    def create_transfer(self, summary, distributor, transfer_type="移出", remark="", log=None):
+        def emit(message, level='info'):
+            if log:
+                log(message, level)
+
+        with self.lock:
+            if not self.is_alive():
+                return False, "浏览器未启动，请先登录 CRM"
+            try:
+                emit("打开 CRM 移库单新增页面...")
+                self.page.goto(self._move_create_url(), wait_until="domcontentloaded", timeout=30000)
+                try:
+                    self.page.wait_for_function(
+                        "() => document.body && /移库单|移库类型/.test(document.body.innerText || '')",
+                        timeout=15000
+                    )
+                except Exception:
+                    body_text = ""
+                    try:
+                        body_text = re.sub(r"\s+", " ", self.page.inner_text("body", timeout=2000))[:180]
+                    except Exception:
+                        pass
+                    return False, f"打开移库单页面后未识别到表单，当前页面内容：{body_text or self.page.url}"
+                time.sleep(2)
+
+                if transfer_type not in ("移入", "移出"):
+                    transfer_type = "移出"
+                emit(f"选择移库类型：{transfer_type}")
+                if not self._select_transfer_type(transfer_type):
+                    return False, "未找到移库类型输入框"
+                emit(f"选择目标分销商：{distributor}")
+                if not self._select_input_by_label("分销商", distributor):
+                    return False, "未找到分销商输入框"
+                if remark:
+                    emit("填写备注")
+                    self._set_input_by_label("备注", remark)
+
+                emit("保存移库单表头，等待单号...")
+                ok, result = self._save_transfer_header()
+                if not ok:
+                    return False, result
+                order_no = result
+                emit(f"移库单已保存：{order_no}", "success")
+
+                added_products = []
+                groups = summary.get("groups", [])
+                for idx, group in enumerate(groups, start=1):
+                    emit(f"添加移库明细 {idx}/{len(groups)}：{group['product_name']} × {group['quantity']}")
+                    ok, msg = self._add_transfer_detail(group)
+                    if not ok:
+                        return False, f"添加移库明细失败：{msg}"
+                    added_products.append({
+                        "product_name": group["product_name"],
+                        "product_code": group["product_code"],
+                        "quantity": group["quantity"],
+                    })
+
+                added_barcodes = []
+                details = summary.get("details", [])
+                for idx, detail in enumerate(details, start=1):
+                    emit(f"添加条码明细 {idx}/{len(details)}：{detail['barcode']}")
+                    ok, msg = self._add_barcode_detail(detail)
+                    if not ok:
+                        return False, f"添加条码明细失败：{msg}"
+                    added_barcodes.append(detail["barcode"])
+
+                emit("点击确认移库，等待 CRM 提示...")
+                ok, msg = self._confirm_transfer()
+                if not ok:
+                    return False, f"确认移库失败：{msg}"
+                emit(msg or "CRM 已提示移库成功", "success")
+
+                return True, {
+                    "order_no": order_no,
+                    "products": added_products,
+                    "barcodes": added_barcodes,
+                    "message": msg or self._visible_message(),
+                }
+            except Exception as e:
                 return False, str(e)
 
 class CRMWorker:
@@ -1363,8 +1915,11 @@ class CRMWorker:
     def check_login_status(self):
         return self._call("check_login_status")
 
-    def query_barcode(self, barcode):
-        return self._call("query_barcode", barcode)
+    def query_barcode(self, barcode, log=None):
+        return self._call("query_barcode", barcode, log)
+
+    def create_transfer(self, summary, distributor, transfer_type="移出", remark="", log=None):
+        return self._call("create_transfer", summary, distributor, transfer_type, remark, log)
 
 crm_session = CRMWorker()
 
@@ -1383,6 +1938,19 @@ batch_job = {
     'retry_limit': DEFAULT_BATCH_RETRY_LIMIT,
     'logs': [],
     'results': [],
+}
+
+transfer_job_lock = threading.Lock()
+transfer_job = {
+    'running': False,
+    'done': False,
+    'success': False,
+    'error': '',
+    'result': None,
+    'summary': None,
+    'logs': [],
+    'started_at': '',
+    'finished_at': '',
 }
 
 def _normalize_retry_limit(value):
@@ -1406,6 +1974,44 @@ def _batch_log(message, level='dim'):
             'level': level,
         })
         batch_job['logs'] = batch_job['logs'][-300:]
+
+def _transfer_log(message, level='dim'):
+    with transfer_job_lock:
+        transfer_job['logs'].append({
+            'time': datetime.now().strftime('%H:%M:%S'),
+            'message': message,
+            'level': level,
+        })
+        transfer_job['logs'] = transfer_job['logs'][-300:]
+
+def _run_transfer_job(summary, distributor, transfer_type, remark):
+    _transfer_log(f"开始提交移库：{transfer_type}，分销商 {distributor}", 'info')
+    try:
+        success, result = crm_session.create_transfer(summary, distributor, transfer_type, remark, _transfer_log)
+        with transfer_job_lock:
+            transfer_job['running'] = False
+            transfer_job['done'] = True
+            transfer_job['success'] = bool(success)
+            transfer_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            if success:
+                transfer_job['result'] = result
+                transfer_job['error'] = ''
+            else:
+                transfer_job['error'] = _brief_batch_error(result, 800)
+        if success:
+            order_no = result.get('order_no') if isinstance(result, dict) else ''
+            _apply_transfer_local_dealer(summary, transfer_type, distributor)
+            _transfer_log(f"移库完成：{order_no or '已完成'}", 'success')
+        else:
+            _transfer_log(f"移库失败：{result}", 'error')
+    except Exception as e:
+        with transfer_job_lock:
+            transfer_job['running'] = False
+            transfer_job['done'] = True
+            transfer_job['success'] = False
+            transfer_job['error'] = _brief_batch_error(e, 800)
+            transfer_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _transfer_log(f"移库出错：{e}", 'error')
 
 def _batch_stop_requested(idx):
     with batch_job_lock:
@@ -1445,7 +2051,7 @@ def _run_batch_job(barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIMIT):
             else:
                 _batch_log(f"{barcode} 第 {attempt - 1}/{retry_limit} 次重试中...", 'warn')
 
-            success, result = crm_session.query_barcode(barcode)
+            success, result = crm_session.query_barcode(barcode, _batch_log)
             if success:
                 break
 
@@ -1506,6 +2112,8 @@ app = Flask(__name__)
 BARCODE_DIR = "barcode"
 ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
 DATA_FILE = os.path.join(BARCODE_DIR, "barcode_data.json")
+PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")
+OWN_DEALER_NAME = "江西省天麓工贸有限公司"
 
 FIELD_IDS = {
     'newisclosed1': '结单状态',
@@ -1831,6 +2439,213 @@ def get_filter_options(barcodes):
         }
     return options
 
+def _first_record(fields, sr_key):
+    sub = fields.get(sr_key, {})
+    if isinstance(sub, list):
+        return sub[0] if sub else {}
+    if isinstance(sub, dict):
+        return sub
+    return {}
+
+def product_prefix_from_barcode(barcode):
+    barcode = _clean_export_value(barcode)
+    if len(barcode) > 10:
+        return barcode[:-10]
+    return barcode[:2]
+
+def load_product_library():
+    if os.path.exists(PRODUCT_LIBRARY_FILE):
+        try:
+            with open(PRODUCT_LIBRARY_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            pass
+    return {}
+
+def save_product_library(data):
+    os.makedirs(BARCODE_DIR, exist_ok=True)
+    with open(PRODUCT_LIBRARY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def upsert_product_library(prefix, product_code, product_name, source_barcode=""):
+    prefix = _clean_export_value(prefix)
+    product_code = _clean_export_value(product_code)
+    product_name = _clean_export_value(product_name)
+    if not prefix or not product_code or not product_name:
+        return False
+    data = load_product_library()
+    data[prefix] = {
+        'prefix': prefix,
+        'product_code': product_code,
+        'product_name': product_name,
+        'source_barcode': _clean_export_value(source_barcode),
+        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    save_product_library(data)
+    return True
+
+def update_product_library_from_info(info):
+    barcode = _clean_export_value(info.get('barcode'))
+    prefix = product_prefix_from_barcode(barcode)
+    return upsert_product_library(prefix, info.get('product_code'), info.get('product_name'), barcode)
+
+def match_product_library(barcode):
+    barcode = _clean_export_value(barcode)
+    data = load_product_library()
+    for prefix in sorted(data.keys(), key=len, reverse=True):
+        if barcode.startswith(prefix):
+            row = data[prefix] or {}
+            return {
+                'prefix': prefix,
+                'product_code': _clean_export_value(row.get('product_code')),
+                'product_name': _clean_export_value(row.get('product_name')),
+            }
+    return None
+
+def _barcode_product_info(item):
+    fields = item.get('fields') or {}
+    sr10 = _first_record(fields, 'sr10')
+    sr5 = _first_record(fields, 'sr5')
+    sr1 = _first_record(fields, 'sr1')
+
+    product_code = (
+        _clean_export_value(sr10.get('newproductname1')) or
+        _clean_export_value(sr5.get('newproductname1')) or
+        _clean_export_value(sr1.get('ProductNumber1'))
+    )
+    product_name = (
+        _clean_export_value(sr10.get('newproductidName1')) or
+        _clean_export_value(sr5.get('productname1')) or
+        _clean_export_value(sr1.get('newproductidName1')) or
+        _clean_export_value(sr1.get('newproductname1'))
+    )
+    current_dealer = (
+        _clean_export_value(item.get('currentDealerOverride')) or
+        _clean_export_value(sr10.get('dealername1')) or
+        _clean_export_value(sr5.get('myproductdealer1')) or
+        _clean_export_value(sr1.get('newaccountidName1'))
+    )
+    installed = _clean_export_value(sr5.get('instlled1'))
+    product_status = _clean_export_value(sr10.get('newstatus1'))
+
+    info = {
+        'barcode': _clean_export_value(item.get('barcode')),
+        'product_code': product_code,
+        'product_name': product_name,
+        'current_dealer': current_dealer,
+        'installed': installed,
+        'product_status': product_status,
+        'source': 'query_result',
+    }
+    update_product_library_from_info(info)
+    return info
+
+def _barcode_product_info_from_library(barcode):
+    matched = match_product_library(barcode)
+    if not matched:
+        return {
+            'barcode': _clean_export_value(barcode),
+            'product_code': '',
+            'product_name': '',
+            'current_dealer': '',
+            'installed': '',
+            'product_status': '',
+            'source': 'unmatched',
+            'matched_prefix': '',
+        }
+    return {
+        'barcode': _clean_export_value(barcode),
+        'product_code': matched['product_code'],
+        'product_name': matched['product_name'],
+        'current_dealer': '',
+        'installed': '',
+        'product_status': '',
+        'source': 'product_library',
+        'matched_prefix': matched['prefix'],
+    }
+
+def _apply_transfer_local_dealer(summary, transfer_type, distributor):
+    new_dealer = OWN_DEALER_NAME if transfer_type == "移入" else distributor
+    if not new_dealer:
+        return
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    data = load_data()
+    for detail in summary.get('details', []):
+        barcode = _clean_export_value(detail.get('barcode'))
+        if not barcode:
+            continue
+        info = data.get(barcode, {'remark': '', 'archived': False, 'archiveTime': '', 'archivedBy': ''})
+        info['currentDealerOverride'] = new_dealer
+        info['transferUpdatedAt'] = now
+        info['transferType'] = transfer_type
+        info['transferDistributor'] = distributor
+        data[barcode] = info
+    save_data(data)
+
+def build_transfer_summary(selected_barcodes, transfer_type="移出", distributor=""):
+    wanted = OrderedDict()
+    for barcode in selected_barcodes:
+        barcode = _clean_export_value(barcode)
+        if barcode and barcode not in wanted:
+            wanted[barcode] = True
+
+    all_items = {item['barcode']: item for item in scan_barcodes()}
+    details = []
+    missing = []
+    incomplete = []
+    blocked = []
+    grouped = OrderedDict()
+
+    for barcode in wanted:
+        item = all_items.get(barcode)
+        if not item:
+            info = _barcode_product_info_from_library(barcode)
+        else:
+            info = _barcode_product_info(item)
+
+        if info.get('source') == 'unmatched':
+            missing.append(barcode)
+            details.append(info)
+            continue
+
+        details.append(info)
+        if not info['product_code'] or not info['product_name']:
+            incomplete.append(barcode)
+            continue
+        if transfer_type == "移出" and info.get('current_dealer') and info['current_dealer'] != OWN_DEALER_NAME:
+            blocked.append({
+                'barcode': barcode,
+                'reason': f"当前所属为 {info['current_dealer']}，不是 {OWN_DEALER_NAME}，不能从我们移出",
+            })
+            continue
+        if transfer_type == "移入" and distributor and info.get('current_dealer') and info['current_dealer'] != distributor:
+            blocked.append({
+                'barcode': barcode,
+                'reason': f"当前所属为 {info['current_dealer']}，不是所选分销商 {distributor}，不能从该分销商移入",
+            })
+            continue
+
+        key = f"{info['product_code']}|{info['product_name']}"
+        if key not in grouped:
+            grouped[key] = {
+                'product_code': info['product_code'],
+                'product_name': info['product_name'],
+                'quantity': 0,
+                'barcodes': [],
+            }
+        grouped[key]['quantity'] += 1
+        grouped[key]['barcodes'].append(barcode)
+
+    return {
+        'total': len(wanted),
+        'details': details,
+        'groups': list(grouped.values()),
+        'missing': missing,
+        'incomplete': incomplete,
+        'blocked': blocked,
+    }
+
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
@@ -1905,6 +2720,8 @@ def scan_barcodes():
                 'time': time_str,
                 'mtime': mtime,
                 'fields': fields,
+                'currentDealerOverride': info.get('currentDealerOverride', ''),
+                'transferUpdatedAt': info.get('transferUpdatedAt', ''),
                 'remark': info.get('remark', ''),
             })
     barcodes.sort(key=lambda x: x['mtime'], reverse=True)
@@ -1928,6 +2745,8 @@ def scan_archived():
                 'time': time_str,
                 'mtime': mtime,
                 'fields': fields,
+                'currentDealerOverride': info.get('currentDealerOverride', ''),
+                'transferUpdatedAt': info.get('transferUpdatedAt', ''),
                 'remark': info.get('remark', ''),
                 'archiveTime': info.get('archiveTime', ''),
             })
@@ -1949,6 +2768,8 @@ def api_get_barcodes():
             'filename': b['filename'],
             'time': b['time'],
             'fields': b['fields'],
+            'currentDealerOverride': b.get('currentDealerOverride', ''),
+            'transferUpdatedAt': b.get('transferUpdatedAt', ''),
             'remark': b.get('remark', ''),
         } for b in barcodes]
     })
@@ -1964,6 +2785,8 @@ def api_get_archived():
             'filename': b['filename'],
             'time': b['time'],
             'fields': b['fields'],
+            'currentDealerOverride': b.get('currentDealerOverride', ''),
+            'transferUpdatedAt': b.get('transferUpdatedAt', ''),
             'remark': b.get('remark', ''),
             'archiveTime': b.get('archiveTime', ''),
         } for b in barcodes]
@@ -2074,6 +2897,117 @@ def api_export_xlsx():
         'filename': 'export_result.xlsx'
     })
 
+@app.route("/api/transfer/summary", methods=["POST"])
+def api_transfer_summary():
+    data = request.get_json() or {}
+    barcodes = data.get('barcodes') or []
+    barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    distributor = str(data.get('distributor') or '').strip()
+    transfer_type = str(data.get('transfer_type') or '移出').strip()
+    if not barcodes:
+        return jsonify({'success': False, 'error': '请先选择要移库的条码'})
+
+    summary = build_transfer_summary(barcodes, transfer_type, distributor)
+    if summary['missing']:
+        return jsonify({
+            'success': False,
+            'error': '部分条码没有查询结果，产品库也未匹配，请先维护产品库或查询一次该产品条码',
+            'summary': summary,
+        })
+    if summary['incomplete']:
+        return jsonify({
+            'success': False,
+            'error': '部分条码缺少产品名称或产品编码，无法自动汇总',
+            'summary': summary,
+        })
+    if summary['blocked']:
+        return jsonify({
+            'success': False,
+            'error': '部分条码当前所属不符合移库方向，不能自动移库',
+            'summary': summary,
+        })
+
+    return jsonify({'success': True, 'summary': summary})
+
+@app.route("/api/crm/transfer", methods=["POST"])
+def api_crm_transfer():
+    data = request.get_json() or {}
+    barcodes = data.get('barcodes') or []
+    barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    distributor = str(data.get('distributor') or '').strip()
+    transfer_type = str(data.get('transfer_type') or '移出').strip()
+    remark = str(data.get('remark') or '').strip()
+
+    if not barcodes:
+        return jsonify({'success': False, 'error': '请先选择要移库的条码'})
+    if not distributor:
+        return jsonify({'success': False, 'error': '目标分销商不能为空'})
+
+    summary = build_transfer_summary(barcodes, transfer_type, distributor)
+    if summary['missing']:
+        return jsonify({'success': False, 'error': '部分条码没有查询结果，产品库也未匹配，请先维护产品库或查询一次该产品条码', 'summary': summary})
+    if summary['incomplete']:
+        return jsonify({'success': False, 'error': '部分条码缺少产品名称或产品编码，无法自动移库', 'summary': summary})
+    if summary['blocked']:
+        return jsonify({'success': False, 'error': '部分条码当前所属不符合移库方向，不能自动移库', 'summary': summary})
+
+    with transfer_job_lock:
+        if transfer_job['running']:
+            return jsonify({'success': False, 'error': '已有移库任务正在执行，请等待完成后再提交'})
+    with batch_job_lock:
+        if batch_job['running']:
+            return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再移库'})
+    with transfer_job_lock:
+        transfer_job.update({
+            'running': True,
+            'done': False,
+            'success': False,
+            'error': '',
+            'result': None,
+            'summary': summary,
+            'logs': [],
+            'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'finished_at': '',
+        })
+
+    threading.Thread(
+        target=_run_transfer_job,
+        args=(summary, distributor, transfer_type, remark),
+        daemon=True
+    ).start()
+
+    return jsonify({
+        'success': True,
+        'started': True,
+        'message': '移库任务已开始，请查看日志',
+        'summary': summary,
+        'transfer': {
+            'dealer': '江西省天麓工贸有限公司',
+            'distributor': distributor,
+            'transfer_type': transfer_type,
+            'remark': remark,
+        },
+    })
+
+@app.route("/api/crm/transfer/status", methods=["GET"])
+def api_crm_transfer_status():
+    with transfer_job_lock:
+        result = transfer_job.get('result') or {}
+        order_no = result.get('order_no') if isinstance(result, dict) else ''
+        return jsonify({
+            'success': True,
+            'running': transfer_job['running'],
+            'done': transfer_job['done'],
+            'transfer_success': transfer_job['success'],
+            'error': transfer_job['error'],
+            'message': f"移库单已创建：{order_no or '已保存'}" if transfer_job['success'] else transfer_job['error'],
+            'result': transfer_job['result'],
+            'summary': transfer_job['summary'],
+            'logs': list(transfer_job['logs']),
+            'started_at': transfer_job['started_at'],
+            'finished_at': transfer_job['finished_at'],
+        })
+
 @app.route("/barcode/<filename>")
 def serve_barcode(filename):
     return send_from_directory(BARCODE_DIR, filename)
@@ -2123,6 +3057,34 @@ def api_unarchive_barcode(barcode):
 @app.route("/crm")
 def crm_page():
     return render_template("crm.html")
+
+@app.route("/transfer")
+def transfer_page():
+    return render_template("transfer.html")
+
+@app.route("/api/product-library", methods=["GET"])
+def api_product_library():
+    rows = sorted(load_product_library().values(), key=lambda row: row.get('prefix', ''))
+    return jsonify({'success': True, 'products': rows})
+
+@app.route("/api/product-library", methods=["POST"])
+def api_product_library_save():
+    data = request.get_json() or {}
+    prefix = str(data.get('prefix') or '').strip()
+    product_code = str(data.get('product_code') or '').strip()
+    product_name = str(data.get('product_name') or '').strip()
+    if not prefix or not product_code or not product_name:
+        return jsonify({'success': False, 'error': '前缀、产品编码、产品名称都不能为空'})
+    upsert_product_library(prefix, product_code, product_name, data.get('source_barcode') or '')
+    return jsonify({'success': True})
+
+@app.route("/api/product-library/<prefix>", methods=["DELETE"])
+def api_product_library_delete(prefix):
+    data = load_product_library()
+    if prefix in data:
+        del data[prefix]
+        save_product_library(data)
+    return jsonify({'success': True})
 
 @app.route("/api/crm/status")
 def api_crm_status():
@@ -2184,6 +3146,9 @@ def api_crm_query():
     barcode = data.get('barcode', '').strip()
     if not barcode:
         return jsonify({'success': False, 'error': '条码不能为空'})
+    with transfer_job_lock:
+        if transfer_job['running']:
+            return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
     success, result = crm_session.query_barcode(barcode)
     if success:
         return jsonify({
@@ -2202,6 +3167,9 @@ def api_crm_batch_start():
     retry_limit = _normalize_retry_limit(data.get('retry_limit', DEFAULT_BATCH_RETRY_LIMIT))
     if not barcodes:
         return jsonify({'success': False, 'error': '条码不能为空'})
+    with transfer_job_lock:
+        if transfer_job['running']:
+            return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
 
     with batch_job_lock:
         if batch_job['running']:

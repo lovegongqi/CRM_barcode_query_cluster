@@ -198,6 +198,8 @@
         .btn-copy:hover { background: #218838; }
         .btn-export { background: #fd7e14; color: #fff; }
         .btn-export:hover { background: #e06b0c; }
+        .btn-transfer { background: #0f766e; color: #fff; }
+        .btn-transfer:hover { background: #115e59; }
         .btn-clear { background: #6c757d; color: #fff; }
         .btn-clear:hover { background: #5a6268; }
         .btn.copied { background: #28a745 !important; }
@@ -361,6 +363,20 @@
         }
         .modal-close:hover { color: #333; }
         .modal-body { padding: 16px; }
+        .transfer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+        .transfer-field { display: flex; flex-direction: column; gap: 6px; }
+        .transfer-field label { color: #667085; font-size: 12px; font-weight: 700; }
+        .transfer-field input, .transfer-field select {
+            min-height: 36px; padding: 8px 10px; border: 1px solid #d9e1ec; border-radius: 8px; font-size: 13px;
+        }
+        .transfer-summary { border: 1px solid #d9e1ec; border-radius: 8px; overflow: hidden; margin-top: 10px; }
+        .transfer-summary table { border-collapse: collapse; width: 100%; font-size: 13px; }
+        .transfer-summary th, .transfer-summary td { border-bottom: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; }
+        .transfer-summary th { background: #f7f9fc; color: #475467; font-weight: 800; }
+        .transfer-summary tr:last-child td { border-bottom: none; }
+        .transfer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+        .transfer-note { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; color: #475569; font-size: 12px; line-height: 1.6; padding: 10px 12px; }
+        .transfer-log { max-height: 180px; margin-top: 12px; display: none; }
 
         .rpt-section {
             border: 1px solid #000; margin-bottom: 12px; position: relative;
@@ -642,6 +658,8 @@
         .btn-q-primary:hover, .btn-q-success:hover, .btn-copy:hover, .action-btn:hover, .search-row button:hover {
             background: var(--brand-dark);
         }
+        .btn-transfer { background: #0f766e; }
+        .btn-transfer:hover { background: #115e59; }
         .btn-export { background: var(--warn); }
         .btn-export:hover { background: #b45309; }
         .btn-clear, .btn-q-danger, .delete-btn { background: var(--danger) !important; }
@@ -1103,6 +1121,7 @@
             </div>
             <div class="page-nav">
                 <a class="active" href="/">结果管理</a>
+                <a href="/transfer">移库</a>
                 <a href="/crm">在线查询</a>
             </div>
         </div>
@@ -1163,6 +1182,8 @@
                         <div class="button-col">
                             <button class="btn-q btn-q-success" id="batchQueryBtn" onclick="doBatchQuery()" disabled>开始批量查询</button>
                             <button class="btn-q btn-q-danger btn-danger-soft" id="stopBtn" onclick="stopBatch()" style="display:none">停止任务</button>
+                            <label style="font-size:11px;color:#667085;margin-top:8px;">失败重试上限</label>
+                            <input type="number" id="retryLimit" min="0" max="5" value="5" style="width:120px;padding:6px 10px;border:1px solid #d9e1ec;border-radius:6px;">
                         </div>
                     </div>
                 </div>
@@ -1190,9 +1211,11 @@
                     <button class="btn btn-danger-soft" onclick="batchDelete()">删除选中</button>
                     <button class="btn btn-copy" onclick="copyAllBarcodes()">复制全部</button>
                     <button class="btn btn-export" onclick="exportXlsx()">导出 XLSX</button>
+                    <button class="btn btn-transfer" onclick="openTransferModal()">选中条码移库</button>
                     <button class="btn btn-secondary-soft" onclick="clearAllFilters()">清空筛选</button>
                 </div>
             </div>
+            <div class="query-log transfer-log transfer-log-box" id="transferLogMain"></div>
 
             <div class="filter-shell">
                 <div class="section-label">
@@ -1253,6 +1276,43 @@
         <div class="remark-popup-btns">
             <button class="btn btn-default" onclick="closeRemark()">取消</button>
             <button class="btn btn-primary" onclick="saveRemark()">保存</button>
+        </div>
+    </div>
+
+    <!-- 移库弹窗 -->
+    <div class="modal-overlay" id="transferModal">
+        <div class="modal-content" style="max-width:900px;">
+            <div class="modal-header">
+                <span class="modal-title-text">选中条码移库</span>
+                <button class="modal-close" onclick="closeTransferModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="transfer-grid">
+                    <div class="transfer-field">
+                        <label>移库类型</label>
+                        <select id="transferType">
+                            <option value="移出">移出</option>
+                            <option value="移入">移入</option>
+                        </select>
+                    </div>
+                    <div class="transfer-field">
+                        <label>目标分销商</label>
+                        <input type="text" id="transferDistributor" placeholder="输入目标分销商名称">
+                    </div>
+                    <div class="transfer-field">
+                        <label>备注</label>
+                        <input type="text" id="transferRemark" placeholder="可选">
+                    </div>
+                </div>
+                <div class="transfer-note" id="transferNote">选择条码后会先汇总产品名称、产品编码和数量，确认无误后再提交 CRM 移库。</div>
+                <div class="transfer-summary" id="transferSummaryBox" style="display:none"></div>
+                <div class="query-log transfer-log transfer-log-box" id="transferLogModal"></div>
+                <div class="transfer-actions">
+                    <button class="btn btn-secondary-soft" onclick="closeTransferModal()">取消</button>
+                    <button class="btn btn-transfer" id="transferPreviewBtn" onclick="previewTransfer()">汇总预览</button>
+                    <button class="btn btn-copy" id="transferSubmitBtn" onclick="submitTransfer()" disabled>提交移库</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1522,6 +1582,12 @@
             });
         }
 
+        function getCurrentFilteredBarcodes() {
+            if (currentTab !== 'archive') return getFilteredBarcodes();
+            const q = document.getElementById('searchInput').value.trim().toLowerCase();
+            return q ? archivedAllBarcodes.filter(b => b.barcode.toLowerCase().includes(q)) : archivedAllBarcodes;
+        }
+
         function clearDateFilter() {
             document.getElementById('dateStart').value = '';
             document.getElementById('dateEnd').value = '';
@@ -1529,17 +1595,9 @@
         }
 
         function applyFilters() {
-            let filtered;
-            if (currentTab === 'archive') {
-                const q = document.getElementById('searchInput').value.trim().toLowerCase();
-                filtered = q ? archivedAllBarcodes.filter(b => b.barcode.toLowerCase().includes(q)) : archivedAllBarcodes;
-                document.getElementById('filteredCount').textContent = filtered.length;
-                renderList(filtered);
-            } else {
-                filtered = getFilteredBarcodes();
-                document.getElementById('filteredCount').textContent = filtered.length;
-                renderList(filtered);
-            }
+            const filtered = getCurrentFilteredBarcodes();
+            document.getElementById('filteredCount').textContent = filtered.length;
+            renderList(filtered);
         }
 
         function clearSearch() {
@@ -1578,16 +1636,21 @@
                 const timeDisplay = isArchived ? (item.archiveTime || item.time) : item.time;
                 const remarkSafe = escapeHtml(item.remark || '');
                 const remarkTitle = item.remark ? escapeHtml(item.remark) : '添加备注';
+                const currentDealer = item.currentDealerOverride || sr10['dealername1'] || '';
+                const transferUpdated = item.currentDealerOverride && item.transferUpdatedAt
+                    ? `<span class="meta-tag">已同步 ${item.transferUpdatedAt}</span>`
+                    : '';
 
                 html += `
                     <div class="barcode-item" onclick="showDetail('${item.barcode}')">
                         <div class="bc-left">
-                            <input type="checkbox" class="bc-checkbox" id="cb-${item.barcode}" onclick="event.stopPropagation();toggleSelect('${item.barcode}', this.checked)" ${selectedBarcodes.has(item.barcode) ? 'checked' : ''}>
+                            <input type="checkbox" class="bc-checkbox" id="cb-${item.barcode}" data-barcode="${item.barcode}" onclick="event.stopPropagation();toggleSelect('${item.barcode}', this.checked)" ${selectedBarcodes.has(item.barcode) ? 'checked' : ''}>
                             <span class="bc-number">${item.barcode}</span>
                             ${productName ? `<span style="font-size:12px;color:#666;margin-left:4px;">${productName}</span>` : ''}
                             ${isArchived ? '<span class="archived-tag">归档</span>' : ''}
                             <div class="bc-meta">
-                                ${sr10['dealername1'] ? `<span class="meta-tag">🏢 ${sr10['dealername1']}</span>` : ''}
+                                ${currentDealer ? `<span class="meta-tag">🏢 ${currentDealer}</span>` : ''}
+                                ${transferUpdated}
                                 ${sr2['name1'] ? `<span class="meta-tag">👤 ${sr2['name1']}</span>` : ''}
                             </div>
                         </div>
@@ -1623,7 +1686,7 @@
         }
 
         function selectAllVisible() {
-            getFilteredBarcodes().forEach(b => selectedBarcodes.add(b.barcode));
+            getCurrentFilteredBarcodes().forEach(b => selectedBarcodes.add(b.barcode));
             document.querySelectorAll('.bc-checkbox').forEach(cb => cb.checked = true);
             document.getElementById('selectedCount').textContent = selectedBarcodes.size;
         }
@@ -1634,22 +1697,36 @@
             document.getElementById('selectedCount').textContent = 0;
         }
 
+        function getCheckedBarcodeArray() {
+            return Array.from(document.querySelectorAll('.bc-checkbox:checked'))
+                .map(cb => cb.dataset.barcode || (cb.id || '').replace(/^cb-/, ''))
+                .filter(Boolean);
+        }
+
+        function getSelectedBarcodeArray() {
+            getCheckedBarcodeArray().forEach(barcode => selectedBarcodes.add(barcode));
+            const barcodes = Array.from(selectedBarcodes);
+            document.getElementById('selectedCount').textContent = barcodes.length;
+            return barcodes;
+        }
+
         function copySelected() {
-            if (selectedBarcodes.size === 0) { showToast('请先选择条码'); return; }
-            const text = Array.from(selectedBarcodes).join('\n');
+            const barcodes = getSelectedBarcodeArray();
+            if (barcodes.length === 0) { showToast('请先选择条码'); return; }
+            const text = barcodes.join('\n');
             navigator.clipboard.writeText(text).then(() => {
-                showToast(`已复制 ${selectedBarcodes.size} 个条码`);
+                showToast(`已复制 ${barcodes.length} 个条码`);
             }).catch(() => {
                 const ta = document.createElement('textarea');
                 ta.value = text; document.body.appendChild(ta);
                 ta.select(); document.execCommand('copy');
                 document.body.removeChild(ta);
-                showToast(`已复制 ${selectedBarcodes.size} 个条码`);
+                showToast(`已复制 ${barcodes.length} 个条码`);
             });
         }
 
         function copyAllBarcodes() {
-            const filtered = getFilteredBarcodes();
+            const filtered = getCurrentFilteredBarcodes();
             if (filtered.length === 0) { showToast('当前无条码'); return; }
             const text = filtered.map(b => b.barcode).join('\n');
             navigator.clipboard.writeText(text).then(() => {
@@ -1664,7 +1741,7 @@
         }
 
         async function exportXlsx() {
-            const filtered = getFilteredBarcodes();
+            const filtered = getCurrentFilteredBarcodes();
             if (filtered.length === 0) { showToast('没有可导出的数据'); return; }
 
             const btn = document.querySelector('.btn-export');
@@ -1691,6 +1768,211 @@
 
             btn.classList.remove('exporting');
             btn.textContent = '导出 XLSX';
+        }
+
+        let lastTransferSummary = null;
+        let transferPollTimer = null;
+
+        function openTransferModal() {
+            const barcodes = getSelectedBarcodeArray();
+            if (barcodes.length === 0) { showToast('请先选择要移库的条码'); return; }
+            lastTransferSummary = null;
+            document.getElementById('transferSummaryBox').style.display = 'none';
+            document.getElementById('transferSummaryBox').innerHTML = '';
+            document.getElementById('transferSubmitBtn').disabled = true;
+            document.getElementById('transferNote').textContent = `已选择 ${barcodes.length} 个条码，先汇总预览后再提交 CRM 移库。`;
+            document.getElementById('transferModal').classList.add('overlay-show');
+            pollTransferStatus();
+            previewTransfer();
+        }
+
+        function closeTransferModal() {
+            document.getElementById('transferModal').classList.remove('overlay-show');
+        }
+
+        function renderTransferSummary(summary) {
+            const box = document.getElementById('transferSummaryBox');
+            const totalQty = (summary.groups || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+            const rows = (summary.groups || []).map(row => `
+                <tr>
+                    <td>${escapeHtml(row.product_name || '')}</td>
+                    <td>${escapeHtml(row.product_code || '')}</td>
+                    <td>${row.quantity || 0}</td>
+                </tr>
+            `).join('');
+            const blockedRows = (summary.blocked || []).map(row => `
+                <tr>
+                    <td>${escapeHtml(row.barcode || '')}</td>
+                    <td colspan="2">${escapeHtml(row.reason || '')}</td>
+                </tr>
+            `).join('');
+            const blockedTable = blockedRows ? `
+                <div class="transfer-note" style="margin-top:10px;border-color:#fecaca;background:#fff1f2;color:#991b1b;">
+                    以下条码不能自动移库，需要先换可移库条码或调整移库方向。
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>条码</th><th colspan="2">原因</th></tr>
+                    </thead>
+                    <tbody>${blockedRows}</tbody>
+                </table>
+            ` : '';
+            box.innerHTML = `
+                <table>
+                    <thead>
+                        <tr><th>产品名称</th><th>产品编码</th><th>移库数量</th></tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+                <div class="transfer-note" style="border:none;border-top:1px solid #e2e8f0;border-radius:0;">
+                    已选条码 ${summary.total || 0} 个，汇总产品 ${(summary.groups || []).length} 条，数量合计 ${totalQty}。
+                </div>
+                ${blockedTable}
+            `;
+            box.style.display = '';
+        }
+
+        function transferLog(message, level='dim') {
+            document.querySelectorAll('.transfer-log-box').forEach(box => {
+                box.style.display = '';
+                const line = document.createElement('div');
+                line.className = level;
+                line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+                box.appendChild(line);
+                box.scrollTop = box.scrollHeight;
+            });
+        }
+
+        function renderTransferLogs(logs) {
+            if (!logs || logs.length === 0) {
+                document.querySelectorAll('.transfer-log-box').forEach(box => {
+                    box.innerHTML = '';
+                    box.style.display = 'none';
+                });
+                return;
+            }
+            const html = logs.map(row => {
+                const level = escapeHtml(row.level || 'dim');
+                return `<div class="${level}">[${escapeHtml(row.time || '')}] ${escapeHtml(row.message || '')}</div>`;
+            }).join('');
+            document.querySelectorAll('.transfer-log-box').forEach(box => {
+                box.style.display = '';
+                box.innerHTML = html;
+                box.scrollTop = box.scrollHeight;
+            });
+        }
+
+        async function pollTransferStatus() {
+            try {
+                const res = await fetch('/api/crm/transfer/status');
+                const data = await res.json();
+                renderTransferLogs(data.logs || []);
+                if (data.summary) renderTransferSummary(data.summary);
+                if (data.done) {
+                    clearInterval(transferPollTimer);
+                    transferPollTimer = null;
+                    const btn = document.getElementById('transferSubmitBtn');
+                    btn.textContent = '提交移库';
+                    btn.disabled = false;
+                    if (data.transfer_success) {
+                        showToast(data.message || '移库成功');
+                        transferLog(data.message || '移库成功', 'success');
+                        loadAllData(false);
+                    } else {
+                        showToast(data.error || '移库失败');
+                    }
+                    return;
+                }
+                if (!data.running && transferPollTimer) {
+                    clearInterval(transferPollTimer);
+                    transferPollTimer = null;
+                    document.getElementById('transferSubmitBtn').textContent = '提交移库';
+                    document.getElementById('transferSubmitBtn').disabled = false;
+                }
+            } catch(e) {
+                transferLog('读取移库状态失败: ' + e.message, 'error');
+            }
+        }
+
+        async function previewTransfer() {
+            const barcodes = getSelectedBarcodeArray();
+            if (barcodes.length === 0) { showToast('请先选择条码'); return; }
+            const btn = document.getElementById('transferPreviewBtn');
+            btn.textContent = '汇总中...';
+            btn.disabled = true;
+            document.getElementById('transferSubmitBtn').disabled = true;
+            try {
+                const res = await fetch('/api/transfer/summary', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        barcodes,
+                        distributor: document.getElementById('transferDistributor').value.trim(),
+                        transfer_type: document.getElementById('transferType').value
+                    })
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    lastTransferSummary = null;
+                    if (data.summary) renderTransferSummary(data.summary);
+                    showToast(data.error || '汇总失败');
+                    return;
+                }
+                lastTransferSummary = data.summary;
+                renderTransferSummary(data.summary);
+                document.getElementById('transferSubmitBtn').disabled = false;
+                showToast('移库汇总已生成');
+            } catch(e) {
+                showToast('汇总出错: ' + e.message);
+            } finally {
+                btn.textContent = '汇总预览';
+                btn.disabled = false;
+            }
+        }
+
+        async function submitTransfer() {
+            if (!lastTransferSummary) { showToast('请先汇总预览'); return; }
+            const barcodes = getSelectedBarcodeArray();
+            if (barcodes.length === 0) { showToast('请先选择要移库的条码'); return; }
+            const distributor = document.getElementById('transferDistributor').value.trim();
+            if (!distributor) { showToast('请填写目标分销商'); return; }
+
+            const btn = document.getElementById('transferSubmitBtn');
+            btn.textContent = '提交中...';
+            btn.disabled = true;
+            renderTransferLogs([]);
+            transferLog('已提交移库任务，等待后台接管 CRM...', 'info');
+            try {
+                const res = await fetch('/api/crm/transfer', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        barcodes,
+                        distributor,
+                        transfer_type: document.getElementById('transferType').value,
+                        remark: document.getElementById('transferRemark').value.trim()
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message || '移库任务已开始');
+                    transferLog(data.message || '移库任务已开始', 'success');
+                    if (transferPollTimer) clearInterval(transferPollTimer);
+                    transferPollTimer = setInterval(pollTransferStatus, 1200);
+                    pollTransferStatus();
+                } else {
+                    if (data.summary) renderTransferSummary(data.summary);
+                    transferLog(data.error || '移库提交失败', 'error');
+                    showToast(data.error || '移库提交失败');
+                    btn.textContent = '提交移库';
+                    btn.disabled = false;
+                }
+            } catch(e) {
+                transferLog('移库提交出错: ' + e.message, 'error');
+                showToast('移库提交出错: ' + e.message);
+                btn.textContent = '提交移库';
+                btn.disabled = false;
+            }
         }
 
         function showDetail(barcode) {
@@ -1881,9 +2163,9 @@ ${section(9, '移机单', 'moveid1', [
         }
 
         function batchDelete() {
-            if (selectedBarcodes.size === 0) { showToast('请先选择要删除的条码'); return; }
-            if (!confirm('确定删除选中的 ' + selectedBarcodes.size + ' 个条码？此操作不可恢复！')) return;
-            const barcodes = Array.from(selectedBarcodes);
+            const barcodes = getSelectedBarcodeArray();
+            if (barcodes.length === 0) { showToast('请先选择要删除的条码'); return; }
+            if (!confirm('确定删除选中的 ' + barcodes.length + ' 个条码？此操作不可恢复！')) return;
             let count = 0;
             barcodes.forEach(bc => {
                 fetch('/api/barcodes/' + bc, {method: 'DELETE'})
@@ -1975,7 +2257,8 @@ ${section(9, '移机单', 'moveid1', [
         document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetailModal(); });
 
         loadAllData();
-        setInterval(loadAllData, 30000);
+        setInterval(() => loadAllData(false), 30000);
+        pollTransferStatus();
 
         // ===== 查询功能（CRM 集成） =====
         let isBatchRunning = false;
@@ -2188,6 +2471,35 @@ ${section(9, '移机单', 'moveid1', [
             bar.style.width = pct + '%';
         }
 
+        function renderQueryLogs(logs) {
+            const area = document.getElementById('queryLog');
+            if (!logs || logs.length === 0) return;
+            area.innerHTML = logs.map(row =>
+                `<div class="${escapeHtml(row.level || 'dim')}">[${escapeHtml(row.time || '')}] ${escapeHtml(row.message || '')}</div>`
+            ).join('');
+            area.scrollTop = area.scrollHeight;
+        }
+
+        async function pollBatchStatus() {
+            const r = await fetch('/api/crm/batch/status');
+            const d = await r.json();
+            renderQueryLogs(d.logs || []);
+            const total = d.total || 0;
+            const current = d.current || 0;
+            setProgress(total ? Math.round((current / total) * 100) : 0);
+            if (!d.running) {
+                document.getElementById('queryProgress').classList.remove('show');
+                document.getElementById('batchQueryBtn').disabled = false;
+                document.getElementById('batchQueryBtn').innerHTML = '开始批量查询';
+                document.getElementById('stopBtn').style.display = 'none';
+                isBatchRunning = false;
+                loadAllData(false);
+                showToast(`批量查询完成，成功 ${d.success_count || 0} 个，失败 ${d.failed_count || 0} 个`);
+                return true;
+            }
+            return false;
+        }
+
         async function doBatchQuery() {
             const text = document.getElementById('batchInput').value.trim();
             if (!text) { showToast('请输入条码'); return; }
@@ -2241,63 +2553,48 @@ ${section(9, '移机单', 'moveid1', [
             document.getElementById('batchQueryBtn').innerHTML = '<span class="spinner"></span> 查询中...';
             document.getElementById('stopBtn').style.display = '';
             document.getElementById('queryProgress').classList.add('show');
-            qlog(`开始批量查询 ${uniqueBarcodes.length} 个条码...`, 'info');
+            document.getElementById('queryLog').innerHTML = '';
+            qlog(`提交后台批量查询任务：${uniqueBarcodes.length} 个条码`, 'info');
 
-            let successCount = 0;
-            let failCount = 0;
-
-            for (let i = 0; i < uniqueBarcodes.length; i++) {
-                if (stopRequested) {
-                    qlog('用户停止，停在第 ' + (i+1) + ' 个条码', 'warn');
-                    break;
+            try {
+                const startRes = await fetch('/api/crm/batch/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        barcodes: uniqueBarcodes,
+                        retry_limit: document.getElementById('retryLimit').value
+                    })
+                });
+                const startData = await startRes.json();
+                if (!startData.success) {
+                    qlog('启动批量查询失败: ' + (startData.error || '未知错误'), 'error');
+                    showToast(startData.error || '启动批量查询失败');
+                    isBatchRunning = false;
+                    document.getElementById('batchQueryBtn').disabled = false;
+                    document.getElementById('batchQueryBtn').innerHTML = '开始批量查询';
+                    document.getElementById('stopBtn').style.display = 'none';
+                    document.getElementById('queryProgress').classList.remove('show');
+                    return;
                 }
-                const pct = Math.round((i / uniqueBarcodes.length) * 100);
-                setProgress(pct);
 
-                // 每个条码前检查登录状态
-                const stRes = await fetch('/api/crm/status');
-                const stData = await stRes.json();
-                if (!stData.logged_in) {
-                    const savedUsername = localStorage.getItem('crm_username');
-                    const savedPassword = localStorage.getItem('crm_password');
-                    if (savedUsername && savedPassword) {
-                        qlog('会话过期，自动登录中...', 'warn');
-                        const loginRes = await fetch('/api/crm/login', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({username: savedUsername, password: savedPassword})
-                        });
-                        const loginData = await loginRes.json();
-                        if (!loginData.success) {
-                            qlog('自动登录失败，停止查询', 'error');
-                            break;
-                        }
-                    } else {
-                        qlog('会话过期且无保存账号，停止查询', 'error');
-                        break;
+                const timer = setInterval(async () => {
+                    try {
+                        const done = await pollBatchStatus();
+                        if (done) clearInterval(timer);
+                    } catch(e) {
+                        qlog('读取查询状态失败: ' + e.message, 'error');
                     }
-                }
-
-                const ok = await doSingleQuery(uniqueBarcodes[i]);
-                if (ok) successCount++; else failCount++;
+                }, 1200);
+                pollBatchStatus();
+            } catch(e) {
+                qlog('启动批量查询出错: ' + e.message, 'error');
             }
-
-            setProgress(100);
-            document.getElementById('queryProgress').classList.remove('show');
-            document.getElementById('batchQueryBtn').disabled = false;
-            document.getElementById('batchQueryBtn').innerHTML = '开始批量查询';
-            document.getElementById('stopBtn').style.display = 'none';
-            isBatchRunning = false;
-            qlog(`批量查询完成，成功 ${successCount} 个，失败 ${failCount} 个`, 'success');
-            showToast('批量查询完成');
-
-            // 刷新列表
-            loadAllData();
         }
 
-        function stopBatch() {
+        async function stopBatch() {
             stopRequested = true;
             qlog('正在停止...', 'warn');
+            await fetch('/api/crm/batch/stop', {method:'POST'});
         }
 
         checkStatus();

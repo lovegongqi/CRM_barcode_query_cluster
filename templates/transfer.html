@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRM 移库</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f7fb; color: #202938; min-height: 100vh; }
+        .container { max-width: 1120px; margin: 0 auto; padding: 24px; }
+        .header { display:flex; justify-content:space-between; gap:16px; align-items:flex-end; margin-bottom:20px; }
+        h1 { font-size:26px; margin-bottom:6px; }
+        .muted { color:#667085; font-size:13px; }
+        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+        .page-nav a { font-size:13px; font-weight:800; color:#667085; text-decoration:none; padding:8px 14px; border:1px solid #d9e1ec; border-radius:999px; background:#fff; }
+        .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
+        .grid { display:grid; grid-template-columns: 1.2fr .8fr; gap:16px; align-items:start; }
+        .card { background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,.06); margin-bottom:16px; }
+        .card h2 { font-size:16px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #e5e7eb; }
+        label { display:block; font-size:12px; color:#667085; font-weight:700; margin-bottom:6px; }
+        textarea, input, select { width:100%; border:1px solid #cfd8e3; border-radius:6px; padding:9px 10px; font-size:14px; outline:none; background:#fff; }
+        textarea { min-height:150px; font-family:"Courier New", monospace; resize:vertical; }
+        textarea:focus, input:focus, select:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
+        .fields { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:12px; margin:12px 0; }
+        .actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; margin-top:12px; }
+        .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
+        .btn-primary { background:#2563eb; color:#fff; }
+        .btn-transfer { background:#0f766e; color:#fff; }
+        .btn-secondary { background:#e5e7eb; color:#334155; }
+        .btn-danger { background:#dc2626; color:#fff; }
+        .btn:disabled { background:#cbd5e1; cursor:not-allowed; }
+        table { width:100%; border-collapse:collapse; font-size:13px; }
+        th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
+        th { background:#f8fafc; color:#475569; }
+        .summary { border:1px solid #d9e1ec; border-radius:8px; overflow:hidden; margin-top:12px; display:none; }
+        .note { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#475569; font-size:12px; line-height:1.6; padding:10px 12px; margin-top:10px; }
+        .blocked { background:#fff1f2; border-color:#fecaca; color:#991b1b; }
+        .log { background:#0f172a; color:#d4d4d4; border-radius:8px; padding:12px; font-family:"Courier New", monospace; font-size:12px; max-height:260px; overflow:auto; line-height:1.7; }
+        .log .info { color:#4fc3f7; } .log .success { color:#81c784; } .log .error { color:#e57373; } .log .warn { color:#ffb74d; } .log .dim { color:#94a3b8; }
+        .library-form { display:grid; grid-template-columns: .7fr 1fr 1.2fr auto; gap:8px; align-items:end; margin-bottom:12px; }
+        .pill { display:inline-block; padding:2px 7px; border-radius:999px; background:#e0f2fe; color:#0369a1; font-size:12px; font-weight:700; }
+        @media (max-width: 860px) { .grid, .fields, .library-form { grid-template-columns:1fr; } .header { flex-direction:column; align-items:flex-start; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div>
+            <h1>CRM 移库</h1>
+            <p class="muted">直接粘贴条码即可移库。未查询条码会按产品库前缀匹配产品名称和编码。</p>
+        </div>
+        <div class="page-nav">
+            <a href="/">结果管理</a>
+            <a class="active" href="/transfer">移库</a>
+            <a href="/crm">在线查询</a>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div>
+            <div class="card">
+                <h2>提交移库</h2>
+                <label>条码列表</label>
+                <textarea id="barcodeInput" placeholder="每行一个条码，也可以用空格、逗号分隔"></textarea>
+                <div class="fields">
+                    <div>
+                        <label>移库类型</label>
+                        <select id="transferType">
+                            <option value="移入">移入</option>
+                            <option value="移出">移出</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>目标分销商</label>
+                        <input id="transferDistributor" placeholder="输入分销商名称">
+                    </div>
+                    <div>
+                        <label>备注</label>
+                        <input id="transferRemark" placeholder="可选">
+                    </div>
+                </div>
+                <div class="actions">
+                    <button class="btn btn-secondary" onclick="clearForm()">清空</button>
+                    <button class="btn btn-primary" onclick="previewTransfer()">汇总预览</button>
+                    <button class="btn btn-transfer" id="submitBtn" onclick="submitTransfer()" disabled>提交移库</button>
+                </div>
+                <div class="summary" id="summaryBox"></div>
+            </div>
+
+            <div class="card">
+                <h2>移库日志</h2>
+                <div class="log" id="transferLog"><div class="dim">等待操作...</div></div>
+            </div>
+        </div>
+
+        <div>
+            <div class="card">
+                <h2>产品库</h2>
+                <div class="note">前缀默认是条码去掉最后 10 位。已查询条码会自动更新产品库，也可以手动添加或覆盖。</div>
+                <div class="library-form">
+                    <div><label>条码前缀</label><input id="libPrefix" placeholder="如 16"></div>
+                    <div><label>产品编码</label><input id="libCode" placeholder="916000024"></div>
+                    <div><label>产品名称</label><input id="libName" placeholder="软水机6系列 609ECM"></div>
+                    <button class="btn btn-primary" onclick="saveLibrary()">保存</button>
+                </div>
+                <div id="libraryBox"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let lastSummary = null;
+let pollTimer = null;
+
+function escapeHtml(text) {
+    return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+function parseBarcodes() {
+    return Array.from(new Set(document.getElementById('barcodeInput').value
+        .split(/[\s,，;；]+/)
+        .map(x => x.trim())
+        .filter(Boolean)));
+}
+
+function clearForm() {
+    document.getElementById('barcodeInput').value = '';
+    document.getElementById('summaryBox').style.display = 'none';
+    document.getElementById('summaryBox').innerHTML = '';
+    document.getElementById('submitBtn').disabled = true;
+    lastSummary = null;
+}
+
+function renderSummary(summary) {
+    const box = document.getElementById('summaryBox');
+    const totalQty = (summary.groups || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+    const rows = (summary.groups || []).map(row => `
+        <tr><td>${escapeHtml(row.product_name)}</td><td>${escapeHtml(row.product_code)}</td><td>${row.quantity || 0}</td><td>${(row.barcodes || []).map(escapeHtml).join('<br>')}</td></tr>
+    `).join('');
+    const details = (summary.details || []).map(row => `
+        <tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.product_name || '')}</td><td>${escapeHtml(row.product_code || '')}</td><td>${escapeHtml(row.current_dealer || '未查询，按产品库匹配')}</td><td><span class="pill">${escapeHtml(row.source === 'product_library' ? '产品库' : row.source === 'query_result' ? '查询结果' : '未匹配')}</span></td></tr>
+    `).join('');
+    const blockedRows = (summary.blocked || []).map(row => `<tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.reason)}</td></tr>`).join('');
+    const missingRows = (summary.missing || []).map(bc => `<tr><td>${escapeHtml(bc)}</td><td>产品库未匹配，请先添加前缀规则或查询一次该产品条码</td></tr>`).join('');
+    box.innerHTML = `
+        <table><thead><tr><th>产品名称</th><th>产品编码</th><th>数量</th><th>条码</th></tr></thead><tbody>${rows || '<tr><td colspan="4">无可移库明细</td></tr>'}</tbody></table>
+        <div class="note">已选条码 ${summary.total || 0} 个，产品 ${(summary.groups || []).length} 条，数量合计 ${totalQty}。</div>
+        <table><thead><tr><th>条码</th><th>产品名称</th><th>产品编码</th><th>当前所属</th><th>来源</th></tr></thead><tbody>${details}</tbody></table>
+        ${blockedRows ? `<div class="note blocked">以下条码方向不匹配，不能自动移库。</div><table><thead><tr><th>条码</th><th>原因</th></tr></thead><tbody>${blockedRows}</tbody></table>` : ''}
+        ${missingRows ? `<div class="note blocked">以下条码无法识别产品。</div><table><thead><tr><th>条码</th><th>原因</th></tr></thead><tbody>${missingRows}</tbody></table>` : ''}
+    `;
+    box.style.display = '';
+}
+
+async function previewTransfer() {
+    const barcodes = parseBarcodes();
+    if (!barcodes.length) return alert('请输入条码');
+    const res = await fetch('/api/transfer/summary', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            barcodes,
+            transfer_type: document.getElementById('transferType').value,
+            distributor: document.getElementById('transferDistributor').value.trim()
+        })
+    });
+    const data = await res.json();
+    if (data.summary) renderSummary(data.summary);
+    lastSummary = data.success ? data.summary : null;
+    document.getElementById('submitBtn').disabled = !data.success;
+    if (!data.success) appendLog(data.error || '预览失败', 'error');
+}
+
+async function submitTransfer() {
+    if (!lastSummary) return alert('请先汇总预览');
+    const distributor = document.getElementById('transferDistributor').value.trim();
+    if (!distributor) return alert('请输入目标分销商');
+    document.getElementById('submitBtn').disabled = true;
+    appendLog('提交移库任务...', 'info');
+    const res = await fetch('/api/crm/transfer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            barcodes: parseBarcodes(),
+            distributor,
+            transfer_type: document.getElementById('transferType').value,
+            remark: document.getElementById('transferRemark').value.trim()
+        })
+    });
+    const data = await res.json();
+    if (!data.success) {
+        appendLog(data.error || '提交失败', 'error');
+        document.getElementById('submitBtn').disabled = false;
+        return;
+    }
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(pollStatus, 1200);
+    pollStatus();
+}
+
+function appendLog(message, level='dim') {
+    const box = document.getElementById('transferLog');
+    if (box.innerText.includes('等待操作')) box.innerHTML = '';
+    const line = document.createElement('div');
+    line.className = level;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+}
+
+function renderLogs(logs) {
+    const box = document.getElementById('transferLog');
+    if (!logs || !logs.length) return;
+    box.innerHTML = logs.map(row => `<div class="${escapeHtml(row.level || 'dim')}">[${escapeHtml(row.time || '')}] ${escapeHtml(row.message || '')}</div>`).join('');
+    box.scrollTop = box.scrollHeight;
+}
+
+async function pollStatus() {
+    const res = await fetch('/api/crm/transfer/status');
+    const data = await res.json();
+    renderLogs(data.logs || []);
+    if (data.summary) renderSummary(data.summary);
+    if (data.done) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        document.getElementById('submitBtn').disabled = false;
+    }
+}
+
+async function loadLibrary() {
+    const res = await fetch('/api/product-library');
+    const data = await res.json();
+    const rows = data.products || [];
+    document.getElementById('libraryBox').innerHTML = `
+        <table>
+            <thead><tr><th>前缀</th><th>产品编码</th><th>产品名称</th><th>更新</th><th></th></tr></thead>
+            <tbody>${rows.map(row => `
+                <tr>
+                    <td>${escapeHtml(row.prefix)}</td>
+                    <td>${escapeHtml(row.product_code)}</td>
+                    <td>${escapeHtml(row.product_name)}</td>
+                    <td>${escapeHtml(row.updated_at || '')}</td>
+                    <td><button class="btn btn-danger" onclick="deleteLibrary('${escapeHtml(row.prefix)}')">删除</button></td>
+                </tr>
+            `).join('') || '<tr><td colspan="5">暂无产品库规则</td></tr>'}</tbody>
+        </table>`;
+}
+
+async function saveLibrary() {
+    const payload = {
+        prefix: document.getElementById('libPrefix').value.trim(),
+        product_code: document.getElementById('libCode').value.trim(),
+        product_name: document.getElementById('libName').value.trim()
+    };
+    const res = await fetch('/api/product-library', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!data.success) return alert(data.error || '保存失败');
+    document.getElementById('libPrefix').value = '';
+    document.getElementById('libCode').value = '';
+    document.getElementById('libName').value = '';
+    loadLibrary();
+}
+
+async function deleteLibrary(prefix) {
+    if (!confirm('确定删除前缀 ' + prefix + ' ？')) return;
+    await fetch('/api/product-library/' + encodeURIComponent(prefix), {method: 'DELETE'});
+    loadLibrary();
+}
+
+loadLibrary();
+pollStatus();
+</script>
+</body>
+</html>
