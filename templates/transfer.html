@@ -154,7 +154,7 @@ function renderSummary(summary) {
         <table><thead><tr><th>产品名称</th><th>产品编码</th><th>数量</th><th>条码</th></tr></thead><tbody>${rows || '<tr><td colspan="4">无可移库明细</td></tr>'}</tbody></table>
         <div class="note">已选条码 ${summary.total || 0} 个，产品 ${(summary.groups || []).length} 条，数量合计 ${totalQty}。</div>
         <table><thead><tr><th>条码</th><th>产品名称</th><th>产品编码</th><th>当前所属</th><th>来源</th></tr></thead><tbody>${details}</tbody></table>
-        ${blockedRows ? `<div class="note blocked">以下条码方向不匹配，不能自动移库。</div><table><thead><tr><th>条码</th><th>原因</th></tr></thead><tbody>${blockedRows}</tbody></table>` : ''}
+        ${blockedRows ? `<div class="note blocked">以下条码方向不匹配，仅提示。确认后仍会提交移库。</div><table><thead><tr><th>条码</th><th>提示</th></tr></thead><tbody>${blockedRows}</tbody></table>` : ''}
         ${missingRows ? `<div class="note blocked">以下条码无法识别产品。</div><table><thead><tr><th>条码</th><th>原因</th></tr></thead><tbody>${missingRows}</tbody></table>` : ''}
     `;
     box.style.display = '';

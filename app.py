@@ -2032,8 +2032,6 @@ def _summary_error_from_result(summary):
         return '部分条码没有查询结果，产品库也未匹配，请先维护产品库或查询一次该产品条码'
     if summary.get('incomplete'):
         return '部分条码缺少产品名称或产品编码，无法自动汇总'
-    if summary.get('blocked'):
-        return '部分条码当前所属不符合移库方向，不能自动移库'
     return ''
 
 def _run_summary_job(barcodes, transfer_type, distributor):
@@ -2770,15 +2768,13 @@ def build_transfer_summary(selected_barcodes, transfer_type="移出", distributo
         if transfer_type == "移出" and info.get('current_dealer') and info['current_dealer'] != OWN_DEALER_NAME:
             blocked.append({
                 'barcode': barcode,
-                'reason': f"当前所属为 {info['current_dealer']}，不是 {OWN_DEALER_NAME}，不能从我们移出",
+                'reason': f"当前所属为 {info['current_dealer']}，不是 {OWN_DEALER_NAME}，请确认后再移出",
             })
-            continue
         if transfer_type == "移入" and distributor and info.get('current_dealer') and info['current_dealer'] != distributor:
             blocked.append({
                 'barcode': barcode,
-                'reason': f"当前所属为 {info['current_dealer']}，不是所选分销商 {distributor}，不能从该分销商移入",
+                'reason': f"当前所属为 {info['current_dealer']}，不是所选分销商 {distributor}，请确认后再移入",
             })
-            continue
 
         key = f"{info['product_code']}|{info['product_name']}"
         if key not in grouped:
@@ -3089,12 +3085,6 @@ def api_transfer_summary():
             'error': '部分条码缺少产品名称或产品编码，无法自动汇总',
             'summary': summary,
         })
-    if summary['blocked']:
-        return jsonify({
-            'success': False,
-            'error': '部分条码当前所属不符合移库方向，不能自动移库',
-            'summary': summary,
-        })
 
     return jsonify({'success': True, 'summary': summary})
 
@@ -3176,8 +3166,6 @@ def api_crm_transfer():
         return jsonify({'success': False, 'error': '部分条码没有查询结果，产品库也未匹配，请先维护产品库或查询一次该产品条码', 'summary': summary})
     if summary['incomplete']:
         return jsonify({'success': False, 'error': '部分条码缺少产品名称或产品编码，无法自动移库', 'summary': summary})
-    if summary['blocked']:
-        return jsonify({'success': False, 'error': '部分条码当前所属不符合移库方向，不能自动移库', 'summary': summary})
 
     with transfer_job_lock:
         if transfer_job['running']:
