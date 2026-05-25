@@ -81,7 +81,7 @@
                 </div>
                 <div class="actions">
                     <button class="btn btn-secondary" onclick="clearForm()">清空</button>
-                    <button class="btn btn-primary" onclick="previewTransfer()">汇总预览</button>
+                    <button class="btn btn-primary" id="previewBtn" onclick="previewTransfer()">汇总预览</button>
                     <button class="btn btn-transfer" id="submitBtn" onclick="submitTransfer()" disabled>提交移库</button>
                 </div>
                 <div class="summary" id="summaryBox"></div>
@@ -112,6 +112,7 @@
 <script>
 let lastSummary = null;
 let pollTimer = null;
+let previewTimer = null;
 
 function escapeHtml(text) {
     return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
@@ -125,10 +126,16 @@ function parseBarcodes() {
 }
 
 function clearForm() {
+    if (previewTimer) {
+        clearInterval(previewTimer);
+        previewTimer = null;
+    }
     document.getElementById('barcodeInput').value = '';
     document.getElementById('summaryBox').style.display = 'none';
     document.getElementById('summaryBox').innerHTML = '';
     document.getElementById('submitBtn').disabled = true;
+    document.getElementById('previewBtn').disabled = false;
+    document.getElementById('previewBtn').textContent = '汇总预览';
     lastSummary = null;
 }
 
@@ -156,8 +163,15 @@ function renderSummary(summary) {
 async function previewTransfer() {
     const barcodes = parseBarcodes();
     if (!barcodes.length) return alert('请输入条码');
+    const previewBtn = document.getElementById('previewBtn');
+    const submitBtn = document.getElementById('submitBtn');
+    previewBtn.disabled = true;
+    previewBtn.textContent = '汇总中...';
+    submitBtn.disabled = true;
+    lastSummary = null;
+    if (previewTimer) clearInterval(previewTimer);
     appendLog('开始汇总预览，缺少产品库前缀时会自动查询代表条码...', 'info');
-    const res = await fetch('/api/transfer/summary', {
+    const res = await fetch('/api/transfer/summary/start', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -167,18 +181,33 @@ async function previewTransfer() {
         })
     });
     const data = await res.json();
+    if (!data.success) {
+        appendLog(data.error || '预览失败', 'error');
+        previewBtn.disabled = false;
+        previewBtn.textContent = '汇总预览';
+        return;
+    }
+    previewTimer = setInterval(pollSummaryStatus, 1000);
+    pollSummaryStatus();
+}
+
+async function pollSummaryStatus() {
+    const data = await fetch('/api/transfer/summary/status').then(res => res.json());
+    renderLogs(data.logs || []);
     if (data.summary) renderSummary(data.summary);
-    const autoLibrary = data.summary && data.summary.auto_library;
-    if (autoLibrary && autoLibrary.queried && autoLibrary.queried.length) {
-        appendLog(`已自动补充产品库：${autoLibrary.queried.map(row => row.prefix + '←' + row.barcode).join('，')}`, 'success');
+    if (!data.done) return;
+
+    clearInterval(previewTimer);
+    previewTimer = null;
+    const previewBtn = document.getElementById('previewBtn');
+    previewBtn.disabled = false;
+    previewBtn.textContent = '汇总预览';
+
+    lastSummary = data.summary_success ? data.summary : null;
+    document.getElementById('submitBtn').disabled = !data.summary_success;
+    if (!data.summary_success && data.error) {
+        appendLog(data.error, 'error');
     }
-    if (autoLibrary && autoLibrary.failed && autoLibrary.failed.length) {
-        appendLog(`产品库自动补充失败：${autoLibrary.failed.map(row => row.prefix + '←' + row.barcode).join('，')}`, 'warn');
-    }
-    lastSummary = data.success ? data.summary : null;
-    document.getElementById('submitBtn').disabled = !data.success;
-    if (data.success) appendLog('汇总预览完成，可以提交移库', 'success');
-    if (!data.success) appendLog(data.error || '预览失败', 'error');
 }
 
 async function submitTransfer() {

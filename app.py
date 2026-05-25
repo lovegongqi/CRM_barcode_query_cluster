@@ -1966,6 +1966,18 @@ transfer_job = {
     'finished_at': '',
 }
 
+summary_job_lock = threading.Lock()
+summary_job = {
+    'running': False,
+    'done': False,
+    'success': False,
+    'error': '',
+    'summary': None,
+    'logs': [],
+    'started_at': '',
+    'finished_at': '',
+}
+
 def _normalize_retry_limit(value):
     try:
         retry_limit = int(value)
@@ -1996,6 +2008,77 @@ def _transfer_log(message, level='dim'):
             'level': level,
         })
         transfer_job['logs'] = transfer_job['logs'][-300:]
+
+def _summary_log(message, level='dim'):
+    with summary_job_lock:
+        summary_job['logs'].append({
+            'time': datetime.now().strftime('%H:%M:%S'),
+            'message': message,
+            'level': level,
+        })
+        summary_job['logs'] = summary_job['logs'][-300:]
+
+def _finish_summary_job(success, error='', summary=None):
+    with summary_job_lock:
+        summary_job['running'] = False
+        summary_job['done'] = True
+        summary_job['success'] = bool(success)
+        summary_job['error'] = error
+        summary_job['summary'] = summary
+        summary_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+def _summary_error_from_result(summary):
+    if summary.get('missing'):
+        return '部分条码没有查询结果，产品库也未匹配，请先维护产品库或查询一次该产品条码'
+    if summary.get('incomplete'):
+        return '部分条码缺少产品名称或产品编码，无法自动汇总'
+    if summary.get('blocked'):
+        return '部分条码当前所属不符合移库方向，不能自动移库'
+    return ''
+
+def _run_summary_job(barcodes, transfer_type, distributor):
+    try:
+        _summary_log(f"开始汇总预览，共 {len(barcodes)} 个条码", 'info')
+        auto_library = {'queried': [], 'failed': []}
+        representatives = _missing_product_library_representatives(barcodes)
+        if representatives:
+            items = "，".join([f"{prefix}←{barcode}" for prefix, barcode in representatives.items()])
+            _summary_log(f"发现 {len(representatives)} 个缺失前缀：{items}", 'info')
+            with transfer_job_lock:
+                if transfer_job['running']:
+                    error = '已有移库任务正在执行，请等待完成后再汇总'
+                    _summary_log(error, 'error')
+                    _finish_summary_job(False, error)
+                    return
+            with batch_job_lock:
+                if batch_job['running']:
+                    error = '批量条码查询正在执行，请等待查询完成后再汇总'
+                    _summary_log(error, 'error')
+                    _finish_summary_job(False, error)
+                    return
+            ready, ready_message = _crm_ready_for_auto_query()
+            if not ready:
+                _summary_log(ready_message, 'error')
+                _finish_summary_job(False, ready_message)
+                return
+            auto_library = ensure_product_library_for_barcodes(barcodes, _summary_log)
+        else:
+            _summary_log("产品库已覆盖所有条码前缀，不需要自动查询", 'success')
+
+        _summary_log("开始按产品名称和编码汇总移库明细", 'info')
+        summary = build_transfer_summary(barcodes, transfer_type, distributor)
+        summary['auto_library'] = auto_library
+        error = _summary_error_from_result(summary)
+        if error:
+            _summary_log(error, 'error')
+            _finish_summary_job(False, error, summary)
+            return
+        _summary_log(f"汇总完成：产品 {len(summary.get('groups', []))} 条，条码 {summary.get('total', 0)} 个", 'success')
+        _finish_summary_job(True, '', summary)
+    except Exception as e:
+        error = _brief_batch_error(e, 800)
+        _summary_log(f"汇总预览出错：{error}", 'error')
+        _finish_summary_job(False, error)
 
 def _run_transfer_job(summary, distributor, transfer_type, remark):
     _transfer_log(f"开始提交移库：{transfer_type}，分销商 {distributor}", 'info')
@@ -3014,6 +3097,52 @@ def api_transfer_summary():
         })
 
     return jsonify({'success': True, 'summary': summary})
+
+@app.route("/api/transfer/summary/start", methods=["POST"])
+def api_transfer_summary_start():
+    data = request.get_json() or {}
+    barcodes = data.get('barcodes') or []
+    barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    distributor = str(data.get('distributor') or '').strip()
+    transfer_type = str(data.get('transfer_type') or '移出').strip()
+    if not barcodes:
+        return jsonify({'success': False, 'error': '请先选择要移库的条码'})
+
+    with summary_job_lock:
+        if summary_job['running']:
+            return jsonify({'success': False, 'error': '已有汇总预览正在执行，请等待完成'})
+        summary_job.update({
+            'running': True,
+            'done': False,
+            'success': False,
+            'error': '',
+            'summary': None,
+            'logs': [],
+            'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'finished_at': '',
+        })
+
+    threading.Thread(
+        target=_run_summary_job,
+        args=(barcodes, transfer_type, distributor),
+        daemon=True
+    ).start()
+    return jsonify({'success': True, 'message': '汇总预览已开始'})
+
+@app.route("/api/transfer/summary/status", methods=["GET"])
+def api_transfer_summary_status():
+    with summary_job_lock:
+        return jsonify({
+            'success': True,
+            'running': summary_job['running'],
+            'done': summary_job['done'],
+            'summary_success': summary_job['success'],
+            'error': summary_job['error'],
+            'summary': summary_job['summary'],
+            'logs': list(summary_job['logs']),
+            'started_at': summary_job['started_at'],
+            'finished_at': summary_job['finished_at'],
+        })
 
 @app.route("/api/crm/transfer", methods=["POST"])
 def api_crm_transfer():
