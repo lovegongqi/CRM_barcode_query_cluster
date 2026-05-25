@@ -75,9 +75,7 @@
         <div class="library-form">
             <div style="grid-column:span 2"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" oninput="scheduleLookup()"></div>
             <button class="btn btn-primary" onclick="lookupBarcode()">识别</button>
-            {% if account %}
             <button class="btn btn-secondary" onclick="confirmQueryBarcode()">确认查询</button>
-            {% endif %}
         </div>
         <div id="lookupBox" class="note">输入条码后会优先匹配已查询结果和条码匹配前缀。</div>
         <div class="log" id="queryLog" style="display:none"></div>
@@ -173,8 +171,7 @@ async function lookupBarcode() {
         box.innerHTML = `产品名称：<strong>${escapeHtml(info.product_name)}</strong><br>产品编码：<strong>${escapeHtml(info.product_code)}</strong><br>匹配来源：${escapeHtml(info.source === 'query_result' ? '查询结果' : '条码匹配')} ${info.matched_prefix ? '，前缀 ' + escapeHtml(info.matched_prefix) : ''}`;
         return;
     }
-    const queryAction = {{ 'true' if account else 'false' }} ? '是否立即查询该条码并自动补充条码匹配？ <button class="btn btn-primary" onclick="confirmQueryBarcode()">确认查询</button>' : '如需在线查询补充，请先登录。';
-    box.innerHTML = `没有匹配到前缀 <strong>${escapeHtml(data.prefix || '')}</strong>。${queryAction}`;
+    box.innerHTML = `没有匹配到前缀 <strong>${escapeHtml(data.prefix || '')}</strong>。是否立即查询该条码并自动补充条码匹配？ <button class="btn btn-primary" onclick="confirmQueryBarcode()">确认查询</button>`;
 }
 
 async function confirmQueryBarcode() {

@@ -3542,8 +3542,6 @@ def api_product_library_query_start():
     barcode = str(data.get('barcode') or '').strip()
     if not barcode:
         return jsonify({'success': False, 'error': '请输入条码'})
-    if not current_account():
-        return jsonify({'success': False, 'error': '请先登录工具账号后再查询'})
     with transfer_job_lock:
         if transfer_job['running']:
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询'})
