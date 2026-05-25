@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>产品库</title>
+    <title>条码匹配</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f7fb; color: #202938; min-height: 100vh; }
@@ -38,6 +38,8 @@
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
         th { background:#f8fafc; color:#475569; }
+        .header-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
+        .header-actions .btn { text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
         @media (max-width: 860px) { .header { flex-direction:column; align-items:flex-start; } .library-form { grid-template-columns:1fr; } }
     </style>
 </head>
@@ -45,34 +47,44 @@
 <div class="container">
     <div class="header">
         <div>
-            <h1>产品库</h1>
+            <h1>条码匹配</h1>
             <p class="muted">维护条码前缀、产品编码和产品名称。已查询条码会自动更新这里。</p>
         </div>
+        {% if account %}
         <div class="page-nav">
             {% for link in nav_links %}
             <a href="{{ link.href }}" class="{{ 'active' if link.href == '/product-library' else '' }}">{{ link.label }}</a>
             {% endfor %}
         </div>
+        {% else %}
+        <div class="header-actions">
+            <a class="btn btn-primary" href="/login?next=/product-library">登录</a>
+        </div>
+        {% endif %}
     </div>
 
+    {% if account %}
     <div class="status-bar wrap">
         <div class="status-text">工具账号：<span id="accountStatus">检测中</span></div>
         <a class="btn btn-secondary" href="/logout" style="text-decoration:none;display:inline-flex;align-items:center;">退出登录</a>
     </div>
+    {% endif %}
 
     <div class="card">
         <h2>条码识别</h2>
         <div class="library-form">
             <div style="grid-column:span 2"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" oninput="scheduleLookup()"></div>
             <button class="btn btn-primary" onclick="lookupBarcode()">识别</button>
+            {% if account %}
             <button class="btn btn-secondary" onclick="confirmQueryBarcode()">确认查询</button>
+            {% endif %}
         </div>
-        <div id="lookupBox" class="note">输入条码后会优先匹配已查询结果和产品库前缀。</div>
+        <div id="lookupBox" class="note">输入条码后会优先匹配已查询结果和条码匹配前缀。</div>
         <div class="log" id="queryLog" style="display:none"></div>
     </div>
 
     <div class="card" id="editCard" style="display:none">
-        <h2>产品匹配规则</h2>
+        <h2>条码匹配规则</h2>
         <div class="note">前缀默认是条码去掉最后 10 位。比如 162501010001 的默认产品前缀是 16。</div>
         <div class="library-form">
             <div><label>条码前缀</label><input id="libPrefix" placeholder="如 16" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div>
@@ -94,7 +106,8 @@ async function loadLibrary() {
     const data = await res.json();
     const rows = data.products || [];
     document.getElementById('editCard').style.display = data.can_edit ? '' : 'none';
-    document.getElementById('accountStatus').textContent = data.account ? `${data.account.username}${data.can_edit ? '（管理员）' : ''}` : '未登录';
+    const accountStatus = document.getElementById('accountStatus');
+    if (accountStatus) accountStatus.textContent = data.account ? `${data.account.username}${data.can_edit ? '（管理员）' : ''}` : '';
     document.getElementById('libraryBox').innerHTML = `
         <table>
             <thead><tr><th>前缀</th><th>产品编码</th><th>产品名称</th><th>来源条码</th><th>更新</th><th></th></tr></thead>
@@ -107,7 +120,7 @@ async function loadLibrary() {
                     <td>${escapeHtml(row.updated_at || '')}</td>
                     <td>${data.can_edit ? `<button class="btn btn-danger" onclick="deleteLibrary('${escapeHtml(row.prefix)}')">删除</button>` : '只读'}</td>
                 </tr>
-            `).join('') || '<tr><td colspan="6">暂无产品库规则</td></tr>'}</tbody>
+            `).join('') || '<tr><td colspan="6">暂无条码匹配规则</td></tr>'}</tbody>
         </table>`;
 }
 
@@ -157,10 +170,11 @@ async function lookupBarcode() {
     const box = document.getElementById('lookupBox');
     if (data.success) {
         const info = data.info || {};
-        box.innerHTML = `产品名称：<strong>${escapeHtml(info.product_name)}</strong><br>产品编码：<strong>${escapeHtml(info.product_code)}</strong><br>匹配来源：${escapeHtml(info.source === 'query_result' ? '查询结果' : '产品库')} ${info.matched_prefix ? '，前缀 ' + escapeHtml(info.matched_prefix) : ''}`;
+        box.innerHTML = `产品名称：<strong>${escapeHtml(info.product_name)}</strong><br>产品编码：<strong>${escapeHtml(info.product_code)}</strong><br>匹配来源：${escapeHtml(info.source === 'query_result' ? '查询结果' : '条码匹配')} ${info.matched_prefix ? '，前缀 ' + escapeHtml(info.matched_prefix) : ''}`;
         return;
     }
-    box.innerHTML = `没有匹配到前缀 <strong>${escapeHtml(data.prefix || '')}</strong>。是否立即查询该条码并自动补充产品库？ <button class="btn btn-primary" onclick="confirmQueryBarcode()">确认查询</button>`;
+    const queryAction = {{ 'true' if account else 'false' }} ? '是否立即查询该条码并自动补充条码匹配？ <button class="btn btn-primary" onclick="confirmQueryBarcode()">确认查询</button>' : '如需在线查询补充，请先登录。';
+    box.innerHTML = `没有匹配到前缀 <strong>${escapeHtml(data.prefix || '')}</strong>。${queryAction}`;
 }
 
 async function confirmQueryBarcode() {

@@ -51,7 +51,7 @@
     <div class="header">
         <div>
             <h1>CRM 移库</h1>
-            <p class="muted">直接粘贴条码即可移库。未查询条码会按产品库前缀匹配产品名称和编码。</p>
+            <p class="muted">直接粘贴条码即可移库。未查询条码会按条码匹配前缀匹配产品名称和编码。</p>
         </div>
         <div class="page-nav">
             {% for link in nav_links %}
@@ -142,10 +142,10 @@ function renderSummary(summary) {
         <tr><td>${escapeHtml(row.product_name)}</td><td>${escapeHtml(row.product_code)}</td><td>${row.quantity || 0}</td><td>${(row.barcodes || []).map(escapeHtml).join('<br>')}</td></tr>
     `).join('');
     const details = (summary.details || []).map(row => `
-        <tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.product_name || '')}</td><td>${escapeHtml(row.product_code || '')}</td><td>${escapeHtml(row.current_dealer || '未查询，按产品库匹配')}</td><td><span class="pill">${escapeHtml(row.source === 'product_library' ? '产品库' : row.source === 'query_result' ? '查询结果' : '未匹配')}</span></td></tr>
+        <tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.product_name || '')}</td><td>${escapeHtml(row.product_code || '')}</td><td>${escapeHtml(row.current_dealer || '未查询，按条码匹配')}</td><td><span class="pill">${escapeHtml(row.source === 'product_library' ? '条码匹配' : row.source === 'query_result' ? '查询结果' : '未匹配')}</span></td></tr>
     `).join('');
     const blockedRows = (summary.blocked || []).map(row => `<tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.reason)}</td></tr>`).join('');
-    const missingRows = (summary.missing || []).map(bc => `<tr><td>${escapeHtml(bc)}</td><td>产品库未匹配，请先添加前缀规则或查询一次该产品条码</td></tr>`).join('');
+    const missingRows = (summary.missing || []).map(bc => `<tr><td>${escapeHtml(bc)}</td><td>条码匹配未匹配，请先添加前缀规则或查询一次该产品条码</td></tr>`).join('');
     box.innerHTML = `
         <table><thead><tr><th>产品名称</th><th>产品编码</th><th>数量</th><th>条码</th></tr></thead><tbody>${rows || '<tr><td colspan="4">无可移库明细</td></tr>'}</tbody></table>
         <div class="note">已选条码 ${summary.total || 0} 个，产品 ${(summary.groups || []).length} 条，数量合计 ${totalQty}。</div>
@@ -166,7 +166,7 @@ async function previewTransfer() {
     submitBtn.disabled = true;
     lastSummary = null;
     if (previewTimer) clearInterval(previewTimer);
-    appendLog('开始汇总预览，缺少产品库前缀时会自动查询代表条码...', 'info');
+    appendLog('开始汇总预览，缺少条码匹配前缀时会自动查询代表条码...', 'info');
     const res = await fetch('/api/transfer/summary/start', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -277,7 +277,7 @@ async function loadLibrary() {
                     <td>${escapeHtml(row.updated_at || '')}</td>
                     <td><button class="btn btn-danger" onclick="deleteLibrary('${escapeHtml(row.prefix)}')">删除</button></td>
                 </tr>
-            `).join('') || '<tr><td colspan="5">暂无产品库规则</td></tr>'}</tbody>
+            `).join('') || '<tr><td colspan="5">暂无条码匹配规则</td></tr>'}</tbody>
         </table>`;
 }
 

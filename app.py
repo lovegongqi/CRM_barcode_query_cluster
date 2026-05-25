@@ -1314,7 +1314,7 @@ class CRMSession:
                         fields = extract_fields_from_html(output_file)
                         refresh_product_library_from_query_fields(barcode, fields, emit)
                     except Exception as e:
-                        emit(f"产品库自动更新失败：{e}", "warn")
+                        emit(f"条码匹配自动更新失败：{e}", "warn")
                     self.needs_navigation = False
                     return True, barcode
                 else:
@@ -2074,7 +2074,7 @@ def _finish_summary_job(success, error='', summary=None):
 
 def _summary_error_from_result(summary):
     if summary.get('missing'):
-        return '部分条码没有查询结果，产品库也未匹配，请先维护产品库或查询一次该产品条码'
+        return '部分条码没有查询结果，也没有匹配到条码前缀，请先维护条码匹配或查询一次该产品条码'
     if summary.get('incomplete'):
         return '部分条码缺少产品名称或产品编码，无法自动汇总'
     return ''
@@ -2106,7 +2106,7 @@ def _run_summary_job(barcodes, transfer_type, distributor):
                 return
             auto_library = ensure_product_library_for_barcodes(barcodes, _summary_log)
         else:
-            _summary_log("产品库已覆盖所有条码前缀，不需要自动查询", 'success')
+            _summary_log("条码匹配已覆盖所有条码前缀，不需要自动查询", 'success')
 
         _summary_log("开始按产品名称和编码汇总移库明细", 'info')
         summary = build_transfer_summary(barcodes, transfer_type, distributor)
@@ -2711,12 +2711,12 @@ def refresh_product_library_from_query_fields(barcode, fields, log=None):
     if update_product_library_from_info(info):
         if log:
             log(
-                f"产品库已按本次查询刷新：前缀 {prefix}，{info.get('product_code')} / {info.get('product_name')}",
+                f"条码匹配已按本次查询刷新：前缀 {prefix}，{info.get('product_code')} / {info.get('product_name')}",
                 "success"
             )
         return True
     if log:
-        log(f"产品库未刷新：条码 {barcode} 缺少产品编码或产品名称", "warn")
+        log(f"条码匹配未刷新：条码 {barcode} 缺少产品编码或产品名称", "warn")
     return False
 
 def _barcode_product_info_from_library(barcode):
@@ -2780,17 +2780,17 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None):
         if log:
             log(message, level)
 
-    emit(f"发现 {len(representatives)} 个产品前缀未维护，先各查询 1 个代表条码补充产品库")
+    emit(f"发现 {len(representatives)} 个产品前缀未维护，先各查询 1 个代表条码补充条码匹配")
     for prefix, barcode in representatives.items():
-        emit(f"前缀 {prefix} 未匹配产品库，查询代表条码 {barcode}")
+        emit(f"前缀 {prefix} 没有匹配规则，查询代表条码 {barcode}")
         success, message = crm_session.query_barcode(barcode, log)
         if success and match_product_library(barcode):
             result['queried'].append({'prefix': prefix, 'barcode': barcode})
-            emit(f"前缀 {prefix} 已写入产品库", 'success')
+            emit(f"前缀 {prefix} 已写入条码匹配", 'success')
         else:
             error = _brief_batch_error(message, 300)
             result['failed'].append({'prefix': prefix, 'barcode': barcode, 'error': error})
-            emit(f"前缀 {prefix} 产品库补充失败：{error}", 'warn')
+            emit(f"前缀 {prefix} 条码匹配补充失败：{error}", 'warn')
     return result
 
 def _crm_ready_for_auto_query():
@@ -2958,7 +2958,7 @@ PAGE_LINKS = [
     {'permission': 'results', 'label': '结果管理', 'href': '/'},
     {'permission': 'transfer', 'label': '移库', 'href': '/transfer'},
     {'permission': 'accounts', 'label': '账号管理', 'href': '/accounts'},
-    {'permission': 'product-library', 'label': '产品库', 'href': '/product-library'},
+    {'permission': 'product-library', 'label': '条码匹配', 'href': '/product-library'},
 ]
 
 def visible_page_links():
@@ -3008,6 +3008,16 @@ def require_app_login():
     if path.startswith("/api/app-auth"):
         return None
     if path == "/login":
+        return None
+    if path == "/product-library":
+        return None
+    if path == "/api/product-library" and request.method == "GET":
+        return None
+    if path == "/api/product-library/lookup":
+        return None
+    if path == "/api/product-library/query/start":
+        return None
+    if path == "/api/product-library/query/status":
         return None
     if path.startswith("/api/accounts"):
         if not current_account():
@@ -3282,7 +3292,7 @@ def api_transfer_summary():
     if summary['missing']:
         return jsonify({
             'success': False,
-            'error': '部分条码没有查询结果，产品库也未匹配，请先维护产品库或查询一次该产品条码',
+            'error': '部分条码没有查询结果，也没有匹配到条码前缀，请先维护条码匹配或查询一次该产品条码',
             'summary': summary,
         })
     if summary['incomplete']:
@@ -3355,7 +3365,7 @@ def api_crm_transfer():
         return jsonify({'success': False, 'error': '目标分销商不能为空'})
     with library_query_lock:
         if library_query_job['running']:
-            return jsonify({'success': False, 'error': '产品库条码查询正在执行，请等待完成后再移库'})
+            return jsonify({'success': False, 'error': '条码匹配查询正在执行，请等待完成后再移库'})
 
     representatives = _missing_product_library_representatives(barcodes)
     if representatives:
@@ -3372,7 +3382,7 @@ def api_crm_transfer():
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
     if summary['missing']:
-        return jsonify({'success': False, 'error': '部分条码没有查询结果，产品库也未匹配，请先维护产品库或查询一次该产品条码', 'summary': summary})
+        return jsonify({'success': False, 'error': '部分条码没有查询结果，也没有匹配到条码前缀，请先维护条码匹配或查询一次该产品条码', 'summary': summary})
     if summary['incomplete']:
         return jsonify({'success': False, 'error': '部分条码缺少产品名称或产品编码，无法自动移库', 'summary': summary})
 
@@ -3495,7 +3505,7 @@ def transfer_page():
 
 @app.route("/product-library")
 def product_library_page():
-    return render_template("product_library.html", nav_links=visible_page_links())
+    return render_template("product_library.html", nav_links=visible_page_links(), account=current_account_public())
 
 @app.route("/accounts")
 def accounts_page():
@@ -3519,7 +3529,7 @@ def api_product_library_lookup():
     if not info or info.get('source') == 'unmatched':
         return jsonify({
             'success': False,
-            'error': '产品库没有匹配到该条码前缀',
+            'error': '条码匹配没有匹配到该条码前缀',
             'barcode': barcode,
             'prefix': product_prefix_from_barcode(barcode),
             'need_query': True,
@@ -3532,6 +3542,8 @@ def api_product_library_query_start():
     barcode = str(data.get('barcode') or '').strip()
     if not barcode:
         return jsonify({'success': False, 'error': '请输入条码'})
+    if not current_account():
+        return jsonify({'success': False, 'error': '请先登录工具账号后再查询'})
     with transfer_job_lock:
         if transfer_job['running']:
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询'})
@@ -3543,7 +3555,7 @@ def api_product_library_query_start():
         return jsonify({'success': False, 'error': '请先让管理员到在线查询页面登录 CRM 后再查询'})
     with library_query_lock:
         if library_query_job['running']:
-            return jsonify({'success': False, 'error': '已有产品库条码查询正在执行'})
+            return jsonify({'success': False, 'error': '已有条码匹配查询正在执行'})
         library_query_job.update({
             'running': True,
             'done': False,
@@ -3575,7 +3587,7 @@ def api_product_library_query_status():
 @app.route("/api/product-library", methods=["POST"])
 def api_product_library_save():
     if not is_admin_account():
-        return jsonify({'success': False, 'error': '只有管理员可以修改产品库'})
+        return jsonify({'success': False, 'error': '只有管理员可以修改条码匹配'})
     data = request.get_json() or {}
     prefix = str(data.get('prefix') or '').strip()
     product_code = str(data.get('product_code') or '').strip()
@@ -3588,7 +3600,7 @@ def api_product_library_save():
 @app.route("/api/product-library/<prefix>", methods=["DELETE"])
 def api_product_library_delete(prefix):
     if not is_admin_account():
-        return jsonify({'success': False, 'error': '只有管理员可以删除产品库规则'})
+        return jsonify({'success': False, 'error': '只有管理员可以删除条码匹配规则'})
     data = load_product_library()
     if prefix in data:
         del data[prefix]
@@ -3766,7 +3778,7 @@ def api_crm_query():
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
     with library_query_lock:
         if library_query_job['running']:
-            return jsonify({'success': False, 'error': '产品库条码查询正在执行，请等待完成后再查询'})
+            return jsonify({'success': False, 'error': '条码匹配查询正在执行，请等待完成后再查询'})
     success, result = crm_session.query_barcode(barcode)
     if success:
         return jsonify({
@@ -3790,7 +3802,7 @@ def api_crm_batch_start():
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
     with library_query_lock:
         if library_query_job['running']:
-            return jsonify({'success': False, 'error': '产品库条码查询正在执行，请等待完成后再批量查询'})
+            return jsonify({'success': False, 'error': '条码匹配查询正在执行，请等待完成后再批量查询'})
 
     with batch_job_lock:
         if batch_job['running']:
