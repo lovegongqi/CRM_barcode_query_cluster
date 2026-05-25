@@ -205,6 +205,11 @@ async function loginAccount() {
     }).then(res => res.json());
     if (!data.success) return alert(data.error || '登录失败');
     document.getElementById('authPassword').value = '';
+    const next = new URLSearchParams(location.search).get('next');
+    if (next && next.startsWith('/')) {
+        location.href = next;
+        return;
+    }
     loadAccounts();
 }
 

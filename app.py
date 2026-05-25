@@ -15,7 +15,7 @@ import threading
 import queue
 import uuid
 from collections import OrderedDict
-from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session
+from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session, redirect
 from datetime import datetime
 
 try:
@@ -2941,6 +2941,55 @@ def current_account_public():
 def is_admin_account():
     row = current_account()
     return bool(row and row.get('username') == 'admin')
+
+def account_has_permission(permission):
+    row = current_account()
+    if not row:
+        return False
+    if row.get('username') == 'admin':
+        return True
+    return permission in (row.get('permissions') or [])
+
+def required_permission_for_path(path):
+    if path == "/" or path.startswith("/barcode/"):
+        return "results"
+    if path == "/crm":
+        return "crm"
+    if path == "/transfer" or path.startswith("/api/transfer") or path.startswith("/api/crm/transfer"):
+        return "transfer"
+    if path == "/product-library" or path.startswith("/api/product-library"):
+        return "product-library"
+    if path.startswith("/api/barcodes") or path.startswith("/api/filter-options") or path.startswith("/api/export"):
+        return "results"
+    if path.startswith("/api/crm"):
+        return "crm"
+    return None
+
+@app.before_request
+def require_app_login():
+    path = request.path
+    if path.startswith("/api/app-auth"):
+        return None
+    if path == "/accounts":
+        return None
+    if path.startswith("/api/accounts"):
+        if not current_account():
+            return jsonify({'success': False, 'error': '请先登录工具账号'}), 401
+        return None
+
+    permission = required_permission_for_path(path)
+    if not permission:
+        return None
+
+    if not current_account():
+        if path.startswith("/api/"):
+            return jsonify({'success': False, 'error': '请先登录工具账号'}), 401
+        return redirect("/accounts?next=" + path)
+    if not account_has_permission(permission):
+        if path.startswith("/api/"):
+            return jsonify({'success': False, 'error': '当前账号无权访问该功能'}), 403
+        return Response("当前账号无权访问该页面", status=403, mimetype="text/plain")
+    return None
 
 def archive_barcode(barcode):
     src = os.path.join(BARCODE_DIR, barcode + '.html')
