@@ -236,7 +236,7 @@ function clearForm() {
 
 function renderSummary(summary) {
     const box = document.getElementById('summaryBox');
-    mergeDistributorHistory((summary.details || []).map(row => row.current_dealer));
+    mergeDistributorHistory((summary.details || []).flatMap(row => [row.current_dealer, row.service_dealer]));
     const totalQty = (summary.groups || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
     const rows = (summary.groups || []).map(row => `
         <tr><td>${escapeHtml(row.product_name)}</td><td>${escapeHtml(row.product_code)}</td><td>${row.quantity || 0}</td><td>${(row.barcodes || []).map(escapeHtml).join('<br>')}</td></tr>

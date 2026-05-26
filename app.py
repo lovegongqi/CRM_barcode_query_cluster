@@ -2928,9 +2928,10 @@ def queried_dealer_history():
     dealers = OrderedDict()
     for item in scan_barcodes():
         info = _barcode_product_info(item)
-        dealer = _clean_export_value(info.get('current_dealer'))
-        if dealer and dealer != OWN_DEALER_NAME:
-            dealers[dealer] = True
+        for key in ("current_dealer", "service_dealer"):
+            dealer = _clean_export_value(info.get(key))
+            if dealer and dealer != OWN_DEALER_NAME:
+                dealers[dealer] = True
     return list(dealers.keys())
 
 def load_data():
