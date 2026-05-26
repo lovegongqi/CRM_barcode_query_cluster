@@ -82,7 +82,8 @@
                     </div>
                     <div>
                         <label>目标分销商</label>
-                        <input id="transferDistributor" placeholder="输入分销商名称">
+                        <input id="transferDistributor" list="distributorHistoryList" placeholder="输入分销商名称" autocomplete="off">
+                        <datalist id="distributorHistoryList"></datalist>
                     </div>
                     <div>
                         <label>备注</label>
@@ -120,6 +121,32 @@ function parseBarcodes() {
         .split(/[\s,，;；]+/)
         .map(x => x.trim())
         .filter(Boolean)));
+}
+
+function loadDistributorHistory() {
+    try {
+        return JSON.parse(localStorage.getItem('transferDistributorHistory') || '[]')
+            .map(x => String(x || '').trim())
+            .filter(Boolean);
+    } catch (e) {
+        return [];
+    }
+}
+
+function saveDistributorHistory(value) {
+    const name = String(value || '').trim();
+    if (!name) return;
+    const rows = [name, ...loadDistributorHistory().filter(x => x !== name)].slice(0, 30);
+    localStorage.setItem('transferDistributorHistory', JSON.stringify(rows));
+    renderDistributorHistory();
+}
+
+function renderDistributorHistory() {
+    const list = document.getElementById('distributorHistoryList');
+    if (!list) return;
+    list.innerHTML = loadDistributorHistory()
+        .map(name => `<option value="${escapeHtml(name)}"></option>`)
+        .join('');
 }
 
 function clearForm() {
@@ -172,6 +199,7 @@ async function previewTransfer() {
     const barcodes = parseBarcodes();
     if (!barcodes.length) return alert('请输入条码');
     if (!await ensureCrmLoggedIn('汇总预览')) return;
+    saveDistributorHistory(document.getElementById('transferDistributor').value);
     const previewBtn = document.getElementById('previewBtn');
     const submitBtn = document.getElementById('submitBtn');
     previewBtn.disabled = true;
@@ -234,6 +262,7 @@ async function submitTransfer() {
     const distributor = document.getElementById('transferDistributor').value.trim();
     if (!distributor) return alert('请输入目标分销商');
     if (!await ensureCrmLoggedIn('提交移库')) return;
+    saveDistributorHistory(distributor);
     document.getElementById('submitBtn').disabled = true;
     appendLog('提交移库任务...', 'info');
     const res = await fetch('/api/crm/transfer', {
@@ -440,6 +469,7 @@ async function refreshCrmStatus() {
 }
 
 (async function initPage() {
+    renderDistributorHistory();
     loadIncomingBarcodes();
     refreshCrmStatus();
     resumeBackgroundJobs();

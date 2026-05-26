@@ -169,6 +169,16 @@ class CRMSession:
         except Exception:
             return False
 
+    def _wait_until_logged_in(self, timeout=18):
+        end = time.time() + timeout
+        while time.time() < end:
+            if self._is_current_page_logged_in():
+                self.logged_in = True
+                self.needs_navigation = True
+                return True
+            time.sleep(0.8)
+        return False
+
     def _reset_unfinished_login(self):
         """新登录开始前清掉半截验证码页或异常页，避免只能重启 Docker。"""
         if not self.is_alive():
@@ -382,10 +392,9 @@ class CRMSession:
                     time.sleep(0.5)
 
                 if not captcha_input:
-                    self._close_browser()
-                    self.logged_in = False
-                    self.needs_navigation = True
-                    return False, "验证码输入框未出现，已重置登录状态，请重新登录"
+                    if self._wait_until_logged_in(timeout=5):
+                        return True, "登录成功"
+                    return False, "验证码输入框未出现，请点击重新登录后再获取验证码"
 
                 captcha_input.click(); time.sleep(0.3)
                 captcha_input.press("Control+a"); time.sleep(0.1)
@@ -396,21 +405,7 @@ class CRMSession:
                 # 点确定
                 if not self._click_confirm_near_captcha(captcha_scope, captcha_input):
                     return False, "验证码已填入，但未找到确定按钮"
-                time.sleep(3)
-
-                # 检查是否登录成功
-                url = self.page.url.lower()
-                body_text = self.page.inner_text("body")
-                if (
-                    "login" not in url or
-                    "退出" in body_text or
-                    "注销" in body_text or
-                    "首页" in body_text or
-                    "报表" in body_text or
-                    "home" in url
-                ):
-                    self.logged_in = True
-                    self.needs_navigation = True
+                if self._wait_until_logged_in(timeout=18):
                     return True, "登录成功"
                 return False, "验证码可能错误，请重试，或点击重新登录"
 
@@ -522,23 +517,8 @@ class CRMSession:
                         except:
                             continue
 
-                    # 多次检查登录状态，等待页面加载完成
-                    for _ in range(10):
-                        url = self.page.url.lower()
-                        body_text = self.page.inner_text("body")
-                        if "login" not in url and ("退出" in body_text or "注销" in body_text or "首页" in body_text):
-                            self.logged_in = True
-                            self.needs_navigation = True
-                            return True, "登录成功"
-                        time.sleep(1)
-
-                    # 最后再检查一次
-                    url = self.page.url.lower()
-                    body_text = self.page.inner_text("body")
-                    if "login" not in url:
-                        self.logged_in = True
-                        self.needs_navigation = True
-                        return True, "登录成功（页面已跳转）"
+                    if self._wait_until_logged_in(timeout=18):
+                        return True, "登录成功"
                     return False, "验证码可能错误，请重试"
 
                 # ── 无验证码：先点发送验证码，等验证码输入框出现 ──
@@ -1332,6 +1312,50 @@ class CRMSession:
         base = cfg["website"]["url"].rstrip("/")
         return f"{base}/?#/moveRelated/create"
 
+    def _move_list_url(self):
+        cfg = load_crm_config()
+        base = cfg["website"]["url"].rstrip("/")
+        return f"{base}/?#/moveRelated/list"
+
+    def _has_transfer_create_form(self):
+        try:
+            body_text = self.page.inner_text("body", timeout=3000)
+            return "移库类型" in body_text and bool(self._input_by_label("移库类型"))
+        except Exception:
+            return False
+
+    def _return_to_move_list(self):
+        try:
+            self.page.goto(self._move_list_url(), wait_until="domcontentloaded", timeout=20000)
+            time.sleep(1)
+            return True
+        except Exception:
+            return False
+
+    def _open_transfer_create_form(self, emit):
+        emit("打开 CRM 移库单新增页面...")
+        self._return_to_move_list()
+        try:
+            self.page.wait_for_function(
+                "() => document.body && /移库单/.test(document.body.innerText || '')",
+                timeout=10000
+            )
+        except Exception:
+            pass
+        if not self._click_top_button("新增"):
+            self.page.goto(self._move_create_url(), wait_until="domcontentloaded", timeout=30000)
+        for _ in range(12):
+            time.sleep(0.8)
+            if self._has_transfer_create_form():
+                return True
+        body_text = ""
+        try:
+            body_text = re.sub(r"\s+", " ", self.page.inner_text("body", timeout=2000))[:180]
+        except Exception:
+            pass
+        emit(f"未识别到新增移库表单，当前页面：{body_text or self.page.url}", "warn")
+        return False
+
     def _set_input_by_label(self, label, value):
         return self.page.evaluate("""({ label, value }) => {
             const clean = (text) => (text || '').replace(/\\s+/g, '');
@@ -1767,30 +1791,21 @@ class CRMSession:
             if not self.is_alive():
                 return False, "浏览器未启动，请先登录 CRM"
             try:
-                emit("打开 CRM 移库单新增页面...")
-                self.page.goto(self._move_create_url(), wait_until="domcontentloaded", timeout=30000)
-                try:
-                    self.page.wait_for_function(
-                        "() => document.body && /移库单|移库类型/.test(document.body.innerText || '')",
-                        timeout=15000
-                    )
-                except Exception:
-                    body_text = ""
-                    try:
-                        body_text = re.sub(r"\s+", " ", self.page.inner_text("body", timeout=2000))[:180]
-                    except Exception:
-                        pass
-                    return False, f"打开移库单页面后未识别到表单，当前页面内容：{body_text or self.page.url}"
-                time.sleep(2)
+                def fail(message):
+                    self._return_to_move_list()
+                    return False, message
+
+                if not self._open_transfer_create_form(emit):
+                    return fail("打开移库单页面后未识别到新增表单")
 
                 if transfer_type not in ("移入", "移出"):
                     transfer_type = "移出"
                 emit(f"选择移库类型：{transfer_type}")
                 if not self._select_transfer_type(transfer_type):
-                    return False, "未找到移库类型输入框"
+                    return fail("未找到移库类型输入框，已返回移库单列表")
                 emit(f"选择目标分销商：{distributor}")
                 if not self._select_input_by_label("分销商", distributor):
-                    return False, "未找到分销商输入框"
+                    return fail("未找到分销商输入框，已返回移库单列表")
                 if remark:
                     emit("填写备注")
                     self._set_input_by_label("备注", remark)
@@ -1798,7 +1813,7 @@ class CRMSession:
                 emit("保存移库单表头，等待单号...")
                 ok, result = self._save_transfer_header()
                 if not ok:
-                    return False, result
+                    return fail(result)
                 order_no = result
                 emit(f"移库单已保存：{order_no}", "success")
 
@@ -1808,7 +1823,7 @@ class CRMSession:
                     emit(f"添加移库明细 {idx}/{len(groups)}：{group['product_name']} × {group['quantity']}")
                     ok, msg = self._add_transfer_detail(group)
                     if not ok:
-                        return False, f"添加移库明细失败：{msg}"
+                        return fail(f"添加移库明细失败：{msg}")
                     added_products.append({
                         "product_name": group["product_name"],
                         "product_code": group["product_code"],
@@ -1821,11 +1836,12 @@ class CRMSession:
                     emit(f"添加条码明细 {idx}/{len(details)}：{detail['barcode']}")
                     ok, msg = self._add_barcode_detail(detail)
                     if not ok:
-                        return False, f"添加条码明细失败：{msg}"
+                        return fail(f"添加条码明细失败：{msg}")
                     added_barcodes.append(detail["barcode"])
 
                 if distributor == FROZEN_WAREHOUSE_NAME:
                     emit("目标为江西天麓冻结仓库，移库单只保存不确认，等待审批", "success")
+                    self._return_to_move_list()
                     return True, {
                         "order_no": order_no,
                         "products": added_products,
@@ -1838,8 +1854,9 @@ class CRMSession:
                 emit("点击确认移库，等待 CRM 提示...")
                 ok, msg = self._confirm_transfer()
                 if not ok:
-                    return False, f"确认移库失败：{msg}"
+                    return fail(f"确认移库失败：{msg}")
                 emit(msg or "CRM 已提示移库成功", "success")
+                self._return_to_move_list()
 
                 return True, {
                     "order_no": order_no,
