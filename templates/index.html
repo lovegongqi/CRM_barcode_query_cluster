@@ -1641,10 +1641,6 @@
                                 : '<span class="status-badge status-none">无服务单</span>'}
                             <span style="font-size:11px;color:#aaa;white-space:nowrap">${timeDisplay}</span>
                             <button class="action-btn" onclick="event.stopPropagation();showDetail('${item.barcode}')">详情</button>
-                            ${isArchived
-                                ? `<button class="action-btn" style="background:#28a745" onclick="event.stopPropagation();unarchiveBarcode('${item.barcode}')">取消归档</button>`
-                                : `<button class="action-btn" style="background:#28a745" onclick="event.stopPropagation();archiveBarcode('${item.barcode}')">归档</button>`
-                            }
                             <button class="action-btn delete-btn" onclick="event.stopPropagation();deleteBarcode('${item.barcode}')">删除</button>
                         </div>
                     </div>
