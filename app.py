@@ -2782,17 +2782,27 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None):
         if log:
             log(message, level)
 
-    emit(f"发现 {len(representatives)} 个产品前缀未维护，先各查询 1 个代表条码补充条码匹配")
-    for prefix, barcode in representatives.items():
-        emit(f"前缀 {prefix} 没有匹配规则，查询代表条码 {barcode}")
+    total = len(representatives)
+    emit(f"发现 {total} 个产品前缀未维护，先各查询 1 个代表条码补充条码匹配")
+    for index, (prefix, barcode) in enumerate(representatives.items(), 1):
+        emit(f"自动补充 {index}/{total}：前缀 {prefix}，代表条码 {barcode}", "info")
+        emit(f"开始 CRM 查询代表条码：{barcode}", "dim")
         success, message = crm_session.query_barcode(barcode, log)
         if success and match_product_library(barcode):
             result['queried'].append({'prefix': prefix, 'barcode': barcode})
-            emit(f"前缀 {prefix} 已写入条码匹配", 'success')
+            matched = match_product_library(barcode) or {}
+            emit(
+                f"前缀 {prefix} 已写入条码匹配：{matched.get('product_code', '')} / {matched.get('product_name', '')}",
+                'success'
+            )
         else:
             error = _brief_batch_error(message, 300)
             result['failed'].append({'prefix': prefix, 'barcode': barcode, 'error': error})
             emit(f"前缀 {prefix} 条码匹配补充失败：{error}", 'warn')
+    emit(
+        f"自动补充完成：成功 {len(result['queried'])} 个，失败 {len(result['failed'])} 个",
+        "success" if not result['failed'] else "warn"
+    )
     return result
 
 def _crm_ready_for_auto_query():
@@ -3319,6 +3329,17 @@ def api_transfer_summary_start():
     with summary_job_lock:
         if summary_job['running']:
             return jsonify({'success': False, 'error': '已有汇总预览正在执行，请等待完成'})
+    with library_query_lock:
+        if library_query_job['running']:
+            return jsonify({'success': False, 'error': '条码匹配查询正在执行，请等待完成后再汇总'})
+    with transfer_job_lock:
+        if transfer_job['running']:
+            return jsonify({'success': False, 'error': '已有移库任务正在执行，请等待完成后再汇总'})
+    with batch_job_lock:
+        if batch_job['running']:
+            return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再汇总'})
+
+    with summary_job_lock:
         summary_job.update({
             'running': True,
             'done': False,

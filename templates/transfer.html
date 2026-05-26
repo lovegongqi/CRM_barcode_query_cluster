@@ -109,6 +109,7 @@
 let lastSummary = null;
 let pollTimer = null;
 let previewTimer = null;
+let lastRenderedLogKey = '';
 
 function escapeHtml(text) {
     return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
@@ -133,6 +134,7 @@ function clearForm() {
     document.getElementById('previewBtn').disabled = false;
     document.getElementById('previewBtn').textContent = '汇总预览';
     lastSummary = null;
+    lastRenderedLogKey = '';
 }
 
 function renderSummary(summary) {
@@ -240,12 +242,16 @@ function appendLog(message, level='dim') {
     line.className = level;
     line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
     box.appendChild(line);
+    lastRenderedLogKey = '';
     box.scrollTop = box.scrollHeight;
 }
 
 function renderLogs(logs) {
     const box = document.getElementById('transferLog');
     if (!logs || !logs.length) return;
+    const key = JSON.stringify(logs);
+    if (key === lastRenderedLogKey) return;
+    lastRenderedLogKey = key;
     box.innerHTML = logs.map(row => `<div class="${escapeHtml(row.level || 'dim')}">[${escapeHtml(row.time || '')}] ${escapeHtml(row.message || '')}</div>`).join('');
     box.scrollTop = box.scrollHeight;
 }
@@ -260,6 +266,32 @@ async function pollStatus() {
         pollTimer = null;
         document.getElementById('submitBtn').disabled = false;
     }
+}
+
+async function restoreSummaryStatus() {
+    const data = await fetch('/api/transfer/summary/status').then(res => res.json()).catch(() => null);
+    if (!data || (!data.running && !data.done && !(data.logs || []).length)) return false;
+
+    renderLogs(data.logs || []);
+    if (data.summary) renderSummary(data.summary);
+
+    const previewBtn = document.getElementById('previewBtn');
+    const submitBtn = document.getElementById('submitBtn');
+
+    if (data.running) {
+        previewBtn.disabled = true;
+        previewBtn.textContent = '汇总中...';
+        submitBtn.disabled = true;
+        if (previewTimer) clearInterval(previewTimer);
+        previewTimer = setInterval(pollSummaryStatus, 1000);
+        return true;
+    }
+
+    previewBtn.disabled = false;
+    previewBtn.textContent = '汇总预览';
+    lastSummary = data.summary_success ? data.summary : null;
+    submitBtn.disabled = !data.summary_success;
+    return Boolean((data.logs || []).length || data.summary);
 }
 
 async function loadLibrary() {
@@ -343,9 +375,14 @@ async function refreshCrmStatus() {
     document.getElementById('appAccountStatus').textContent = appData.account ? appData.account.username : '未登录';
 }
 
-loadIncomingBarcodes();
-refreshCrmStatus();
-pollStatus();
+(async function initPage() {
+    loadIncomingBarcodes();
+    refreshCrmStatus();
+    const restoredSummary = await restoreSummaryStatus();
+    if (!restoredSummary) {
+        pollStatus();
+    }
+})();
 </script>
 </body>
 </html>
