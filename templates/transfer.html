@@ -43,6 +43,13 @@
         .log { background:#0f172a; color:#d4d4d4; border-radius:8px; padding:12px; font-family:"Courier New", monospace; font-size:12px; max-height:260px; overflow:auto; line-height:1.7; }
         .log .info { color:#4fc3f7; } .log .success { color:#81c784; } .log .error { color:#e57373; } .log .warn { color:#ffb74d; } .log .dim { color:#94a3b8; }
         .pill { display:inline-block; padding:2px 7px; border-radius:999px; background:#e0f2fe; color:#0369a1; font-size:12px; font-weight:700; }
+        .distributor-picker { position:relative; }
+        .distributor-dropdown { display:none; position:absolute; z-index:30; top:calc(100% + 4px); left:0; right:0; max-height:220px; overflow:auto; background:#fff; border:1px solid #cfd8e3; border-radius:6px; box-shadow:0 14px 32px rgba(15,23,42,.14); }
+        .distributor-dropdown.open { display:block; }
+        .distributor-option { padding:9px 10px; font-size:14px; cursor:pointer; border-bottom:1px solid #eef2f7; }
+        .distributor-option:last-child { border-bottom:none; }
+        .distributor-option:hover, .distributor-option.active { background:#eef4ff; color:#1d4ed8; }
+        .distributor-empty { padding:9px 10px; font-size:13px; color:#94a3b8; }
         @media (max-width: 860px) { .grid, .fields { grid-template-columns:1fr; } .header { flex-direction:column; align-items:flex-start; } }
     </style>
 </head>
@@ -82,8 +89,10 @@
                     </div>
                     <div>
                         <label>目标分销商</label>
-                        <input id="transferDistributor" list="distributorHistoryList" placeholder="输入分销商名称" autocomplete="off">
-                        <datalist id="distributorHistoryList"></datalist>
+                        <div class="distributor-picker">
+                            <input id="transferDistributor" placeholder="输入分销商名称" autocomplete="off" onfocus="showDistributorDropdown()" oninput="showDistributorDropdown()" onkeydown="handleDistributorKeydown(event)" onblur="hideDistributorDropdownSoon()">
+                            <div id="distributorHistoryDropdown" class="distributor-dropdown"></div>
+                        </div>
                     </div>
                     <div>
                         <label>备注</label>
@@ -111,6 +120,7 @@ let lastSummary = null;
 let pollTimer = null;
 let previewTimer = null;
 let lastRenderedLogKey = '';
+let highlightedDistributorIndex = -1;
 const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
 
 function escapeHtml(text) {
@@ -152,12 +162,61 @@ function mergeDistributorHistory(values) {
     renderDistributorHistory();
 }
 
-function renderDistributorHistory() {
-    const list = document.getElementById('distributorHistoryList');
-    if (!list) return;
-    list.innerHTML = loadDistributorHistory()
-        .map(name => `<option value="${escapeHtml(name)}"></option>`)
-        .join('');
+function filteredDistributorHistory() {
+    const input = document.getElementById('transferDistributor');
+    const keyword = (input ? input.value : '').trim().toLowerCase();
+    const rows = loadDistributorHistory();
+    if (!keyword) return rows;
+    return rows.filter(name => name.toLowerCase().includes(keyword));
+}
+
+function renderDistributorHistory(open = false) {
+    const input = document.getElementById('transferDistributor');
+    const dropdown = document.getElementById('distributorHistoryDropdown');
+    if (!dropdown) return;
+    const rows = filteredDistributorHistory();
+    if (highlightedDistributorIndex >= rows.length) highlightedDistributorIndex = rows.length ? rows.length - 1 : -1;
+    dropdown.innerHTML = rows.length
+        ? rows.map((name, index) => `<div class="distributor-option ${index === highlightedDistributorIndex ? 'active' : ''}" data-name="${escapeHtml(name)}" onmousedown="selectDistributorHistory(this.dataset.name)">${escapeHtml(name)}</div>`).join('')
+        : '<div class="distributor-empty">没有匹配的历史分销商</div>';
+    dropdown.classList.toggle('open', Boolean(open || document.activeElement === input));
+}
+
+function showDistributorDropdown() {
+    highlightedDistributorIndex = -1;
+    renderDistributorHistory(true);
+}
+
+function hideDistributorDropdownSoon() {
+    setTimeout(() => {
+        const dropdown = document.getElementById('distributorHistoryDropdown');
+        if (dropdown) dropdown.classList.remove('open');
+    }, 120);
+}
+
+function selectDistributorHistory(name) {
+    document.getElementById('transferDistributor').value = name;
+    saveDistributorHistory(name);
+    const dropdown = document.getElementById('distributorHistoryDropdown');
+    if (dropdown) dropdown.classList.remove('open');
+}
+
+function handleDistributorKeydown(event) {
+    const rows = filteredDistributorHistory();
+    if (!rows.length || !['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) return;
+    if (event.key === 'Escape') {
+        const dropdown = document.getElementById('distributorHistoryDropdown');
+        if (dropdown) dropdown.classList.remove('open');
+        return;
+    }
+    event.preventDefault();
+    if (event.key === 'ArrowDown') highlightedDistributorIndex = Math.min(highlightedDistributorIndex + 1, rows.length - 1);
+    if (event.key === 'ArrowUp') highlightedDistributorIndex = Math.max(highlightedDistributorIndex - 1, 0);
+    if (event.key === 'Enter' && highlightedDistributorIndex >= 0) {
+        selectDistributorHistory(rows[highlightedDistributorIndex]);
+        return;
+    }
+    renderDistributorHistory(true);
 }
 
 function clearForm() {
