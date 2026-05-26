@@ -1,0 +1,59 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "app.py"
+      - "app_launcher.py"
+      - "build_macos.sh"
+      - "requirements.txt"
+      - "templates/**"
+      - "config.example.json"
+      - "config.docker.example.json"
+      - ".github/workflows/macos-app.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-13
+          - arch: arm64
+            runner: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Build macOS package
+        run: |
+          chmod +x ./build_macos.sh
+          ./build_macos.sh
+
+      - name: Zip package
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent "CRM条码查询" "../CRM条码查询-macOS-${{ matrix.arch }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CRM条码查询-macOS-${{ matrix.arch }}
+          path: CRM条码查询-macOS-${{ matrix.arch }}.zip
+          if-no-files-found: error

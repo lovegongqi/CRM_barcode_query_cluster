@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Windows exe launcher for the CRM barcode query tool."""
+"""Desktop launcher for the CRM barcode query tool."""
 import os
 import sys
 import threading

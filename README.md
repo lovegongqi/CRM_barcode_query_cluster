@@ -120,6 +120,52 @@ http://127.0.0.1:5001/product-library
 
 注意：运行时不要关闭 exe 弹出的黑色窗口，关闭窗口后本地服务也会停止。
 
+## macOS 打包
+
+GitHub Actions 会同时构建两个 macOS 包：
+
+```text
+CRM条码查询-macOS-x64      # Intel Mac
+CRM条码查询-macOS-arm64    # Apple Silicon / M 系列 Mac
+```
+
+也可以在 GitHub 仓库页面手动运行：
+
+```text
+Actions -> Build macOS app -> Run workflow
+```
+
+下载对应架构的 artifact 后解压，进入 `CRM条码查询` 目录，运行里面的 `CRM条码查询` 可执行文件。程序会启动本地服务并自动打开：
+
+```text
+http://127.0.0.1:5001/product-library
+```
+
+如果 macOS 提示来自未验证开发者，可在“系统设置 -> 隐私与安全性”里允许打开，或在终端进入解压目录后执行：
+
+```bash
+xattr -dr com.apple.quarantine CRM条码查询
+```
+
+本地 macOS 打包：
+
+```bash
+chmod +x ./build_macos.sh
+./build_macos.sh
+```
+
+## Android 说明
+
+当前项目不能原样打包成 Android APK。原因是 CRM 自动登录、查询和移库依赖 Playwright 的桌面 Chromium，Android 原生环境不支持这套桌面浏览器自动化。
+
+安卓手机建议直接访问云服务器上的网页，例如：
+
+```text
+http://服务器IP:5001/product-library
+```
+
+如果以后要做安卓版，建议单独做一个 Android WebView 客户端，只负责打开云服务器页面；CRM 自动化仍然运行在云服务器或电脑端。
+
 ## Docker 部署
 
 Docker 版会在容器内用 Xvfb 启动一个虚拟显示器，让 Playwright 以普通 Chromium 形态运行。这样云服务器不需要真实桌面，也能兼容 CRM 的老式 Crystal Reports 页面。
