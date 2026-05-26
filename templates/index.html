@@ -335,7 +335,6 @@
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: rgba(0,0,0,0.3); z-index: 1000;
         }
-        .archived-tag { font-size: 10px; background: #f0f0f0; color: #888; padding: 1px 5px; border-radius: 3px; border: 1px solid #ddd; }
         .remark-text { font-size: 11px; color: #888; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         /* 详情弹窗 */
@@ -1119,7 +1118,7 @@
         <div class="app-header">
             <div class="app-title">
                 <h1>怡口 CRM 条码查询工作台</h1>
-                <div class="app-subtitle">批量查询、筛选归档和结果导出集中处理</div>
+                <div class="app-subtitle">批量查询、筛选和结果导出集中处理</div>
             </div>
             <div class="page-nav">
                 {% for link in nav_links %}
@@ -1246,12 +1245,7 @@
             </div>
         </div>
 
-        <!-- Tab切换 -->
         <div class="tabs-wrap">
-            <div class="tab-bar">
-                <button class="tab-btn active" id="tabAll" onclick="switchTab('all')">全部结果</button>
-                <button class="tab-btn" id="tabArchive" onclick="switchTab('archive')">归档结果</button>
-            </div>
             <div class="list-caption">点击条码行查看完整 CRM 报表</div>
         </div>
 
@@ -1288,11 +1282,9 @@
         const BARCODE_DIR = '/barcode/';
         const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
         let allBarcodes = [];
-        var archivedAllBarcodes = [];
         var selectedBarcodes = new Set();
         var filterConfigs = [];
         var activeFilters = {};
-        var currentTab = 'all';
 
         function showToast(msg) {
             const t = document.getElementById('toast');
@@ -1557,9 +1549,7 @@
         }
 
         function getCurrentFilteredBarcodes() {
-            if (currentTab !== 'archive') return getFilteredBarcodes();
-            const q = document.getElementById('searchInput').value.trim().toLowerCase();
-            return q ? archivedAllBarcodes.filter(b => b.barcode.toLowerCase().includes(q)) : archivedAllBarcodes;
+            return getFilteredBarcodes();
         }
 
         function clearDateFilter() {
@@ -1582,7 +1572,7 @@
         function renderList(barcodes) {
             const container = document.getElementById('barcodeList');
             if (barcodes.length === 0) {
-                container.innerHTML = `<div class="empty-state"><p>${currentTab === 'archive' ? '归档列表为空' : '没有符合条件的条码'}</p></div>`;
+                container.innerHTML = `<div class="empty-state"><p>没有符合条件的条码</p></div>`;
                 return;
             }
 
@@ -1606,9 +1596,8 @@
                 const status = rawStatus === '已结单' ? '已结单' : '未结单';
                 const statusClass = rawStatus === '已结单' ? 'status-done' : 'status-pending';
                 const hasRemark = !!(item.remark);
-                const isArchived = currentTab === 'archive';
-                const detailPath = isArchived ? `${BARCODE_DIR}archived/${item.filename}` : `${BARCODE_DIR}${item.filename}`;
-                const timeDisplay = isArchived ? (item.archiveTime || item.time) : item.time;
+                const detailPath = `${BARCODE_DIR}${item.filename}`;
+                const timeDisplay = item.time;
                 const remarkSafe = escapeHtml(item.remark || '');
                 const remarkTitle = item.remark ? escapeHtml(item.remark) : '添加备注';
                 const currentDealer = item.currentDealerOverride || sr10['dealername1'] || '';
@@ -1622,7 +1611,6 @@
                             <input type="checkbox" class="bc-checkbox" id="cb-${item.barcode}" data-barcode="${item.barcode}" onclick="event.stopPropagation();toggleSelect('${item.barcode}', this.checked)" ${selectedBarcodes.has(item.barcode) ? 'checked' : ''}>
                             <span class="bc-number">${item.barcode}</span>
                             ${productName ? `<span style="font-size:12px;color:#666;margin-left:4px;">${productName}</span>` : ''}
-                            ${isArchived ? '<span class="archived-tag">归档</span>' : ''}
                             <div class="bc-meta">
                                 ${currentDealer ? `<span class="meta-tag">🏢 ${currentDealer}</span>` : ''}
                                 ${transferUpdated}
@@ -1797,8 +1785,7 @@
         function goSelectedTransfer() {
             const barcodes = getSelectedBarcodeArray();
             if (barcodes.length === 0) { showToast('请先选择要移库的条码'); return; }
-            const sourceItems = currentTab === 'archive' ? archivedAllBarcodes : allBarcodes;
-            const selectedItems = sourceItems.filter(item => selectedBarcodes.has(item.barcode));
+            const selectedItems = allBarcodes.filter(item => selectedBarcodes.has(item.barcode));
             if (selectedItems.length !== barcodes.length) {
                 showToast('部分选中条码未加载完整信息，请刷新后再试');
                 return;
@@ -1854,8 +1841,7 @@
         }
 
         function showDetail(barcode) {
-            const isArchived = currentTab === 'archive';
-            const basePath = isArchived ? '/barcode/archived/' : '/barcode/';
+            const basePath = '/barcode/';
             const filePath = basePath + barcode + '.html';
             fetch(filePath)
                 .then(r => r.text())
@@ -2026,20 +2012,6 @@ ${section(9, '移机单', 'moveid1', [
             });
         }
 
-        function archiveBarcode(barcode) {
-            if (!confirm('确定归档 ' + barcode + ' ？')) return;
-            fetch('/api/barcodes/' + barcode + '/archive', {method: 'POST'})
-                .then(r => r.json())
-                .then(d => {
-                    if (d.success) {
-                        showToast('已归档 ' + barcode);
-                        loadAllData();
-                    } else {
-                        showToast('归档失败: ' + d.message);
-                    }
-                });
-        }
-
         function batchDelete() {
             const barcodes = getSelectedBarcodeArray();
             if (barcodes.length === 0) { showToast('请先选择要删除的条码'); return; }
@@ -2059,20 +2031,6 @@ ${section(9, '移机单', 'moveid1', [
             }, 1000);
         }
 
-        function unarchiveBarcode(barcode) {
-            if (!confirm('确定取消归档 ' + barcode + ' ？')) return;
-            fetch('/api/barcodes/' + barcode + '/unarchive', {method: 'POST'})
-                .then(r => r.json())
-                .then(d => {
-                    if (d.success) {
-                        showToast('已取消归档 ' + barcode);
-                        loadAllData();
-                    } else {
-                        showToast('取消归档失败: ' + d.message);
-                    }
-                });
-        }
-
         function deleteBarcode(barcode) {
             if (!confirm('确定删除 ' + barcode + ' ？')) return;
             fetch('/api/barcodes/' + barcode, {method: 'DELETE'})
@@ -2089,17 +2047,7 @@ ${section(9, '移机单', 'moveid1', [
                         allBarcodes = data.barcodes || [];
                         document.getElementById('totalCount').textContent = allBarcodes.length;
                         document.getElementById('filteredCount').textContent = allBarcodes.length;
-                        if (currentTab === 'all') applyFilters();
-                    }
-                })
-                .catch(err => console.error(err));
-
-            fetch('/api/barcodes/archived')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        archivedAllBarcodes = data.barcodes || [];
-                        if (currentTab === 'archive') applyFilters();
+                        applyFilters();
                     }
                 })
                 .catch(err => console.error(err));
@@ -2112,21 +2060,6 @@ ${section(9, '移机单', 'moveid1', [
                     }
                 })
                 .catch(err => console.error(err));
-        }
-
-        function switchTab(tab) {
-            currentTab = tab;
-            document.getElementById('tabAll').classList.toggle('active', tab === 'all');
-            document.getElementById('tabArchive').classList.toggle('active', tab === 'archive');
-            selectedBarcodes.clear();
-            document.getElementById('selectedCount').textContent = 0;
-            document.getElementById('searchInput').value = '';
-            if (tab === 'all') {
-                applyFilters();
-            } else {
-                document.getElementById('totalCount').textContent = archivedAllBarcodes.length;
-                renderList(archivedAllBarcodes);
-            }
         }
 
         document.getElementById('detailModal').addEventListener('click', e => {

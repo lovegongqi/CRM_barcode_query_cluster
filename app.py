@@ -3099,25 +3099,37 @@ def unarchive_barcode(barcode):
 
 def scan_barcodes():
     barcodes = []
-    archived = get_archived_set()
+    seen = set()
+
+    def add_barcode_file(filepath, filename):
+        barcode = filename.replace('.html', '')
+        if barcode in seen:
+            return
+        seen.add(barcode)
+        mtime = os.path.getmtime(filepath)
+        time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+        fields = extract_fields_from_html(filepath)
+        info = get_barcode_info(barcode)
+        barcodes.append({
+            'barcode': barcode,
+            'filename': filename,
+            'time': time_str,
+            'mtime': mtime,
+            'fields': fields,
+            'currentDealerOverride': info.get('currentDealerOverride', ''),
+            'transferUpdatedAt': info.get('transferUpdatedAt', ''),
+            'remark': info.get('remark', ''),
+        })
+
     for filename in os.listdir(BARCODE_DIR):
-        if filename.endswith('.html') and filename.replace('.html', '') not in archived:
-            barcode = filename.replace('.html', '')
-            filepath = os.path.join(BARCODE_DIR, filename)
-            mtime = os.path.getmtime(filepath)
-            time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
-            fields = extract_fields_from_html(filepath)
-            info = get_barcode_info(barcode)
-            barcodes.append({
-                'barcode': barcode,
-                'filename': filename,
-                'time': time_str,
-                'mtime': mtime,
-                'fields': fields,
-                'currentDealerOverride': info.get('currentDealerOverride', ''),
-                'transferUpdatedAt': info.get('transferUpdatedAt', ''),
-                'remark': info.get('remark', ''),
-            })
+        if filename.endswith('.html'):
+            add_barcode_file(os.path.join(BARCODE_DIR, filename), filename)
+
+    if os.path.exists(ARCHIVE_DIR):
+        for filename in os.listdir(ARCHIVE_DIR):
+            if filename.endswith('.html'):
+                add_barcode_file(os.path.join(ARCHIVE_DIR, filename), filename)
+
     barcodes.sort(key=lambda x: x['mtime'], reverse=True)
     return barcodes
 
@@ -3490,7 +3502,10 @@ def api_crm_transfer_status():
 
 @app.route("/barcode/<filename>")
 def serve_barcode(filename):
-    return send_from_directory(BARCODE_DIR, filename)
+    filepath = os.path.join(BARCODE_DIR, filename)
+    if os.path.exists(filepath):
+        return send_from_directory(BARCODE_DIR, filename)
+    return send_from_directory(ARCHIVE_DIR, filename)
 
 @app.route("/barcode/archived/<filename>")
 def serve_archived(filename):
