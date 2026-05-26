@@ -20,7 +20,18 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    name: build-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            python-architecture: x64
+          - arch: arm64
+            runner: windows-11-arm
+            python-architecture: arm64
 
     steps:
       - name: Checkout
@@ -30,6 +41,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          architecture: ${{ matrix.python-architecture }}
           cache: "pip"
 
       - name: Build Windows package
@@ -39,11 +51,11 @@ jobs:
       - name: Zip package
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM条码查询-Windows.zip" -Force
+          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM条码查询-Windows-${{ matrix.arch }}.zip" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CRM条码查询-Windows
-          path: CRM条码查询-Windows.zip
+          name: CRM条码查询-Windows-${{ matrix.arch }}
+          path: CRM条码查询-Windows-${{ matrix.arch }}.zip
           if-no-files-found: error

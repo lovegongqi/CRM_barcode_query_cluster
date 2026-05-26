@@ -79,10 +79,34 @@ Actions -> Build Windows exe -> Run workflow
 构建完成后，在这次 workflow 的 `Artifacts` 下载：
 
 ```text
-CRM条码查询-Windows
+CRM条码查询-Windows-x64
+CRM条码查询-Windows-arm64
 ```
 
-下载后解压 `CRM条码查询-Windows.zip`，双击里面的 `CRM条码查询.exe` 即可启动。
+下载后解压对应 zip，双击里面的 `CRM条码查询.exe` 即可启动。大多数 Windows 电脑用 x64；Windows on Arm 电脑用 arm64。
+
+### 发布到 Releases
+
+可以直接把 Windows 和 macOS 多架构包发布到 GitHub Releases 页面：
+
+```text
+Actions -> Release desktop packages -> Run workflow
+```
+
+输入 tag，例如：
+
+```text
+v1.0.0
+```
+
+运行成功后，仓库的 `Releases` 页面会出现这个版本，里面带四个下载文件：
+
+```text
+CRM条码查询-Windows-x64.zip
+CRM条码查询-Windows-arm64.zip
+CRM条码查询-macOS-x64.zip
+CRM条码查询-macOS-arm64.zip
+```
 
 ### 本地 Windows 打包
 
