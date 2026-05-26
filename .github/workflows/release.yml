@@ -52,7 +52,13 @@ jobs:
           $makensis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source
           if (-not $makensis) {
             choco install nsis -y --no-progress
-            $makensis = (Get-Command makensis.exe -ErrorAction Stop).Source
+            $makensis = @(
+              "C:\Program Files (x86)\NSIS\makensis.exe",
+              "C:\Program Files\NSIS\makensis.exe"
+            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $makensis) {
+            throw "makensis.exe was not found after installing NSIS"
           }
 
           $script = @'
