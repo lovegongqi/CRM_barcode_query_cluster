@@ -121,6 +121,7 @@ let pollTimer = null;
 let previewTimer = null;
 let lastRenderedLogKey = '';
 let highlightedDistributorIndex = -1;
+let submittedTransferDistributor = '';
 const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
 
 function escapeHtml(text) {
@@ -270,7 +271,6 @@ async function previewTransfer() {
     const barcodes = parseBarcodes();
     if (!barcodes.length) return alert('请输入条码');
     if (!await ensureCrmLoggedIn('汇总预览')) return;
-    saveDistributorHistory(document.getElementById('transferDistributor').value);
     const previewBtn = document.getElementById('previewBtn');
     const submitBtn = document.getElementById('submitBtn');
     previewBtn.disabled = true;
@@ -333,7 +333,6 @@ async function submitTransfer() {
     const distributor = document.getElementById('transferDistributor').value.trim();
     if (!distributor) return alert('请输入目标分销商');
     if (!await ensureCrmLoggedIn('提交移库')) return;
-    saveDistributorHistory(distributor);
     document.getElementById('submitBtn').disabled = true;
     appendLog('提交移库任务...', 'info');
     const res = await fetch('/api/crm/transfer', {
@@ -352,6 +351,7 @@ async function submitTransfer() {
         document.getElementById('submitBtn').disabled = false;
         return;
     }
+    submittedTransferDistributor = distributor;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(pollStatus, 1200);
     pollStatus();
@@ -386,6 +386,10 @@ async function pollStatus() {
     if (data.done) {
         clearInterval(pollTimer);
         pollTimer = null;
+        if (data.transfer_success) {
+            saveDistributorHistory((data.transfer && data.transfer.distributor) || submittedTransferDistributor);
+            submittedTransferDistributor = '';
+        }
         document.getElementById('submitBtn').disabled = false;
     }
 }
@@ -413,6 +417,10 @@ async function restoreTransferStatus() {
         if (pollTimer) {
             clearInterval(pollTimer);
             pollTimer = null;
+        }
+        if (data.transfer_success) {
+            saveDistributorHistory((data.transfer && data.transfer.distributor) || submittedTransferDistributor);
+            submittedTransferDistributor = '';
         }
         submitBtn.disabled = !lastSummary;
         return true;
