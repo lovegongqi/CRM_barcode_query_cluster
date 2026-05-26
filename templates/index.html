@@ -1183,7 +1183,7 @@
 6923445601006 6923445601007"></textarea>
                         </div>
                         <div class="button-col">
-                            <button class="btn-q btn-q-success" id="batchQueryBtn" onclick="doBatchQuery()" disabled>开始批量查询</button>
+                            <button class="btn-q btn-q-success" id="batchQueryBtn" onclick="doBatchQuery()">开始批量查询</button>
                             <button class="btn-q btn-q-danger btn-danger-soft" id="stopBtn" onclick="stopBatch()" style="display:none">停止任务</button>
                             <label style="font-size:11px;color:#667085;margin-top:8px;">失败重试上限</label>
                             <input type="number" id="retryLimit" min="0" max="5" value="5" style="width:120px;padding:6px 10px;border:1px solid #d9e1ec;border-radius:6px;">
@@ -2155,7 +2155,7 @@ ${section(9, '移机单', 'moveid1', [
                         loginStatus.textContent = '未登录';
                         loginBtn.style.display = '';
                         logoutBtn.style.display = 'none';
-                        batchQueryBtn.disabled = true;
+                        batchQueryBtn.disabled = isBatchRunning;
                         // 如果有保存的账号且浏览器在运行，也显示完成按钮
                         const savedUser = localStorage.getItem('crm_username');
                         const savedPass = localStorage.getItem('crm_password');
@@ -2169,7 +2169,7 @@ ${section(9, '移机单', 'moveid1', [
                     loginStatus.textContent = '未启动';
                     loginBtn.style.display = '';
                     logoutBtn.style.display = 'none';
-                    batchQueryBtn.disabled = true;
+                    batchQueryBtn.disabled = isBatchRunning;
                     document.getElementById('loginDoneBtn').style.display = 'none';
                 }
             } catch(e) {
@@ -2395,8 +2395,9 @@ ${section(9, '移机单', 'moveid1', [
                     }
                     qlog('自动登录成功', 'success');
                 } else {
-                    qlog('未登录且无保存的账号，请先登录', 'error');
-                    showToast('请先登录');
+                    qlog('CRM 未登录，请先在上方登录 CRM 后再查询', 'error');
+                    showToast('请先登录 CRM');
+                    document.getElementById('loginUsername').focus();
                     return;
                 }
             }

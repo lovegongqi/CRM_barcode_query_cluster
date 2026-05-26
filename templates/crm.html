@@ -140,7 +140,7 @@
 6923445601006 6923445601007"></textarea>
             </div>
             <div class="form-row query-actions">
-                <button class="btn btn-success" id="batchQueryBtn" onclick="doBatchQuery()" disabled>开始查询</button>
+                <button class="btn btn-success" id="batchQueryBtn" onclick="doBatchQuery()">开始查询</button>
                 <div class="form-group retry-group">
                     <label>失败重试上限</label>
                     <input type="number" id="retryLimitInput" min="0" max="5" value="5">
@@ -327,7 +327,7 @@
                         loginStatus.textContent = '未登录';
                         loginBtn.style.display = '';
                         logoutBtn.style.display = 'none';
-                        batchQueryBtn.disabled = true;
+                        batchQueryBtn.disabled = isBatchRunning || batchStartPending;
                     }
                 } else {
                     browserDot.className = 'status-dot gray';
@@ -335,7 +335,7 @@
                     loginStatus.textContent = '未启动';
                     loginBtn.style.display = '';
                     logoutBtn.style.display = 'none';
-                    batchQueryBtn.disabled = true;
+                    batchQueryBtn.disabled = isBatchRunning || batchStartPending;
                 }
             } catch(e) {
                 console.error(e);
