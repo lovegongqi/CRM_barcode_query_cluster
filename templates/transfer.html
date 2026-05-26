@@ -158,9 +158,20 @@ function renderSummary(summary) {
     box.style.display = '';
 }
 
+async function ensureCrmLoggedIn(actionText) {
+    const data = await fetch('/api/crm/status').then(r => r.json()).catch(() => ({}));
+    if (data.logged_in) return true;
+    const message = `CRM 未登录，不能${actionText}。请先登录 CRM。`;
+    appendLog(message, 'error');
+    alert(message);
+    location.href = '/crm';
+    return false;
+}
+
 async function previewTransfer() {
     const barcodes = parseBarcodes();
     if (!barcodes.length) return alert('请输入条码');
+    if (!await ensureCrmLoggedIn('汇总预览')) return;
     const previewBtn = document.getElementById('previewBtn');
     const submitBtn = document.getElementById('submitBtn');
     previewBtn.disabled = true;
@@ -222,6 +233,7 @@ async function submitTransfer() {
     if (!lastSummary) return alert('请先汇总预览');
     const distributor = document.getElementById('transferDistributor').value.trim();
     if (!distributor) return alert('请输入目标分销商');
+    if (!await ensureCrmLoggedIn('提交移库')) return;
     document.getElementById('submitBtn').disabled = true;
     appendLog('提交移库任务...', 'info');
     const res = await fetch('/api/crm/transfer', {
