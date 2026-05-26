@@ -61,6 +61,12 @@ jobs:
             throw "makensis.exe was not found after installing NSIS"
           }
 
+          if (Test-Path "windows-package") {
+            Remove-Item -Recurse -Force "windows-package"
+          }
+          New-Item -ItemType Directory -Force "windows-package" | Out-Null
+          Copy-Item -Recurse "dist\CRM条码查询\*" "windows-package"
+
           $script = @'
           Unicode true
           Name "CRM Barcode Query"
@@ -71,7 +77,7 @@ jobs:
           Page instfiles
           Section "Install"
             SetOutPath "$INSTDIR"
-            File /r "dist\CRM条码查询\*"
+            File /r "windows-package\*"
             CreateShortCut "$DESKTOP\CRM条码查询.lnk" "$INSTDIR\CRM条码查询.exe"
             Exec "$INSTDIR\CRM条码查询.exe"
           SectionEnd
