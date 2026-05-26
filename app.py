@@ -30,15 +30,17 @@ try:
 except ImportError:
     HAS_PLAYWRIGHT = False
 
-CRM_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+RUNTIME_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
+RESOURCE_BASE_DIR = getattr(sys, "_MEIPASS", RUNTIME_BASE_DIR)
+CRM_CONFIG_PATH = os.path.join(RUNTIME_BASE_DIR, "config.json")
 
 def load_crm_config():
     config_paths = [
         CRM_CONFIG_PATH,
     ]
     if os.path.exists("/.dockerenv"):
-        config_paths.append(os.path.join(os.path.dirname(__file__), "config.docker.example.json"))
-    config_paths.append(os.path.join(os.path.dirname(__file__), "config.example.json"))
+        config_paths.append(os.path.join(RESOURCE_BASE_DIR, "config.docker.example.json"))
+    config_paths.append(os.path.join(RESOURCE_BASE_DIR, "config.example.json"))
     for path in config_paths:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -1305,7 +1307,7 @@ class CRMSession:
 
                 if html_content and len(html_content.strip()) > 1000:
                     emit("保存条码查询结果")
-                    html_dir = os.path.join(os.path.dirname(__file__), "barcode")
+                    html_dir = BARCODE_DIR
                     os.makedirs(html_dir, exist_ok=True)
                     output_file = os.path.join(html_dir, f"{barcode}.html")
                     with open(output_file, "w", encoding="utf-8") as f:
@@ -2249,10 +2251,10 @@ try:
 except ImportError:
     HAS_OPENPYXL = False
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=os.path.join(RESOURCE_BASE_DIR, "templates"))
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crm-barcode-query-local-secret")
 
-BARCODE_DIR = "barcode"
+BARCODE_DIR = os.path.join(RUNTIME_BASE_DIR, "barcode")
 ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
 DATA_FILE = os.path.join(BARCODE_DIR, "barcode_data.json")
 PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")

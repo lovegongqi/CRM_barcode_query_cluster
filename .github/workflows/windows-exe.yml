@@ -1,0 +1,49 @@
+name: Build Windows exe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "app.py"
+      - "app_launcher.py"
+      - "build_windows.ps1"
+      - "requirements.txt"
+      - "templates/**"
+      - "config.example.json"
+      - "config.docker.example.json"
+      - ".github/workflows/windows-exe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Build Windows package
+        shell: pwsh
+        run: .\build_windows.ps1
+
+      - name: Zip package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM条码查询-Windows.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CRM条码查询-Windows
+          path: CRM条码查询-Windows.zip
+          if-no-files-found: error

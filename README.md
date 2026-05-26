@@ -66,6 +66,60 @@ http://127.0.0.1:5001/
 http://127.0.0.1:5001/crm
 ```
 
+## Windows exe 打包
+
+### GitHub Actions 自动打包
+
+推送到 `main` 后，GitHub Actions 会自动在 Windows 环境构建 exe。也可以在 GitHub 仓库页面手动运行：
+
+```text
+Actions -> Build Windows exe -> Run workflow
+```
+
+构建完成后，在这次 workflow 的 `Artifacts` 下载：
+
+```text
+CRM条码查询-Windows
+```
+
+下载后解压 `CRM条码查询-Windows.zip`，双击里面的 `CRM条码查询.exe` 即可启动。
+
+### 本地 Windows 打包
+
+建议在 Windows 电脑上打包。打包结果是目录版 exe，里面会带上 Playwright Chromium 浏览器；复制时要复制整个目录。
+
+准备：
+
+- 安装 Python 3.11，并勾选添加到 PATH
+- 用 PowerShell 进入项目目录
+
+执行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\build_windows.ps1
+```
+
+完成后会生成：
+
+```text
+dist\CRM条码查询\CRM条码查询.exe
+```
+
+使用时复制整个目录：
+
+```text
+dist\CRM条码查询\
+```
+
+到 Windows 电脑后双击 `CRM条码查询.exe`。程序会启动本地服务并自动打开：
+
+```text
+http://127.0.0.1:5001/product-library
+```
+
+注意：运行时不要关闭 exe 弹出的黑色窗口，关闭窗口后本地服务也会停止。
+
 ## Docker 部署
 
 Docker 版会在容器内用 Xvfb 启动一个虚拟显示器，让 Playwright 以普通 Chromium 形态运行。这样云服务器不需要真实桌面，也能兼容 CRM 的老式 Crystal Reports 页面。
