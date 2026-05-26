@@ -1171,14 +1171,14 @@
                 <div class="workspace-panel">
                     <div class="panel-title">
                         <strong>批量查询</strong>
-                        <span>每行一个条码</span>
+                        <span>换行、逗号、空格均可分隔</span>
                     </div>
                     <div class="query-row">
                         <div class="field-stack" style="flex:1;">
                             <label>条码列表</label>
                             <textarea id="batchInput" placeholder="6923445601003
-6923445601004
-6923445601005"></textarea>
+6923445601004,6923445601005
+6923445601006 6923445601007"></textarea>
                         </div>
                         <div class="button-col">
                             <button class="btn-q btn-q-success" id="batchQueryBtn" onclick="doBatchQuery()" disabled>开始批量查询</button>
@@ -1296,6 +1296,13 @@
             t.textContent = msg;
             t.classList.add('show');
             setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        function parseBarcodeText(text) {
+            return String(text || '')
+                .split(/[\s,，;；]+/)
+                .map(b => b.trim())
+                .filter(Boolean);
         }
 
         function escapeHtml(str) {
@@ -2284,7 +2291,7 @@ ${section(9, '移机单', 'moveid1', [
         async function doBatchQuery() {
             const text = document.getElementById('batchInput').value.trim();
             if (!text) { showToast('请输入条码'); return; }
-            const barcodes = text.split('\n').map(b => b.trim()).filter(b => b);
+            const barcodes = parseBarcodeText(text);
             if (barcodes.length === 0) { showToast('没有有效条码'); return; }
 
             // 去重

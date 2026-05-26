@@ -134,10 +134,10 @@
         <div class="card">
             <h2>查询条码</h2>
             <div class="form-group">
-                <label>条码查询（每行一个，输入一个也可以）</label>
+                <label>条码查询（可一行一个，也可用逗号、空格分隔）</label>
                 <textarea id="batchInput" placeholder="6923445601003
-6923445601004
-6923445601005"></textarea>
+6923445601004,6923445601005
+6923445601006 6923445601007"></textarea>
             </div>
             <div class="form-row query-actions">
                 <button class="btn btn-success" id="batchQueryBtn" onclick="doBatchQuery()" disabled>开始查询</button>
@@ -226,6 +226,13 @@
             t.textContent = msg;
             t.classList.add('show');
             setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        function parseBarcodeText(text) {
+            return String(text || '')
+                .split(/[\s,，;；]+/)
+                .map(b => b.trim())
+                .filter(Boolean);
         }
 
         function setProgress(id, pct) {
@@ -507,7 +514,7 @@
         async function doBatchQuery() {
             const text = document.getElementById('batchInput').value.trim();
             if (isBatchRunning || batchStartPending) { showToast('批量查询进行中'); return; }
-            const barcodes = text.split('\n').map(b => b.trim()).filter(b => b);
+            const barcodes = parseBarcodeText(text);
             // 去重，保持首次出现的顺序
             const seen = new Set();
             const uniqueBarcodes = barcodes.filter(b => {
