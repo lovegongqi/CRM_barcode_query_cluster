@@ -1601,9 +1601,6 @@
                 const remarkSafe = escapeHtml(item.remark || '');
                 const remarkTitle = item.remark ? escapeHtml(item.remark) : '添加备注';
                 const currentDealer = item.currentDealerOverride || sr10['dealername1'] || '';
-                const transferUpdated = item.currentDealerOverride && item.transferUpdatedAt
-                    ? `<span class="meta-tag">已同步 ${item.transferUpdatedAt}</span>`
-                    : '';
 
                 html += `
                     <div class="barcode-item" onclick="showDetail('${item.barcode}')">
@@ -1613,7 +1610,6 @@
                             ${productName ? `<span style="font-size:12px;color:#666;margin-left:4px;">${productName}</span>` : ''}
                             <div class="bc-meta">
                                 ${currentDealer ? `<span class="meta-tag">🏢 ${currentDealer}</span>` : ''}
-                                ${transferUpdated}
                                 ${sr2['name1'] ? `<span class="meta-tag">👤 ${sr2['name1']}</span>` : ''}
                             </div>
                         </div>

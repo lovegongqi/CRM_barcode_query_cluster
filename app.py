@@ -2848,6 +2848,62 @@ def _crm_ready_for_auto_query():
         return False, "CRM 当前未登录，请先到在线查询页面完成登录"
     return True, ""
 
+def _replace_html_field_values(html, field_ids, value):
+    escaped_value = html_mod.escape(_clean_export_value(value), quote=False)
+    changed = False
+    for field_id in field_ids:
+        pattern = re.compile(
+            rf'(<div\s+id="{re.escape(field_id)}"[^>]*>.*?<span[^>]*>)([^<]*)(</span>)',
+            re.DOTALL
+        )
+
+        def repl(match):
+            nonlocal changed
+            changed = True
+            return match.group(1) + escaped_value + match.group(3)
+
+        html = pattern.sub(repl, html)
+    return html, changed
+
+def _apply_dealer_to_fields(fields, dealer):
+    dealer = _clean_export_value(dealer)
+    if not dealer:
+        return fields
+    if isinstance(fields.get('sr5'), dict):
+        fields['sr5']['myproductdealer1'] = dealer
+    if isinstance(fields.get('sr10'), dict):
+        fields['sr10']['dealername1'] = dealer
+    return fields
+
+def _barcode_html_path(barcode):
+    filename = barcode + '.html'
+    for directory in (BARCODE_DIR, ARCHIVE_DIR):
+        filepath = os.path.join(directory, filename)
+        if os.path.exists(filepath):
+            return filepath
+    return ''
+
+def _sync_barcode_html_dealer(barcode, dealer):
+    filepath = _barcode_html_path(barcode)
+    if not filepath:
+        return False
+    try:
+        original_mtime = os.path.getmtime(filepath)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            html = f.read()
+        updated_html, changed = _replace_html_field_values(
+            html,
+            ["myproductdealer1", "dealername1"],
+            dealer
+        )
+        if changed:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(updated_html)
+            os.utime(filepath, (original_mtime, original_mtime))
+        return changed
+    except Exception:
+        return False
+
 def _apply_transfer_local_dealer(summary, transfer_type, distributor):
     new_dealer = OWN_DEALER_NAME if transfer_type == "移入" else distributor
     if not new_dealer:
@@ -2864,6 +2920,7 @@ def _apply_transfer_local_dealer(summary, transfer_type, distributor):
         info['transferType'] = transfer_type
         info['transferDistributor'] = distributor
         data[barcode] = info
+        _sync_barcode_html_dealer(barcode, new_dealer)
     save_data(data)
 
 def build_transfer_summary(selected_barcodes, transfer_type="移出", distributor=""):
@@ -3142,6 +3199,7 @@ def scan_barcodes():
         time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
         fields = extract_fields_from_html(filepath)
         info = get_barcode_info(barcode)
+        fields = _apply_dealer_to_fields(fields, info.get('currentDealerOverride', ''))
         barcodes.append({
             'barcode': barcode,
             'filename': filename,
@@ -3242,11 +3300,13 @@ def api_get_filter_options():
 
 @app.route("/api/barcodes/<barcode>", methods=["GET"])
 def api_get_barcode_detail(barcode):
-    filepath = os.path.join(BARCODE_DIR, barcode + '.html')
+    filepath = _barcode_html_path(barcode)
     if not os.path.exists(filepath):
         return jsonify({'success': False, 'error': '文件不存在'})
     
     fields = extract_fields_from_html(filepath)
+    info = get_barcode_info(barcode)
+    fields = _apply_dealer_to_fields(fields, info.get('currentDealerOverride', ''))
     
     mtime = os.path.getmtime(filepath)
     time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
@@ -3550,13 +3610,36 @@ def api_crm_transfer_status():
 
 @app.route("/barcode/<filename>")
 def serve_barcode(filename):
+    barcode = filename.rsplit('.', 1)[0]
+    info = get_barcode_info(barcode)
+    dealer = _clean_export_value(info.get('currentDealerOverride'))
     filepath = os.path.join(BARCODE_DIR, filename)
     if os.path.exists(filepath):
+        if dealer:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                html = f.read()
+            html, _ = _replace_html_field_values(html, ["myproductdealer1", "dealername1"], dealer)
+            return Response(html, mimetype='text/html')
         return send_from_directory(BARCODE_DIR, filename)
+    filepath = os.path.join(ARCHIVE_DIR, filename)
+    if dealer and os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            html = f.read()
+        html, _ = _replace_html_field_values(html, ["myproductdealer1", "dealername1"], dealer)
+        return Response(html, mimetype='text/html')
     return send_from_directory(ARCHIVE_DIR, filename)
 
 @app.route("/barcode/archived/<filename>")
 def serve_archived(filename):
+    barcode = filename.rsplit('.', 1)[0]
+    info = get_barcode_info(barcode)
+    dealer = _clean_export_value(info.get('currentDealerOverride'))
+    filepath = os.path.join(ARCHIVE_DIR, filename)
+    if dealer and os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            html = f.read()
+        html, _ = _replace_html_field_values(html, ["myproductdealer1", "dealername1"], dealer)
+        return Response(html, mimetype='text/html')
     return send_from_directory(ARCHIVE_DIR, filename)
 
 @app.route("/api/barcodes/<barcode>", methods=["DELETE"])
