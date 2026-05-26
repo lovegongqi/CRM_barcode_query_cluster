@@ -419,7 +419,13 @@ function loadIncomingBarcodes() {
     if (distributor) {
         document.getElementById('transferDistributor').value = distributor;
         sessionStorage.removeItem('transferDistributor');
-        appendLog(`已自动填入服务经销商：${distributor}`, 'info');
+        appendLog(`已自动填入目标分销商：${distributor}`, 'info');
+    }
+    const transferType = sessionStorage.getItem('transferType') || '';
+    if (transferType) {
+        document.getElementById('transferType').value = transferType;
+        sessionStorage.removeItem('transferType');
+        appendLog(`已自动选择移库类型：${transferType}`, 'info');
     }
 }
 

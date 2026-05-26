@@ -1286,6 +1286,7 @@
 
     <script>
         const BARCODE_DIR = '/barcode/';
+        const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
         let allBarcodes = [];
         var archivedAllBarcodes = [];
         var selectedBarcodes = new Set();
@@ -1800,16 +1801,59 @@
         function goSelectedTransfer() {
             const barcodes = getSelectedBarcodeArray();
             if (barcodes.length === 0) { showToast('请先选择要移库的条码'); return; }
-            const selectedItems = allBarcodes.filter(item => selectedBarcodes.has(item.barcode));
-            const serviceDealer = selectedItems
-                .map(item => {
-                    const fields = item.fields || {};
-                    const sr2 = Array.isArray(fields.sr2) ? (fields.sr2[0] || {}) : (fields.sr2 || {});
-                    return (sr2.newdealername1 || '').trim();
-                })
-                .find(Boolean) || '';
+            const sourceItems = currentTab === 'archive' ? archivedAllBarcodes : allBarcodes;
+            const selectedItems = sourceItems.filter(item => selectedBarcodes.has(item.barcode));
+            if (selectedItems.length !== barcodes.length) {
+                showToast('部分选中条码未加载完整信息，请刷新后再试');
+                return;
+            }
+            const transferTargets = selectedItems.map(item => {
+                const fields = item.fields || {};
+                const sr2 = Array.isArray(fields.sr2) ? (fields.sr2[0] || {}) : (fields.sr2 || {});
+                const sr10 = Array.isArray(fields.sr10) ? (fields.sr10[0] || {}) : (fields.sr10 || {});
+                const currentDealer = (item.currentDealerOverride || sr10.dealername1 || '').trim();
+                const serviceDealer = (sr2.newdealername1 || '').trim();
+                if (!currentDealer) {
+                    return {
+                        barcode: item.barcode,
+                        type: '',
+                        distributor: '',
+                        reason: '缺少当前所属经销商',
+                    };
+                }
+                if (currentDealer && currentDealer !== OWN_DEALER_NAME) {
+                    return {
+                        barcode: item.barcode,
+                        type: '移入',
+                        distributor: currentDealer,
+                        reason: `当前所属：${currentDealer}`,
+                    };
+                }
+                return {
+                    barcode: item.barcode,
+                    type: '移出',
+                    distributor: serviceDealer,
+                    reason: serviceDealer ? `服务经销商：${serviceDealer}` : '缺少服务经销商',
+                };
+            });
+            const missingTarget = transferTargets.find(row => !row.distributor);
+            if (missingTarget) {
+                showToast(`${missingTarget.barcode} ${missingTarget.reason || '缺少目标分销商'}，不能自动带入移库`);
+                return;
+            }
+            const uniqueKeys = Array.from(new Set(transferTargets.map(row => `${row.type}|${row.distributor}`)));
+            if (uniqueKeys.length > 1) {
+                const preview = transferTargets
+                    .slice(0, 5)
+                    .map(row => `${row.barcode}：${row.type}，${row.distributor}`)
+                    .join('\n');
+                alert(`所选条码包含不同移库方向或目标分销商，不能放在同一张移库单。请分开选择。\n\n${preview}`);
+                return;
+            }
+            const [transferType, transferDistributor] = uniqueKeys[0].split('|');
             sessionStorage.setItem('transferBarcodes', JSON.stringify(barcodes));
-            if (serviceDealer) sessionStorage.setItem('transferDistributor', serviceDealer);
+            sessionStorage.setItem('transferType', transferType);
+            sessionStorage.setItem('transferDistributor', transferDistributor);
             window.location.href = '/transfer';
         }
 
