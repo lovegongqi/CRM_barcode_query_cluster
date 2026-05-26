@@ -46,16 +46,39 @@ jobs:
         shell: pwsh
         run: .\build_windows.ps1
 
-      - name: Zip package
+      - name: Build Windows installer
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM-barcode-query-Windows-${{ matrix.arch }}.zip" -Force
+          $makensis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) {
+            choco install nsis -y --no-progress
+            $makensis = (Get-Command makensis.exe -ErrorAction Stop).Source
+          }
+
+          $script = @'
+          Unicode true
+          Name "CRM Barcode Query"
+          OutFile "CRM-barcode-query-Windows-__ARCH__.exe"
+          InstallDir "$LOCALAPPDATA\CRMBarcodeQuery"
+          RequestExecutionLevel user
+          Page directory
+          Page instfiles
+          Section "Install"
+            SetOutPath "$INSTDIR"
+            File /r "dist\CRM条码查询\*"
+            CreateShortCut "$DESKTOP\CRM条码查询.lnk" "$INSTDIR\CRM条码查询.exe"
+            Exec "$INSTDIR\CRM条码查询.exe"
+          SectionEnd
+          '@.Replace("__ARCH__", "${{ matrix.arch }}")
+
+          Set-Content -Path installer.nsi -Value $script -Encoding UTF8
+          & $makensis installer.nsi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: CRM-barcode-query-Windows-${{ matrix.arch }}
-          path: CRM-barcode-query-Windows-${{ matrix.arch }}.zip
+          path: CRM-barcode-query-Windows-${{ matrix.arch }}.exe
           if-no-files-found: error
 
   macos:
@@ -85,16 +108,20 @@ jobs:
           chmod +x ./build_macos.sh
           ./build_macos.sh
 
-      - name: Zip package
+      - name: Build macOS dmg
         run: |
-          cd dist
-          ditto -c -k --sequesterRsrc --keepParent "CRM条码查询" "../CRM-barcode-query-macOS-${{ matrix.arch }}.zip"
+          hdiutil create \
+            -volname "CRM Barcode Query" \
+            -srcfolder "dist/CRM条码查询" \
+            -ov \
+            -format UDZO \
+            "CRM-barcode-query-macOS-${{ matrix.arch }}.dmg"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: CRM-barcode-query-macOS-${{ matrix.arch }}
-          path: CRM-barcode-query-macOS-${{ matrix.arch }}.zip
+          path: CRM-barcode-query-macOS-${{ matrix.arch }}.dmg
           if-no-files-found: error
 
   release:
@@ -130,7 +157,7 @@ jobs:
           - macOS x64：适合 Intel Mac
           - macOS ARM64：适合 Apple Silicon / M 系列 Mac
 
-          下载对应压缩包后解压，运行里面的 CRM 条码查询程序。
+          Windows 下载 exe 安装包，macOS 下载 dmg 镜像文件。
           EOF
 
           args=()
@@ -151,4 +178,4 @@ jobs:
               fi
             done
 
-          gh release upload "$RELEASE_TAG" release-assets/*.zip --clobber
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber

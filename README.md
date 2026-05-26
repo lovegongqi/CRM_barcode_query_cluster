@@ -83,7 +83,7 @@ CRM-barcode-query-Windows-x64
 CRM-barcode-query-Windows-arm64
 ```
 
-下载后解压对应 zip，双击里面的 `CRM条码查询.exe` 即可启动。大多数 Windows 电脑用 x64；Windows on Arm 电脑用 arm64。
+下载后解压对应 artifact，双击里面的 `CRM条码查询.exe` 即可启动。大多数 Windows 电脑用 x64；Windows on Arm 电脑用 arm64。
 
 ### 发布到 Releases
 
@@ -102,11 +102,13 @@ v1.0.0
 运行成功后，仓库的 `Releases` 页面会出现这个版本，里面带四个下载文件：
 
 ```text
-CRM-barcode-query-Windows-x64.zip
-CRM-barcode-query-Windows-arm64.zip
-CRM-barcode-query-macOS-x64.zip
-CRM-barcode-query-macOS-arm64.zip
+CRM-barcode-query-Windows-x64.exe
+CRM-barcode-query-Windows-arm64.exe
+CRM-barcode-query-macOS-x64.dmg
+CRM-barcode-query-macOS-arm64.dmg
 ```
+
+Windows 下载 exe 安装包，macOS 下载 dmg 镜像文件。
 
 ### 本地 Windows 打包
 
@@ -159,7 +161,7 @@ CRM-barcode-query-macOS-arm64    # Apple Silicon / M 系列 Mac
 Actions -> Build macOS app -> Run workflow
 ```
 
-下载对应架构的 artifact 后解压，进入 `CRM条码查询` 目录，运行里面的 `CRM条码查询` 可执行文件。程序会启动本地服务并自动打开：
+下载对应架构的 artifact 或 dmg 后打开，进入 `CRM条码查询` 目录，运行里面的 `CRM条码查询` 可执行文件。程序会启动本地服务并自动打开：
 
 ```text
 http://127.0.0.1:5001/product-library
