@@ -1941,6 +1941,8 @@ crm_session = CRMWorker()
 DEFAULT_BATCH_RETRY_LIMIT = 5
 MAX_BATCH_RETRY_LIMIT = 5
 
+BATCH_LOG_LIMIT = 5000
+
 batch_job_lock = threading.Lock()
 batch_job = {
     'running': False,
@@ -1951,6 +1953,7 @@ batch_job = {
     'success': 0,
     'failed': 0,
     'retry_limit': DEFAULT_BATCH_RETRY_LIMIT,
+    'log_seq': 0,
     'logs': [],
     'results': [],
 }
@@ -2005,14 +2008,19 @@ def _brief_batch_error(error, limit=240):
         return text
     return text[:limit].rstrip() + "..."
 
+def _append_batch_log_unlocked(message, level='dim'):
+    batch_job['log_seq'] = int(batch_job.get('log_seq') or 0) + 1
+    batch_job['logs'].append({
+        'id': batch_job['log_seq'],
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'message': message,
+        'level': level,
+    })
+    batch_job['logs'] = batch_job['logs'][-BATCH_LOG_LIMIT:]
+
 def _batch_log(message, level='dim'):
     with batch_job_lock:
-        batch_job['logs'].append({
-            'time': datetime.now().strftime('%H:%M:%S'),
-            'message': message,
-            'level': level,
-        })
-        batch_job['logs'] = batch_job['logs'][-300:]
+        _append_batch_log_unlocked(message, level)
 
 def _library_query_log(message, level='dim'):
     with library_query_lock:
@@ -2225,11 +2233,10 @@ def _run_batch_job(barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIMIT):
                     'attempts': attempt,
                     'view_url': f'/barcode/{barcode}.html',
                 })
-                batch_job['logs'].append({
-                    'time': datetime.now().strftime('%H:%M:%S'),
-                    'message': f"✓ {barcode} 查询成功" + (f"（重试第 {attempt - 1} 次）" if attempt > 1 else ""),
-                    'level': 'success',
-                })
+                _append_batch_log_unlocked(
+                    f"✓ {barcode} 查询成功" + (f"（重试第 {attempt - 1} 次）" if attempt > 1 else ""),
+                    'success'
+                )
             else:
                 batch_job['failed'] += 1
                 batch_job['results'].append({
@@ -2238,12 +2245,10 @@ def _run_batch_job(barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIMIT):
                     'attempts': attempts,
                     'error': _brief_batch_error(result),
                 })
-                batch_job['logs'].append({
-                    'time': datetime.now().strftime('%H:%M:%S'),
-                    'message': f"✗ {barcode} 查询失败（已重试 {retry_limit} 次）: {_brief_batch_error(result)}",
-                    'level': 'error',
-                })
-            batch_job['logs'] = batch_job['logs'][-300:]
+                _append_batch_log_unlocked(
+                    f"✗ {barcode} 查询失败（已重试 {retry_limit} 次）: {_brief_batch_error(result)}",
+                    'error'
+                )
 
     with batch_job_lock:
         batch_job['running'] = False
@@ -3848,6 +3853,7 @@ def api_crm_batch_start():
             'success': 0,
             'failed': 0,
             'retry_limit': retry_limit,
+            'log_seq': 0,
             'logs': [],
             'results': [],
         })
@@ -3858,8 +3864,16 @@ def api_crm_batch_start():
 
 @app.route("/api/crm/batch/status")
 def api_crm_batch_status():
+    try:
+        since = int(request.args.get('since') or 0)
+    except (TypeError, ValueError):
+        since = 0
+    include_results = request.args.get('include_results') in ('1', 'true', 'yes')
     with batch_job_lock:
-        return jsonify({
+        logs = list(batch_job['logs'])
+        if since > 0:
+            logs = [row for row in logs if int(row.get('id') or 0) > since]
+        payload = {
             'success': True,
             'running': batch_job['running'],
             'stop_requested': batch_job['stop_requested'],
@@ -3868,9 +3882,13 @@ def api_crm_batch_status():
             'success_count': batch_job['success'],
             'failed_count': batch_job['failed'],
             'retry_limit': batch_job['retry_limit'],
-            'logs': list(batch_job['logs']),
-            'results': list(batch_job['results']),
-        })
+            'log_seq': batch_job.get('log_seq') or 0,
+            'logs': logs,
+            'results_count': len(batch_job['results']),
+        }
+        if include_results:
+            payload['results'] = list(batch_job['results'])
+        return jsonify(payload)
 
 @app.route("/api/crm/batch/stop", methods=["POST"])
 def api_crm_batch_stop():

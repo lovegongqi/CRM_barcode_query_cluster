@@ -201,7 +201,7 @@
         let pendingBatch = false; // 标记是否有待处理的批量查询
         let pendingBarcodes = []; // 待处理的条码列表
         let batchPollTimer = null;
-        let lastBatchLogCount = 0;
+        let lastBatchLogSeq = 0;
 
         function log(msg, type='') {
             const area = document.getElementById('logArea');
@@ -218,6 +218,10 @@
             line.className = entry.level || '';
             line.textContent = `[${entry.time}] ${entry.message}`;
             area.appendChild(line);
+            lastBatchLogSeq = Math.max(lastBatchLogSeq, Number(entry.id || 0));
+            while (area.children.length > 5000) {
+                area.removeChild(area.firstChild);
+            }
             area.scrollTop = area.scrollHeight;
         }
 
@@ -609,7 +613,7 @@
             // 清除待处理状态
             pendingBatch = false;
             pendingBarcodes = [];
-            lastBatchLogCount = 0;
+            lastBatchLogSeq = 0;
             const retryLimit = getRetryLimit();
 
             let d;
@@ -642,7 +646,7 @@
 
         async function pollBatchStatus() {
             try {
-                const r = await fetch('/api/crm/batch/status');
+                const r = await fetch('/api/crm/batch/status?since=' + encodeURIComponent(lastBatchLogSeq));
                 const d = await r.json();
                 if (!d.success) return;
 
@@ -650,8 +654,7 @@
                 const pct = d.total ? Math.round((d.current / d.total) * 100) : 0;
                 setProgress('queryProgressBar', pct);
 
-                (d.logs || []).slice(lastBatchLogCount).forEach(appendServerLog);
-                lastBatchLogCount = (d.logs || []).length;
+                (d.logs || []).forEach(appendServerLog);
 
                 if (d.running) {
                     document.getElementById('batchQueryBtn').disabled = true;
