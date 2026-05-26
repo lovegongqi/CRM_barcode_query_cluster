@@ -111,6 +111,7 @@ let lastSummary = null;
 let pollTimer = null;
 let previewTimer = null;
 let lastRenderedLogKey = '';
+const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
 
 function escapeHtml(text) {
     return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
@@ -135,8 +136,18 @@ function loadDistributorHistory() {
 
 function saveDistributorHistory(value) {
     const name = String(value || '').trim();
-    if (!name) return;
+    if (!name || name === OWN_DEALER_NAME) return;
     const rows = [name, ...loadDistributorHistory().filter(x => x !== name)].slice(0, 30);
+    localStorage.setItem('transferDistributorHistory', JSON.stringify(rows));
+    renderDistributorHistory();
+}
+
+function mergeDistributorHistory(values) {
+    const incoming = Array.from(new Set((values || [])
+        .map(x => String(x || '').trim())
+        .filter(x => x && x !== OWN_DEALER_NAME)));
+    if (!incoming.length) return;
+    const rows = [...incoming, ...loadDistributorHistory().filter(x => !incoming.includes(x))].slice(0, 30);
     localStorage.setItem('transferDistributorHistory', JSON.stringify(rows));
     renderDistributorHistory();
 }
@@ -166,6 +177,7 @@ function clearForm() {
 
 function renderSummary(summary) {
     const box = document.getElementById('summaryBox');
+    mergeDistributorHistory((summary.details || []).map(row => row.current_dealer));
     const totalQty = (summary.groups || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
     const rows = (summary.groups || []).map(row => `
         <tr><td>${escapeHtml(row.product_name)}</td><td>${escapeHtml(row.product_code)}</td><td>${row.quantity || 0}</td><td>${(row.barcodes || []).map(escapeHtml).join('<br>')}</td></tr>
@@ -468,9 +480,17 @@ async function refreshCrmStatus() {
     document.getElementById('appAccountStatus').textContent = appData.account ? appData.account.username : '未登录';
 }
 
+async function loadQueriedDealerHistory() {
+    const data = await fetch('/api/distributor-history').then(r => r.json()).catch(() => null);
+    if (data && data.success) {
+        mergeDistributorHistory(data.dealers || []);
+    }
+}
+
 (async function initPage() {
     renderDistributorHistory();
     loadIncomingBarcodes();
+    loadQueriedDealerHistory();
     refreshCrmStatus();
     resumeBackgroundJobs();
 })();

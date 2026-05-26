@@ -2924,6 +2924,15 @@ def build_transfer_summary(selected_barcodes, transfer_type="移出", distributo
         'blocked': blocked,
     }
 
+def queried_dealer_history():
+    dealers = OrderedDict()
+    for item in scan_barcodes():
+        info = _barcode_product_info(item)
+        dealer = _clean_export_value(info.get('current_dealer'))
+        if dealer and dealer != OWN_DEALER_NAME:
+            dealers[dealer] = True
+    return list(dealers.keys())
+
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
@@ -3036,6 +3045,8 @@ def required_permission_for_path(path):
     if path == "/crm":
         return "crm"
     if path == "/transfer" or path.startswith("/api/transfer") or path.startswith("/api/crm/transfer"):
+        return "transfer"
+    if path.startswith("/api/distributor-history"):
         return "transfer"
     if path == "/product-library" or path.startswith("/api/product-library"):
         return "product-library"
@@ -3360,6 +3371,13 @@ def api_transfer_summary():
         })
 
     return jsonify({'success': True, 'summary': summary})
+
+@app.route("/api/distributor-history", methods=["GET"])
+def api_distributor_history():
+    return jsonify({
+        'success': True,
+        'dealers': queried_dealer_history(),
+    })
 
 @app.route("/api/transfer/summary/start", methods=["POST"])
 def api_transfer_summary_start():
