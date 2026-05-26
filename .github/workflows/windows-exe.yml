@@ -51,11 +51,11 @@ jobs:
       - name: Zip package
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM条码查询-Windows-${{ matrix.arch }}.zip" -Force
+          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM-barcode-query-Windows-${{ matrix.arch }}.zip" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CRM条码查询-Windows-${{ matrix.arch }}
-          path: CRM条码查询-Windows-${{ matrix.arch }}.zip
+          name: CRM-barcode-query-Windows-${{ matrix.arch }}
+          path: CRM-barcode-query-Windows-${{ matrix.arch }}.zip
           if-no-files-found: error

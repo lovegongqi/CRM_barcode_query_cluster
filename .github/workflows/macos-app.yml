@@ -49,11 +49,11 @@ jobs:
       - name: Zip package
         run: |
           cd dist
-          ditto -c -k --sequesterRsrc --keepParent "CRM条码查询" "../CRM条码查询-macOS-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "CRM条码查询" "../CRM-barcode-query-macOS-${{ matrix.arch }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CRM条码查询-macOS-${{ matrix.arch }}
-          path: CRM条码查询-macOS-${{ matrix.arch }}.zip
+          name: CRM-barcode-query-macOS-${{ matrix.arch }}
+          path: CRM-barcode-query-macOS-${{ matrix.arch }}.zip
           if-no-files-found: error

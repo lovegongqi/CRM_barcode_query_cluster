@@ -79,8 +79,8 @@ Actions -> Build Windows exe -> Run workflow
 构建完成后，在这次 workflow 的 `Artifacts` 下载：
 
 ```text
-CRM条码查询-Windows-x64
-CRM条码查询-Windows-arm64
+CRM-barcode-query-Windows-x64
+CRM-barcode-query-Windows-arm64
 ```
 
 下载后解压对应 zip，双击里面的 `CRM条码查询.exe` 即可启动。大多数 Windows 电脑用 x64；Windows on Arm 电脑用 arm64。
@@ -102,10 +102,10 @@ v1.0.0
 运行成功后，仓库的 `Releases` 页面会出现这个版本，里面带四个下载文件：
 
 ```text
-CRM条码查询-Windows-x64.zip
-CRM条码查询-Windows-arm64.zip
-CRM条码查询-macOS-x64.zip
-CRM条码查询-macOS-arm64.zip
+CRM-barcode-query-Windows-x64.zip
+CRM-barcode-query-Windows-arm64.zip
+CRM-barcode-query-macOS-x64.zip
+CRM-barcode-query-macOS-arm64.zip
 ```
 
 ### 本地 Windows 打包
@@ -149,8 +149,8 @@ http://127.0.0.1:5001/product-library
 GitHub Actions 会同时构建两个 macOS 包：
 
 ```text
-CRM条码查询-macOS-x64      # Intel Mac
-CRM条码查询-macOS-arm64    # Apple Silicon / M 系列 Mac
+CRM-barcode-query-macOS-x64      # Intel Mac
+CRM-barcode-query-macOS-arm64    # Apple Silicon / M 系列 Mac
 ```
 
 也可以在 GitHub 仓库页面手动运行：

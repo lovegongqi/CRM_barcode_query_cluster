@@ -49,13 +49,13 @@ jobs:
       - name: Zip package
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM条码查询-Windows-${{ matrix.arch }}.zip" -Force
+          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM-barcode-query-Windows-${{ matrix.arch }}.zip" -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CRM条码查询-Windows-${{ matrix.arch }}
-          path: CRM条码查询-Windows-${{ matrix.arch }}.zip
+          name: CRM-barcode-query-Windows-${{ matrix.arch }}
+          path: CRM-barcode-query-Windows-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   macos:
@@ -88,13 +88,13 @@ jobs:
       - name: Zip package
         run: |
           cd dist
-          ditto -c -k --sequesterRsrc --keepParent "CRM条码查询" "../CRM条码查询-macOS-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "CRM条码查询" "../CRM-barcode-query-macOS-${{ matrix.arch }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CRM条码查询-macOS-${{ matrix.arch }}
-          path: CRM条码查询-macOS-${{ matrix.arch }}.zip
+          name: CRM-barcode-query-macOS-${{ matrix.arch }}
+          path: CRM-barcode-query-macOS-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   release:
@@ -143,5 +143,12 @@ jobs:
           else
             gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$notes" "${args[@]}"
           fi
+
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' |
+            while IFS= read -r asset; do
+              if [ -n "$asset" ]; then
+                gh release delete-asset "$RELEASE_TAG" "$asset" -y
+              fi
+            done
 
           gh release upload "$RELEASE_TAG" release-assets/*.zip --clobber
