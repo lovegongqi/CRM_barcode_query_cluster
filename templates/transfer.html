@@ -278,6 +278,37 @@ async function pollStatus() {
     }
 }
 
+async function restoreTransferStatus() {
+    const data = await fetch('/api/crm/transfer/status').then(res => res.json()).catch(() => null);
+    if (!data || (!data.running && !data.done && !(data.logs || []).length && !data.summary)) return false;
+
+    renderLogs(data.logs || []);
+    if (data.summary) {
+        renderSummary(data.summary);
+        lastSummary = data.summary;
+    }
+
+    const submitBtn = document.getElementById('submitBtn');
+    if (data.running) {
+        submitBtn.disabled = true;
+        if (!pollTimer) {
+            pollTimer = setInterval(pollStatus, 1200);
+        }
+        return true;
+    }
+
+    if (data.done) {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+        submitBtn.disabled = !lastSummary;
+        return true;
+    }
+
+    return Boolean((data.logs || []).length || data.summary);
+}
+
 async function restoreSummaryStatus() {
     const data = await fetch('/api/transfer/summary/status').then(res => res.json()).catch(() => null);
     if (!data || (!data.running && !data.done && !(data.logs || []).length)) return false;
@@ -305,10 +336,8 @@ async function restoreSummaryStatus() {
 }
 
 async function resumeBackgroundJobs() {
-    const restoredSummary = await restoreSummaryStatus();
-    if (!restoredSummary) {
-        pollStatus();
-    }
+    await restoreSummaryStatus();
+    await restoreTransferStatus();
 }
 
 async function loadLibrary() {
