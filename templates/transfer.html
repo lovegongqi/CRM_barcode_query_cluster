@@ -169,16 +169,26 @@ async function previewTransfer() {
     lastSummary = null;
     if (previewTimer) clearInterval(previewTimer);
     appendLog('开始汇总预览，缺少条码匹配前缀时会自动查询代表条码...', 'info');
-    const res = await fetch('/api/transfer/summary/start', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
+    let data = null;
+    try {
+        const payload = JSON.stringify({
             barcodes,
             transfer_type: document.getElementById('transferType').value,
             distributor: document.getElementById('transferDistributor').value.trim()
-        })
-    });
-    const data = await res.json();
+        });
+        const res = await fetch('/api/transfer/summary/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            keepalive: payload.length < 60000,
+            body: payload
+        });
+        data = await res.json();
+    } catch (e) {
+        appendLog('启动汇总请求被中断，正在检查后台任务状态...', 'warn');
+        previewTimer = setInterval(pollSummaryStatus, 1000);
+        pollSummaryStatus();
+        return;
+    }
     if (!data.success) {
         appendLog(data.error || '预览失败', 'error');
         previewBtn.disabled = false;
@@ -294,6 +304,13 @@ async function restoreSummaryStatus() {
     return Boolean((data.logs || []).length || data.summary);
 }
 
+async function resumeBackgroundJobs() {
+    const restoredSummary = await restoreSummaryStatus();
+    if (!restoredSummary) {
+        pollStatus();
+    }
+}
+
 async function loadLibrary() {
     const res = await fetch('/api/product-library');
     const data = await res.json();
@@ -378,11 +395,18 @@ async function refreshCrmStatus() {
 (async function initPage() {
     loadIncomingBarcodes();
     refreshCrmStatus();
-    const restoredSummary = await restoreSummaryStatus();
-    if (!restoredSummary) {
-        pollStatus();
-    }
+    resumeBackgroundJobs();
 })();
+
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+        resumeBackgroundJobs();
+    }
+});
+
+window.addEventListener('pageshow', () => {
+    resumeBackgroundJobs();
+});
 </script>
 </body>
 </html>

@@ -1929,6 +1929,8 @@ class CRMWorker:
         return self._call("check_login_status")
 
     def query_barcode(self, barcode, log=None):
+        if log:
+            log(f"CRM 查询任务已加入队列：{barcode}", "dim")
         return self._call("query_barcode", barcode, log)
 
     def create_transfer(self, summary, distributor, transfer_type="移出", remark="", log=None):
@@ -2084,11 +2086,13 @@ def _summary_error_from_result(summary):
 def _run_summary_job(barcodes, transfer_type, distributor):
     try:
         _summary_log(f"开始汇总预览，共 {len(barcodes)} 个条码", 'info')
+        _summary_log("开始检查条码匹配前缀和已有查询结果", 'info')
         auto_library = {'queried': [], 'failed': []}
         representatives = _missing_product_library_representatives(barcodes)
         if representatives:
             items = "，".join([f"{prefix}←{barcode}" for prefix, barcode in representatives.items()])
             _summary_log(f"发现 {len(representatives)} 个缺失前缀：{items}", 'info')
+            _summary_log("将自动逐个查询代表条码补充条码匹配；离开本页面不会停止后台汇总，可返回移库页查看日志", 'dim')
             with transfer_job_lock:
                 if transfer_job['running']:
                     error = '已有移库任务正在执行，请等待完成后再汇总'
@@ -2107,6 +2111,12 @@ def _run_summary_job(barcodes, transfer_type, distributor):
                 _finish_summary_job(False, ready_message)
                 return
             auto_library = ensure_product_library_for_barcodes(barcodes, _summary_log)
+            if auto_library.get('failed'):
+                failed_items = "，".join([
+                    f"{row.get('prefix')}←{row.get('barcode')}"
+                    for row in auto_library.get('failed', [])
+                ])
+                _summary_log(f"仍有前缀自动补充失败：{failed_items}", 'warn')
         else:
             _summary_log("条码匹配已覆盖所有条码前缀，不需要自动查询", 'success')
 
@@ -2786,8 +2796,9 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None):
     emit(f"发现 {total} 个产品前缀未维护，先各查询 1 个代表条码补充条码匹配")
     for index, (prefix, barcode) in enumerate(representatives.items(), 1):
         emit(f"自动补充 {index}/{total}：前缀 {prefix}，代表条码 {barcode}", "info")
-        emit(f"开始 CRM 查询代表条码：{barcode}", "dim")
+        emit(f"准备查询代表条码 {barcode}，用于补充前缀 {prefix}", "dim")
         success, message = crm_session.query_barcode(barcode, log)
+        emit(f"代表条码 {barcode} 查询返回：{'成功' if success else '失败'}", "success" if success else "warn")
         if success and match_product_library(barcode):
             result['queried'].append({'prefix': prefix, 'barcode': barcode})
             matched = match_product_library(barcode) or {}
