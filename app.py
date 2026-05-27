@@ -1597,6 +1597,67 @@ class CRMSession:
             return false;
         }""", {"label": label, "value": str(value)})
 
+    def _set_any_dialog_input(self, value):
+        return self.page.evaluate("""(value) => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                .filter(visible)
+                .reverse();
+            for (const dialog of dialogs) {
+                const input = Array.from(dialog.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
+                    .filter(visible)
+                    .find(el => {
+                        const type = (el.getAttribute('type') || 'text').toLowerCase();
+                        return !['hidden', 'checkbox', 'radio'].includes(type);
+                    });
+                if (!input) continue;
+                input.focus();
+                input.value = value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            }
+            return false;
+        }""", str(value))
+
+    def _click_dialog_search_button(self):
+        clicked = self.page.evaluate("""() => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                .filter(visible)
+                .reverse();
+            for (const dialog of dialogs) {
+                const nodes = Array.from(dialog.querySelectorAll(
+                    'button:not([disabled]), a, span, .el-button, .el-input-group__append, .el-icon-search, i[class*="search"], svg'
+                )).filter(visible);
+                const textTarget = nodes.find(el => {
+                    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, '');
+                    return text && ['查询', '搜索', '查找', '检索'].some(word => text.includes(word));
+                });
+                const iconTarget = nodes.find(el => {
+                    const cls = el.getAttribute('class') || '';
+                    const title = el.getAttribute('title') || '';
+                    const aria = el.getAttribute('aria-label') || '';
+                    return /search|查询|搜索|查找|检索/i.test(cls + title + aria);
+                });
+                const target = textTarget || iconTarget;
+                if (target) {
+                    target.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if clicked:
+            time.sleep(1)
+            return True
+        try:
+            self.page.keyboard.press("Enter")
+            time.sleep(1)
+            return True
+        except Exception:
+            return False
+
     def _click_product_search_result(self, product_code, product_name=""):
         clicked = self.page.evaluate("""({ productCode, productName }) => {
             const clean = (text) => (text || '').replace(/\\s+/g, ' ').trim();
@@ -1635,10 +1696,12 @@ class CRMSession:
         if not self._click_field_action_by_label("产品名称"):
             return False, "未找到产品名称右侧搜索按钮"
         if not self._set_dialog_input_by_label("产品编码", product_code):
-            self._set_dialog_input_by_label("编码", product_code)
-        if not (self._click_dialog_button("查询") or self._click_dialog_button("搜索")):
-            return False, "产品搜索弹窗未找到查询按钮"
+            if not self._set_dialog_input_by_label("编码", product_code):
+                self._set_any_dialog_input(product_code)
         time.sleep(1.2)
+        if not self._click_product_search_result(product_code, product_name):
+            self._click_dialog_search_button()
+            time.sleep(1.5)
         if not self._click_product_search_result(product_code, product_name):
             return False, f"产品搜索结果未找到编码 {product_code}"
         self._click_dialog_button("确定")
