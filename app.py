@@ -2143,12 +2143,15 @@ class CRMSession:
             return False, msg
         return True, ""
 
-    def _add_barcode_detail(self, detail):
+    def _add_barcode_detail(self, detail, emit=None):
         if not self._click_section_action("条码明细", "新增"):
             return False, "未找到条码明细新增按钮"
         product_name = detail.get("product_name", "")
-        if product_name and not self._select_input_by_label("产品名称", product_name):
-            return False, "条码明细未找到产品名称输入框"
+        product_code = detail.get("product_code", "")
+        if product_name:
+            ok, msg = self._select_product_with_code_check(product_name, product_code, emit)
+            if not ok:
+                return False, f"条码明细产品选择失败：{msg}"
         filled = False
         for label in ["产品条码", "条码"]:
             if self._set_input_by_label(label, detail["barcode"]):
@@ -2233,7 +2236,7 @@ class CRMSession:
                 details = summary.get("details", [])
                 for idx, detail in enumerate(details, start=1):
                     emit(f"添加条码明细 {idx}/{len(details)}：{detail['barcode']}")
-                    ok, msg = self._add_barcode_detail(detail)
+                    ok, msg = self._add_barcode_detail(detail, emit)
                     if not ok:
                         return fail(f"添加条码明细失败：{msg}")
                     added_barcodes.append(detail["barcode"])
