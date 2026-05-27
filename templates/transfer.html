@@ -252,12 +252,17 @@ function renderSummary(summary) {
     `).join('');
     const blockedRows = (summary.blocked || []).map(row => `<tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.reason)}</td></tr>`).join('');
     const missingRows = (summary.missing || []).map(bc => `<tr><td>${escapeHtml(bc)}</td><td>条码匹配未匹配，请先添加前缀规则或查询一次该产品条码</td></tr>`).join('');
+    const excludedRows = (summary.excluded || []).map(bc => {
+        const reason = (summary.excluded_unmatched || []).includes(bc) ? '在线查询后仍无产品信息，已临时排除' : '拆机条码，已排除';
+        return `<tr><td>${escapeHtml(bc)}</td><td>${escapeHtml(reason)}</td></tr>`;
+    }).join('');
     box.innerHTML = `
         <table><thead><tr><th>产品名称</th><th>产品编码</th><th>数量</th><th>条码</th></tr></thead><tbody>${rows || '<tr><td colspan="4">无可移库明细</td></tr>'}</tbody></table>
         <div class="note">已选条码 ${summary.total || 0} 个，产品 ${(summary.groups || []).length} 条，数量合计 ${totalQty}。</div>
         <table><thead><tr><th>条码</th><th>产品名称</th><th>产品编码</th><th>当前所属</th><th>来源</th></tr></thead><tbody>${details}</tbody></table>
         ${blockedRows ? `<div class="note blocked">以下条码方向不匹配，仅提示。确认后仍会提交移库。</div><table><thead><tr><th>条码</th><th>提示</th></tr></thead><tbody>${blockedRows}</tbody></table>` : ''}
         ${missingRows ? `<div class="note blocked">以下条码无法识别产品。</div><table><thead><tr><th>条码</th><th>原因</th></tr></thead><tbody>${missingRows}</tbody></table>` : ''}
+        ${excludedRows ? `<div class="note blocked">以下条码不会参与本次移库。</div><table><thead><tr><th>条码</th><th>原因</th></tr></thead><tbody>${excludedRows}</tbody></table>` : ''}
     `;
     box.style.display = '';
 }

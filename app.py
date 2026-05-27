@@ -2464,6 +2464,15 @@ def _library_query_log(message, level='dim'):
         library_query_job['logs'] = library_query_job['logs'][-300:]
 
 def _run_library_query_job(barcode):
+    if is_disassembly_barcode(barcode):
+        _library_query_log(f"已跳过拆机条码：{barcode}，CRM 不查询", 'warn')
+        with library_query_lock:
+            library_query_job['running'] = False
+            library_query_job['done'] = True
+            library_query_job['success'] = True
+            library_query_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            library_query_job['error'] = ''
+        return
     _library_query_log(f"开始查询条码：{barcode}", 'info')
     try:
         success, result = crm_session.query_barcode(barcode, _library_query_log)
@@ -2523,8 +2532,39 @@ def _summary_error_from_result(summary):
         return '部分条码缺少产品名称或产品编码，无法自动汇总'
     return ''
 
-def _run_summary_job(barcodes, transfer_type, distributor):
+def _exclude_unmatched_transfer_barcodes(summary):
+    missing = [_clean_export_value(x) for x in summary.get('missing', []) if _clean_export_value(x)]
+    if not missing:
+        return []
+    missing_set = set(missing)
+    summary['details'] = [
+        row for row in summary.get('details', [])
+        if _clean_export_value(row.get('barcode')) not in missing_set
+    ]
+    summary['groups'] = [
+        row for row in summary.get('groups', [])
+        if row.get('barcodes')
+    ]
+    summary['missing'] = []
+    summary['total'] = len(summary.get('details', []))
+    excluded = summary.setdefault('excluded', [])
+    for barcode in missing:
+        if barcode not in excluded:
+            excluded.append(barcode)
+    summary['excluded_unmatched'] = missing
+    return missing
+
+def _run_summary_job(barcodes, transfer_type, distributor, excluded=None):
     try:
+        barcodes, filtered = filter_disassembly_barcodes(barcodes)
+        excluded = list(excluded or []) + filtered
+        if excluded:
+            _summary_log(f"已排除拆机条码 {len(excluded)} 个，不查询不移库：{', '.join(excluded[:10])}", 'warn')
+        if not barcodes:
+            error = '输入的条码都是拆机条码，无需汇总或移库'
+            _summary_log(error, 'warn')
+            _finish_summary_job(False, error, {'total': 0, 'details': [], 'groups': [], 'missing': [], 'incomplete': [], 'blocked': [], 'excluded': excluded})
+            return
         _summary_log(f"开始汇总预览，共 {len(barcodes)} 个条码", 'info')
         _summary_log("开始检查条码匹配前缀和已有查询结果", 'info')
         auto_library = {'queried': [], 'failed': []}
@@ -2562,7 +2602,19 @@ def _run_summary_job(barcodes, transfer_type, distributor):
 
         _summary_log("开始按产品名称和编码汇总移库明细", 'info')
         summary = build_transfer_summary(barcodes, transfer_type, distributor)
+        summary['excluded'] = excluded
         summary['auto_library'] = auto_library
+        excluded_unmatched = _exclude_unmatched_transfer_barcodes(summary)
+        if excluded_unmatched:
+            _summary_log(
+                f"已临时排除 {len(excluded_unmatched)} 个查不到产品信息的条码：{', '.join(excluded_unmatched[:10])}",
+                'warn'
+            )
+        if not summary.get('groups'):
+            error = '本次没有可移库条码，未匹配到产品信息的条码已临时排除'
+            _summary_log(error, 'error')
+            _finish_summary_job(False, error, summary)
+            return
         error = _summary_error_from_result(summary)
         if error:
             _summary_log(error, 'error')
@@ -2617,9 +2669,19 @@ def _batch_stop_requested(idx):
     _batch_log(f"已停止，停在第 {idx} 个条码", 'warn')
     return True
 
-def _run_batch_job(barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIMIT):
+def _run_batch_job(barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIMIT, excluded=None):
     retry_limit = _normalize_retry_limit(retry_limit)
+    barcodes, filtered = filter_disassembly_barcodes(barcodes)
+    excluded = list(excluded or []) + filtered
     retry_text = f"，失败最多重试 {retry_limit} 次" if retry_limit else ""
+    if excluded:
+        _batch_log(f"已排除拆机条码 {len(excluded)} 个，不查询：{', '.join(excluded[:10])}", 'warn')
+    if not barcodes:
+        with batch_job_lock:
+            batch_job['running'] = False
+            batch_job['stop_requested'] = False
+        _batch_log("输入的条码都是拆机条码，无需查询", 'warn')
+        return
     _batch_log(f"开始批量查询 {len(barcodes)} 个条码{retry_text}...", 'info')
     for idx, barcode in enumerate(barcodes, start=1):
         with batch_job_lock:
@@ -2911,6 +2973,23 @@ def _clean_export_value(value):
         return json.dumps(value, ensure_ascii=False)
     return html_mod.unescape(str(value)).replace('\xa0', ' ').strip()
 
+def is_disassembly_barcode(barcode):
+    barcode = _clean_export_value(barcode)
+    return bool(barcode) and barcode[0].upper() in ("A", "C")
+
+def filter_disassembly_barcodes(barcodes):
+    kept = []
+    excluded = []
+    for barcode in barcodes or []:
+        barcode = _clean_export_value(barcode)
+        if not barcode:
+            continue
+        if is_disassembly_barcode(barcode):
+            excluded.append(barcode)
+        else:
+            kept.append(barcode)
+    return kept, excluded
+
 def _records_for_export(fields, sr_key):
     raw = fields.get(sr_key)
     if isinstance(raw, list):
@@ -3200,6 +3279,8 @@ def _missing_product_library_representatives(selected_barcodes):
     wanted = OrderedDict()
     for barcode in selected_barcodes:
         barcode = _clean_export_value(barcode)
+        if is_disassembly_barcode(barcode):
+            continue
         if barcode and barcode not in wanted:
             wanted[barcode] = True
 
@@ -3339,8 +3420,12 @@ def _apply_transfer_local_dealer(summary, transfer_type, distributor):
 
 def build_transfer_summary(selected_barcodes, transfer_type="移出", distributor=""):
     wanted = OrderedDict()
+    excluded = []
     for barcode in selected_barcodes:
         barcode = _clean_export_value(barcode)
+        if is_disassembly_barcode(barcode):
+            excluded.append(barcode)
+            continue
         if barcode and barcode not in wanted:
             wanted[barcode] = True
 
@@ -3396,6 +3481,7 @@ def build_transfer_summary(selected_barcodes, transfer_type="移出", distributo
         'missing': missing,
         'incomplete': incomplete,
         'blocked': blocked,
+        'excluded': excluded,
     }
 
 def queried_dealer_history():
@@ -3859,10 +3945,11 @@ def api_transfer_summary():
     data = request.get_json() or {}
     barcodes = data.get('barcodes') or []
     barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    barcodes, excluded = filter_disassembly_barcodes(barcodes)
     distributor = str(data.get('distributor') or '').strip()
     transfer_type = str(data.get('transfer_type') or '移出').strip()
     if not barcodes:
-        return jsonify({'success': False, 'error': '请先选择要移库的条码'})
+        return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需移库' if excluded else '请先选择要移库的条码', 'excluded': excluded})
 
     auto_library = {'queried': [], 'failed': []}
     representatives = _missing_product_library_representatives(barcodes)
@@ -3879,7 +3966,15 @@ def api_transfer_summary():
         auto_library = ensure_product_library_for_barcodes(barcodes)
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
+    summary['excluded'] = excluded
     summary['auto_library'] = auto_library
+    _exclude_unmatched_transfer_barcodes(summary)
+    if not summary.get('groups'):
+        return jsonify({
+            'success': False,
+            'error': '本次没有可移库条码，未匹配到产品信息的条码已临时排除',
+            'summary': summary,
+        })
     if summary['missing']:
         return jsonify({
             'success': False,
@@ -3916,10 +4011,11 @@ def api_transfer_summary_start():
     data = request.get_json() or {}
     barcodes = data.get('barcodes') or []
     barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    barcodes, excluded = filter_disassembly_barcodes(barcodes)
     distributor = str(data.get('distributor') or '').strip()
     transfer_type = str(data.get('transfer_type') or '移出').strip()
     if not barcodes:
-        return jsonify({'success': False, 'error': '请先选择要移库的条码'})
+        return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需移库' if excluded else '请先选择要移库的条码', 'excluded': excluded})
 
     with summary_job_lock:
         if summary_job['running']:
@@ -3948,7 +4044,7 @@ def api_transfer_summary_start():
 
     threading.Thread(
         target=_run_summary_job,
-        args=(barcodes, transfer_type, distributor),
+        args=(barcodes, transfer_type, distributor, excluded),
         daemon=True
     ).start()
     return jsonify({'success': True, 'message': '汇总预览已开始'})
@@ -3973,12 +4069,13 @@ def api_crm_transfer():
     data = request.get_json() or {}
     barcodes = data.get('barcodes') or []
     barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    barcodes, excluded = filter_disassembly_barcodes(barcodes)
     distributor = str(data.get('distributor') or '').strip()
     transfer_type = str(data.get('transfer_type') or '移出').strip()
     remark = str(data.get('remark') or '').strip()
 
     if not barcodes:
-        return jsonify({'success': False, 'error': '请先选择要移库的条码'})
+        return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需移库' if excluded else '请先选择要移库的条码', 'excluded': excluded})
     if not distributor:
         return jsonify({'success': False, 'error': '目标分销商不能为空'})
     with library_query_lock:
@@ -3999,6 +4096,14 @@ def api_crm_transfer():
         ensure_product_library_for_barcodes(barcodes)
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
+    summary['excluded'] = excluded
+    _exclude_unmatched_transfer_barcodes(summary)
+    if not summary.get('groups'):
+        return jsonify({
+            'success': False,
+            'error': '本次没有可移库条码，未匹配到产品信息的条码已临时排除',
+            'summary': summary,
+        })
     if summary['missing']:
         return jsonify({'success': False, 'error': '部分条码没有查询结果，也没有匹配到条码前缀，请先维护条码匹配或查询一次该产品条码', 'summary': summary})
     if summary['incomplete']:
@@ -4195,6 +4300,8 @@ def api_product_library_query_start():
     barcode = str(data.get('barcode') or '').strip()
     if not barcode:
         return jsonify({'success': False, 'error': '请输入条码'})
+    if is_disassembly_barcode(barcode):
+        return jsonify({'success': False, 'error': '这是拆机条码，CRM 不查询，也不写入条码匹配'})
     with transfer_job_lock:
         if transfer_job['running']:
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询'})
@@ -4424,6 +4531,8 @@ def api_crm_query():
     barcode = data.get('barcode', '').strip()
     if not barcode:
         return jsonify({'success': False, 'error': '条码不能为空'})
+    if is_disassembly_barcode(barcode):
+        return jsonify({'success': False, 'error': '这是拆机条码，CRM 不查询'})
     with transfer_job_lock:
         if transfer_job['running']:
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
@@ -4445,9 +4554,10 @@ def api_crm_batch_start():
     data = request.get_json()
     barcodes = data.get('barcodes') or []
     barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    barcodes, excluded = filter_disassembly_barcodes(barcodes)
     retry_limit = _normalize_retry_limit(data.get('retry_limit', DEFAULT_BATCH_RETRY_LIMIT))
     if not barcodes:
-        return jsonify({'success': False, 'error': '条码不能为空'})
+        return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需查询' if excluded else '条码不能为空', 'excluded': excluded})
     with transfer_job_lock:
         if transfer_job['running']:
             return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
@@ -4472,9 +4582,9 @@ def api_crm_batch_start():
             'results': [],
         })
 
-    t = threading.Thread(target=_run_batch_job, args=(barcodes, retry_limit), daemon=True)
+    t = threading.Thread(target=_run_batch_job, args=(barcodes, retry_limit, excluded), daemon=True)
     t.start()
-    return jsonify({'success': True, 'total': len(barcodes), 'retry_limit': retry_limit})
+    return jsonify({'success': True, 'total': len(barcodes), 'retry_limit': retry_limit, 'excluded': excluded})
 
 @app.route("/api/crm/batch/status")
 def api_crm_batch_status():
