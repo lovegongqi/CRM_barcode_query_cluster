@@ -150,6 +150,11 @@ function saveDistributorHistory(value) {
     if (!name || name === OWN_DEALER_NAME) return;
     const rows = [name, ...loadDistributorHistory().filter(x => x !== name)].slice(0, 30);
     localStorage.setItem('transferDistributorHistory', JSON.stringify(rows));
+    fetch('/api/distributor-history', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({distributor: name})
+    }).catch(() => {});
     renderDistributorHistory();
 }
 

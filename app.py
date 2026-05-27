@@ -2178,6 +2178,7 @@ def _run_transfer_job(summary, distributor, transfer_type, remark):
             else:
                 transfer_job['error'] = _brief_batch_error(result, 800)
         if success:
+            save_distributor_history(distributor)
             order_no = result.get('order_no') if isinstance(result, dict) else ''
             if isinstance(result, dict) and result.get('pending_approval'):
                 _transfer_log(f"移库单已保存待审批：{order_no or '已保存'}", 'success')
@@ -2294,6 +2295,7 @@ ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
 DATA_FILE = os.path.join(BARCODE_DIR, "barcode_data.json")
 PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")
 ACCOUNTS_FILE = os.path.join(BARCODE_DIR, "accounts.json")
+DISTRIBUTOR_HISTORY_FILE = os.path.join(BARCODE_DIR, "distributor_history.json")
 OWN_DEALER_NAME = "江西省天麓工贸有限公司"
 FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
 
@@ -2994,6 +2996,51 @@ def queried_dealer_history():
                 dealers[dealer] = True
     return list(dealers.keys())
 
+def load_distributor_history():
+    if os.path.exists(DISTRIBUTOR_HISTORY_FILE):
+        try:
+            with open(DISTRIBUTOR_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return [
+                _clean_export_value(row)
+                for row in (data if isinstance(data, list) else [])
+                if _clean_export_value(row) and _clean_export_value(row) != OWN_DEALER_NAME
+            ]
+        except Exception:
+            pass
+    return []
+
+def save_distributor_history(distributor):
+    distributor = _clean_export_value(distributor)
+    if not distributor or distributor == OWN_DEALER_NAME:
+        return
+    rows = [distributor] + [row for row in load_distributor_history() if row != distributor]
+    os.makedirs(BARCODE_DIR, exist_ok=True)
+    with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(rows[:100], f, ensure_ascii=False, indent=2)
+
+def save_distributor_history_many(distributors):
+    rows = OrderedDict()
+    for distributor in distributors:
+        distributor = _clean_export_value(distributor)
+        if distributor and distributor != OWN_DEALER_NAME:
+            rows[distributor] = True
+    for distributor in load_distributor_history():
+        if distributor and distributor != OWN_DEALER_NAME:
+            rows[distributor] = True
+    os.makedirs(BARCODE_DIR, exist_ok=True)
+    with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(list(rows.keys())[:100], f, ensure_ascii=False, indent=2)
+
+def combined_distributor_history():
+    save_distributor_history_many(queried_dealer_history())
+    dealers = OrderedDict()
+    for dealer in load_distributor_history():
+        dealer = _clean_export_value(dealer)
+        if dealer and dealer != OWN_DEALER_NAME:
+            dealers[dealer] = True
+    return list(dealers.keys())
+
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
@@ -3440,7 +3487,16 @@ def api_transfer_summary():
 def api_distributor_history():
     return jsonify({
         'success': True,
-        'dealers': queried_dealer_history(),
+        'dealers': combined_distributor_history(),
+    })
+
+@app.route("/api/distributor-history", methods=["POST"])
+def api_save_distributor_history():
+    data = request.get_json() or {}
+    save_distributor_history(data.get('distributor'))
+    return jsonify({
+        'success': True,
+        'dealers': combined_distributor_history(),
     })
 
 @app.route("/api/transfer/summary/start", methods=["POST"])
