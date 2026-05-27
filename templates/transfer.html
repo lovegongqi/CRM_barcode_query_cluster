@@ -132,7 +132,8 @@ function parseBarcodes() {
     return Array.from(new Set(document.getElementById('barcodeInput').value
         .split(/[\s,，;；]+/)
         .map(x => x.trim())
-        .filter(Boolean)));
+        .filter(Boolean)
+        .flatMap(x => /^\d{14,}$/.test(x) ? (x.match(/.{1,13}/g) || []) : [x])));
 }
 
 function loadDistributorHistory() {

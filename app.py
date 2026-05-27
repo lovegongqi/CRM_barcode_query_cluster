@@ -3098,6 +3098,20 @@ def filter_disassembly_barcodes(barcodes):
             kept.append(barcode)
     return kept, excluded
 
+def split_joined_barcode_token(token):
+    token = _clean_export_value(token)
+    if re.fullmatch(r"\d{14,}", token):
+        return [token[i:i + 13] for i in range(0, len(token), 13) if token[i:i + 13]]
+    return [token] if token else []
+
+def normalize_input_barcodes(barcodes):
+    normalized = OrderedDict()
+    for barcode in barcodes or []:
+        for item in split_joined_barcode_token(barcode):
+            if item:
+                normalized[item] = True
+    return list(normalized.keys())
+
 def _records_for_export(fields, sr_key):
     raw = fields.get(sr_key)
     if isinstance(raw, list):
@@ -4052,7 +4066,7 @@ def api_export_xlsx():
 def api_transfer_summary():
     data = request.get_json() or {}
     barcodes = data.get('barcodes') or []
-    barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    barcodes = normalize_input_barcodes(barcodes)
     barcodes, excluded = filter_disassembly_barcodes(barcodes)
     distributor = str(data.get('distributor') or '').strip()
     transfer_type = str(data.get('transfer_type') or '移出').strip()
@@ -4118,7 +4132,7 @@ def api_save_distributor_history():
 def api_transfer_summary_start():
     data = request.get_json() or {}
     barcodes = data.get('barcodes') or []
-    barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    barcodes = normalize_input_barcodes(barcodes)
     barcodes, excluded = filter_disassembly_barcodes(barcodes)
     distributor = str(data.get('distributor') or '').strip()
     transfer_type = str(data.get('transfer_type') or '移出').strip()
@@ -4176,7 +4190,7 @@ def api_transfer_summary_status():
 def api_crm_transfer():
     data = request.get_json() or {}
     barcodes = data.get('barcodes') or []
-    barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    barcodes = normalize_input_barcodes(barcodes)
     barcodes, excluded = filter_disassembly_barcodes(barcodes)
     distributor = str(data.get('distributor') or '').strip()
     transfer_type = str(data.get('transfer_type') or '移出').strip()
@@ -4661,7 +4675,7 @@ def api_crm_query():
 def api_crm_batch_start():
     data = request.get_json()
     barcodes = data.get('barcodes') or []
-    barcodes = [str(b).strip() for b in barcodes if str(b).strip()]
+    barcodes = normalize_input_barcodes(barcodes)
     barcodes, excluded = filter_disassembly_barcodes(barcodes)
     retry_limit = _normalize_retry_limit(data.get('retry_limit', DEFAULT_BATCH_RETRY_LIMIT))
     if not barcodes:
