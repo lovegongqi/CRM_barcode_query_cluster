@@ -133,7 +133,7 @@ function parseBarcodes() {
         .split(/[\s,，;；]+/)
         .map(x => x.trim())
         .filter(Boolean)
-        .flatMap(x => /^\d{14,}$/.test(x) ? (x.match(/.{1,13}/g) || []) : [x])));
+        .flatMap(x => /^[A-Za-z0-9]{14,}$/.test(x) && !/^[AC]/i.test(x) ? (x.match(/.{1,13}/g) || []) : [x])));
 }
 
 function loadDistributorHistory() {

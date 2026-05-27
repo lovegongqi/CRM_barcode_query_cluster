@@ -237,7 +237,7 @@
                 .split(/[\s,，;；]+/)
                 .map(b => b.trim())
                 .filter(Boolean)
-                .flatMap(b => /^\d{14,}$/.test(b) ? (b.match(/.{1,13}/g) || []) : [b]);
+                .flatMap(b => /^[A-Za-z0-9]{14,}$/.test(b) && !/^[AC]/i.test(b) ? (b.match(/.{1,13}/g) || []) : [b]);
         }
 
         function setProgress(id, pct) {

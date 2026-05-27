@@ -3100,9 +3100,13 @@ def filter_disassembly_barcodes(barcodes):
 
 def split_joined_barcode_token(token):
     token = _clean_export_value(token)
-    if re.fullmatch(r"\d{14,}", token):
+    if not token:
+        return []
+    if is_disassembly_barcode(token):
+        return [token]
+    if re.fullmatch(r"[A-Za-z0-9]{14,}", token):
         return [token[i:i + 13] for i in range(0, len(token), 13) if token[i:i + 13]]
-    return [token] if token else []
+    return [token]
 
 def normalize_input_barcodes(barcodes):
     normalized = OrderedDict()
