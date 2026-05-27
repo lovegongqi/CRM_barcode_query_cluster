@@ -2019,6 +2019,34 @@ class CRMSession:
         except Exception:
             pass
 
+    def _close_visible_dialogs(self):
+        try:
+            self.page.keyboard.press("Escape")
+            time.sleep(0.4)
+        except Exception:
+            pass
+        try:
+            self.page.evaluate("""() => {
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                    .filter(visible)
+                    .reverse();
+                for (const dialog of dialogs) {
+                    const buttons = Array.from(dialog.querySelectorAll('button, a, .el-dialog__headerbtn'))
+                        .filter(visible)
+                        .reverse();
+                    const target = buttons.find(btn => {
+                        const text = (btn.innerText || btn.textContent || '').replace(/\\s+/g, '');
+                        const cls = btn.getAttribute('class') || '';
+                        return text.includes('取消') || text.includes('关闭') || /close|headerbtn/i.test(cls);
+                    });
+                    if (target) target.click();
+                }
+            }""")
+            time.sleep(0.8)
+        except Exception:
+            pass
+
     def _wait_for_input_by_label(self, label, timeout=6):
         end = time.time() + timeout
         while time.time() < end:
@@ -2145,6 +2173,22 @@ class CRMSession:
         if field_parts:
             parts.append("字段：" + "；".join(field_parts))
         return "；".join(parts)
+
+    def _retry_detail_action(self, label, action, emit=None, attempts=3):
+        last_msg = ""
+        for attempt in range(1, attempts + 1):
+            ok, msg = action()
+            if ok:
+                return True, ""
+            last_msg = msg or "未知错误"
+            if attempt >= attempts:
+                break
+            if emit:
+                emit(f"{label}失败，准备重试 {attempt}/{attempts - 1}：{last_msg}", "warn")
+            self._close_visible_dialogs()
+            self._scroll_section_into_view("条码明细" if "条码" in label else "移库明细")
+            time.sleep(1)
+        return False, last_msg
 
     def _order_number(self):
         try:
@@ -2286,8 +2330,13 @@ class CRMSession:
                 added_products = []
                 groups = summary.get("groups", [])
                 for idx, group in enumerate(groups, start=1):
-                    emit(f"添加移库明细 {idx}/{len(groups)}：{group['product_name']} × {group['quantity']}")
-                    ok, msg = self._add_transfer_detail(group, emit)
+                    label = f"添加移库明细 {idx}/{len(groups)}：{group['product_name']} × {group['quantity']}"
+                    emit(label)
+                    ok, msg = self._retry_detail_action(
+                        label,
+                        lambda group=group: self._add_transfer_detail(group, emit),
+                        emit
+                    )
                     if not ok:
                         return fail(f"添加移库明细失败：{msg}")
                     added_products.append({
@@ -2299,8 +2348,13 @@ class CRMSession:
                 added_barcodes = []
                 details = summary.get("details", [])
                 for idx, detail in enumerate(details, start=1):
-                    emit(f"添加条码明细 {idx}/{len(details)}：{detail['barcode']}")
-                    ok, msg = self._add_barcode_detail(detail, emit)
+                    label = f"添加条码明细 {idx}/{len(details)}：{detail['barcode']}"
+                    emit(label)
+                    ok, msg = self._retry_detail_action(
+                        label,
+                        lambda detail=detail: self._add_barcode_detail(detail, emit),
+                        emit
+                    )
                     if not ok:
                         return fail(f"添加条码明细失败：{msg}")
                     added_barcodes.append(detail["barcode"])
