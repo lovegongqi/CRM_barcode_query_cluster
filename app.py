@@ -1132,9 +1132,17 @@ class CRMSession:
                 # 切换到报表标签页
                 emit("切换到条码报表页")
                 if not self.switch_to_report_tab():
-                    if self.last_report_error:
-                        return False, f"报表页面加载错误: {self.last_report_error}"
-                    return False, "未找到报表标签页"
+                    emit("未找到已打开的条码报表页，重新打开条码报表", "warn")
+                    self.needs_navigation = True
+                    if not self.prepare_next_report():
+                        if self.last_report_error:
+                            return False, f"报表页面加载错误: {self.last_report_error}"
+                        return False, "打开查询条码所有信息报表失败"
+                    self.needs_navigation = False
+                    if not self.switch_to_report_tab():
+                        if self.last_report_error:
+                            return False, f"报表页面加载错误: {self.last_report_error}"
+                        return False, "未找到报表标签页"
                 time.sleep(2)
 
                 # 查找条码输入框
@@ -1328,8 +1336,10 @@ class CRMSession:
         try:
             self.page.goto(self._move_list_url(), wait_until="domcontentloaded", timeout=20000)
             time.sleep(1)
+            self.needs_navigation = True
             return True
         except Exception:
+            self.needs_navigation = True
             return False
 
     def _open_transfer_create_form(self, emit):
