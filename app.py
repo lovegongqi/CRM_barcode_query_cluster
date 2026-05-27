@@ -1986,7 +1986,52 @@ class CRMSession:
             return true;
         }""", text)
 
+    def _scroll_section_into_view(self, section_title):
+        try:
+            return bool(self.page.evaluate("""(sectionTitle) => {
+                const clean = (text) => (text || '').replace(/\\s+/g, '');
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const targetText = clean(sectionTitle);
+                const section = Array.from(document.querySelectorAll('*')).find(el => {
+                    return visible(el) && clean(el.innerText || el.textContent || '') === targetText;
+                });
+                if (!section) return false;
+                section.scrollIntoView({ block: 'center', inline: 'nearest' });
+                return true;
+            }""", section_title))
+        except Exception:
+            return False
+
+    def _prepare_visible_dialog(self):
+        try:
+            self.page.evaluate("""() => {
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                    .filter(visible)
+                    .reverse();
+                const dialog = dialogs[0];
+                if (!dialog) return;
+                dialog.scrollIntoView({ block: 'center', inline: 'nearest' });
+                for (const node of [dialog, ...Array.from(dialog.querySelectorAll('.el-dialog__body, .el-form, [class*="body"], [class*="content"]'))]) {
+                    if (node && typeof node.scrollTop === 'number') node.scrollTop = 0;
+                }
+            }""")
+        except Exception:
+            pass
+
+    def _wait_for_input_by_label(self, label, timeout=6):
+        end = time.time() + timeout
+        while time.time() < end:
+            self._prepare_visible_dialog()
+            input_el = self._input_by_label(label)
+            if input_el:
+                return input_el
+            time.sleep(0.4)
+        return None
+
     def _click_section_action(self, section_title, action_text):
+        self._scroll_section_into_view(section_title)
+        time.sleep(0.3)
         clicked = self.page.evaluate("""({ sectionTitle, actionText }) => {
             const clean = (text) => (text || '').replace(/\\s+/g, '');
             const sections = Array.from(document.querySelectorAll('*')).filter(el => {
@@ -1994,14 +2039,16 @@ class CRMSession:
                 return visible && clean(el.innerText || el.textContent || '') === clean(sectionTitle);
             });
             for (const section of sections) {
+                section.scrollIntoView({ block: 'center', inline: 'nearest' });
                 let root = section.parentElement;
                 for (let i = 0; i < 6 && root; i++, root = root.parentElement) {
-                    const buttons = Array.from(root.querySelectorAll('button, a'));
+                    const buttons = Array.from(root.querySelectorAll('button, a')).reverse();
                     const target = buttons.find(btn => {
                         const visible = !!(btn.offsetWidth || btn.offsetHeight || btn.getClientRects().length);
                         return visible && (btn.innerText || btn.textContent || '').includes(actionText);
                     });
                     if (target) {
+                        target.scrollIntoView({ block: 'center', inline: 'nearest' });
                         target.click();
                         return true;
                     }
@@ -2011,6 +2058,7 @@ class CRMSession:
         }""", {"sectionTitle": section_title, "actionText": action_text})
         if clicked:
             time.sleep(1)
+            self._prepare_visible_dialog()
         return clicked
 
     def _click_dialog_button(self, text):
@@ -2138,6 +2186,9 @@ class CRMSession:
     def _add_transfer_detail(self, group, emit=None):
         if not self._click_section_action("移库明细", "新增"):
             return False, "未找到移库明细新增按钮"
+        if not self._wait_for_input_by_label("产品名称", timeout=8):
+            diag = self._format_form_diagnostics()
+            return False, f"未找到产品名称输入框{('；' + diag) if diag else ''}"
         ok, msg = self._select_product_with_code_check(
             group.get("product_name", ""),
             group.get("product_code", ""),
@@ -2156,6 +2207,9 @@ class CRMSession:
     def _add_barcode_detail(self, detail, emit=None):
         if not self._click_section_action("条码明细", "新增"):
             return False, "未找到条码明细新增按钮"
+        if not self._wait_for_input_by_label("产品名称", timeout=8):
+            diag = self._format_form_diagnostics()
+            return False, f"条码明细未找到产品名称输入框{('；' + diag) if diag else ''}"
         product_name = detail.get("product_name", "")
         product_code = detail.get("product_code", "")
         if product_name:
