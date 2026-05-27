@@ -1795,9 +1795,9 @@
                 if (!currentDealer) {
                     return {
                         barcode: item.barcode,
-                        type: '',
+                        type: '移出',
                         distributor: '',
-                        reason: '缺少当前所属经销商',
+                        reason: '缺少当前所属经销商，请手动确认移库方向和目标分销商',
                     };
                 }
                 if (currentDealer && currentDealer !== OWN_DEALER_NAME) {
@@ -1815,24 +1815,27 @@
                     reason: serviceDealer ? `服务经销商：${serviceDealer}` : '缺少服务经销商',
                 };
             });
-            const missingTarget = transferTargets.find(row => !row.distributor);
-            if (missingTarget) {
-                showToast(`${missingTarget.barcode} ${missingTarget.reason || '缺少目标分销商'}，不能自动带入移库`);
-                return;
-            }
-            const uniqueKeys = Array.from(new Set(transferTargets.map(row => `${row.type}|${row.distributor}`)));
-            if (uniqueKeys.length > 1) {
+            const uniqueTypes = Array.from(new Set(transferTargets.map(row => row.type || '移出')));
+            const nonEmptyDistributors = transferTargets.map(row => row.distributor).filter(Boolean);
+            const uniqueDistributors = Array.from(new Set(nonEmptyDistributors));
+            const hasMissingDistributor = transferTargets.some(row => !row.distributor);
+            if (uniqueTypes.length > 1 || uniqueDistributors.length > 1) {
                 const preview = transferTargets
                     .slice(0, 5)
-                    .map(row => `${row.barcode}：${row.type}，${row.distributor}`)
+                    .map(row => `${row.barcode}：${row.type}，${row.distributor || '需手动选择'}`)
                     .join('\n');
                 alert(`所选条码包含不同移库方向或目标分销商，不能放在同一张移库单。请分开选择。\n\n${preview}`);
                 return;
             }
-            const [transferType, transferDistributor] = uniqueKeys[0].split('|');
+            const transferType = uniqueTypes[0] || '移出';
+            const transferDistributor = hasMissingDistributor ? '' : (uniqueDistributors[0] || '');
             sessionStorage.setItem('transferBarcodes', JSON.stringify(barcodes));
             sessionStorage.setItem('transferType', transferType);
-            sessionStorage.setItem('transferDistributor', transferDistributor);
+            if (transferDistributor) {
+                sessionStorage.setItem('transferDistributor', transferDistributor);
+            } else {
+                sessionStorage.removeItem('transferDistributor');
+            }
             window.location.href = '/transfer';
         }
 
