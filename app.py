@@ -1533,6 +1533,138 @@ class CRMSession:
         time.sleep(0.5)
         return bool(self._input_value_by_label(label))
 
+    def _norm_code(self, value):
+        return re.sub(r"\s+", "", _clean_export_value(value)).upper()
+
+    def _click_field_action_by_label(self, label):
+        clicked = self.page.evaluate("""(label) => {
+            const clean = (text) => (text || '').replace(/\\s+/g, '');
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const wanted = clean(label);
+            const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                .filter(visible)
+                .reverse();
+            dialogs.push(document.body);
+            for (const scope of dialogs) {
+                const items = Array.from(scope.querySelectorAll('.el-form-item, .ant-form-item, .form-group, tr'))
+                    .filter(visible)
+                    .reverse();
+                for (const item of items) {
+                    const labelEl = item.querySelector('.el-form-item__label, label, th, td:first-child');
+                    const labelText = clean(labelEl ? (labelEl.innerText || labelEl.textContent || '') : '');
+                    if (!labelText || !labelText.includes(wanted)) continue;
+                    const targets = Array.from(item.querySelectorAll(
+                        'button:not([disabled]), a, .el-input__suffix, .el-input-group__append, .el-icon-search, i[class*="search"], svg'
+                    )).filter(visible);
+                    const target = targets.find(el => !['INPUT', 'TEXTAREA'].includes(el.tagName)) || targets[targets.length - 1];
+                    if (target) {
+                        target.click();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }""", label)
+        if clicked:
+            time.sleep(1)
+        return bool(clicked)
+
+    def _set_dialog_input_by_label(self, label, value):
+        return self.page.evaluate("""({ label, value }) => {
+            const clean = (text) => (text || '').replace(/\\s+/g, '');
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const wanted = clean(label);
+            const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                .filter(visible)
+                .reverse();
+            for (const dialog of dialogs) {
+                const items = Array.from(dialog.querySelectorAll('.el-form-item, .ant-form-item, .form-group, tr'))
+                    .filter(visible)
+                    .reverse();
+                for (const item of items) {
+                    const labelEl = item.querySelector('.el-form-item__label, label, th, td:first-child');
+                    const labelText = clean(labelEl ? (labelEl.innerText || labelEl.textContent || '') : '');
+                    if (!labelText || !labelText.includes(wanted)) continue;
+                    const input = Array.from(item.querySelectorAll('input:not([disabled]), textarea:not([disabled])')).find(visible);
+                    if (!input) continue;
+                    input.focus();
+                    input.value = value;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+            }
+            return false;
+        }""", {"label": label, "value": str(value)})
+
+    def _click_product_search_result(self, product_code, product_name=""):
+        clicked = self.page.evaluate("""({ productCode, productName }) => {
+            const clean = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                .filter(visible)
+                .reverse();
+            for (const dialog of dialogs) {
+                const rows = Array.from(dialog.querySelectorAll('tbody tr, .el-table__body tr, tr')).filter(visible);
+                let fallback = null;
+                for (const row of rows) {
+                    const text = clean(row.innerText || row.textContent || '');
+                    if (!text) continue;
+                    if (productCode && text.includes(productCode)) {
+                        row.click();
+                        return true;
+                    }
+                    if (!fallback && productName && text.includes(productName)) {
+                        fallback = row;
+                    }
+                }
+                if (fallback) {
+                    fallback.click();
+                    return true;
+                }
+            }
+            return false;
+        }""", {"productCode": str(product_code or ""), "productName": str(product_name or "")})
+        if clicked:
+            time.sleep(0.8)
+        return bool(clicked)
+
+    def _search_product_by_code(self, product_code, product_name=""):
+        if not product_code:
+            return False, "缺少产品编码，无法按编码搜索产品"
+        if not self._click_field_action_by_label("产品名称"):
+            return False, "未找到产品名称右侧搜索按钮"
+        if not self._set_dialog_input_by_label("产品编码", product_code):
+            self._set_dialog_input_by_label("编码", product_code)
+        if not (self._click_dialog_button("查询") or self._click_dialog_button("搜索")):
+            return False, "产品搜索弹窗未找到查询按钮"
+        time.sleep(1.2)
+        if not self._click_product_search_result(product_code, product_name):
+            return False, f"产品搜索结果未找到编码 {product_code}"
+        self._click_dialog_button("确定")
+        time.sleep(0.8)
+        return True, ""
+
+    def _select_product_with_code_check(self, product_name, product_code, emit=None):
+        if not self._select_input_by_label("产品名称", product_name):
+            return False, "未找到产品名称输入框"
+        expected_code = self._norm_code(product_code)
+        if not expected_code:
+            return True, ""
+        time.sleep(0.8)
+        actual_code = self._norm_code(self._input_value_by_label("产品编码"))
+        if actual_code == expected_code:
+            return True, ""
+        if emit:
+            emit(f"产品名称带出的编码 {actual_code or '空'} 与条码编码 {expected_code} 不一致，改用编码搜索", "warn")
+        ok, msg = self._search_product_by_code(expected_code, product_name)
+        if not ok:
+            return False, msg
+        actual_code = self._norm_code(self._input_value_by_label("产品编码"))
+        if actual_code and actual_code != expected_code:
+            return False, f"编码搜索后仍不一致：当前 {actual_code}，应为 {expected_code}"
+        return True, ""
+
     def _select_transfer_type(self, transfer_type):
         if not self._click_form_control_by_label("移库类型"):
             input_el = self._input_by_label("移库类型")
@@ -1731,11 +1863,16 @@ class CRMSession:
         diag = self._format_form_diagnostics()
         return False, f"{msg}；{diag}" if diag else msg
 
-    def _add_transfer_detail(self, group):
+    def _add_transfer_detail(self, group, emit=None):
         if not self._click_section_action("移库明细", "新增"):
             return False, "未找到移库明细新增按钮"
-        if not self._select_input_by_label("产品名称", group["product_name"]):
-            return False, "移库明细未找到产品名称输入框"
+        ok, msg = self._select_product_with_code_check(
+            group.get("product_name", ""),
+            group.get("product_code", ""),
+            emit
+        )
+        if not ok:
+            return False, f"移库明细产品选择失败：{msg}"
         self._set_input_by_label("移库数量", group["quantity"])
         if not self._click_dialog_button("确定"):
             return False, "移库明细未找到确定按钮"
@@ -1821,7 +1958,7 @@ class CRMSession:
                 groups = summary.get("groups", [])
                 for idx, group in enumerate(groups, start=1):
                     emit(f"添加移库明细 {idx}/{len(groups)}：{group['product_name']} × {group['quantity']}")
-                    ok, msg = self._add_transfer_detail(group)
+                    ok, msg = self._add_transfer_detail(group, emit)
                     if not ok:
                         return fail(f"添加移库明细失败：{msg}")
                     added_products.append({
