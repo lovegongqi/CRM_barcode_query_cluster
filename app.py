@@ -1573,6 +1573,16 @@ class CRMSession:
         return self.page.evaluate("""({ label, value }) => {
             const clean = (text) => (text || '').replace(/\\s+/g, '');
             const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const setValue = (input, nextValue) => {
+                const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                input.focus();
+                if (setter) setter.call(input, nextValue);
+                else input.value = nextValue;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.blur();
+            };
             const wanted = clean(label);
             const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
                 .filter(visible)
@@ -1587,10 +1597,7 @@ class CRMSession:
                     if (!labelText || !labelText.includes(wanted)) continue;
                     const input = Array.from(item.querySelectorAll('input:not([disabled]), textarea:not([disabled])')).find(visible);
                     if (!input) continue;
-                    input.focus();
-                    input.value = value;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    setValue(input, value);
                     return true;
                 }
             }
@@ -1600,6 +1607,16 @@ class CRMSession:
     def _set_any_dialog_input(self, value):
         return self.page.evaluate("""(value) => {
             const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const setValue = (input, nextValue) => {
+                const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                input.focus();
+                if (setter) setter.call(input, nextValue);
+                else input.value = nextValue;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.blur();
+            };
             const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
                 .filter(visible)
                 .reverse();
@@ -1611,14 +1628,38 @@ class CRMSession:
                         return !['hidden', 'checkbox', 'radio'].includes(type);
                     });
                 if (!input) continue;
-                input.focus();
-                input.value = value;
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
+                setValue(input, value);
                 return true;
             }
             return false;
         }""", str(value))
+
+    def _clear_dialog_inputs(self):
+        try:
+            self.page.evaluate("""() => {
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const setValue = (input, nextValue) => {
+                    const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    if (setter) setter.call(input, nextValue);
+                    else input.value = nextValue;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                };
+                const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                    .filter(visible)
+                    .reverse();
+                const dialog = dialogs[0];
+                if (!dialog) return;
+                Array.from(dialog.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
+                    .filter(visible)
+                    .forEach(input => {
+                        const type = (input.getAttribute('type') || 'text').toLowerCase();
+                        if (!['hidden', 'checkbox', 'radio'].includes(type)) setValue(input, '');
+                    });
+            }""")
+        except Exception:
+            pass
 
     def _click_dialog_search_button(self):
         clicked = self.page.evaluate("""() => {
@@ -1628,7 +1669,7 @@ class CRMSession:
                 .reverse();
             for (const dialog of dialogs) {
                 const nodes = Array.from(dialog.querySelectorAll(
-                    'button:not([disabled]), a, span, .el-button, .el-input-group__append, .el-icon-search, i[class*="search"], svg'
+                    'button:not([disabled]), a, .el-button, .el-input-group__append, .el-icon-search, i[class*="search"], svg'
                 )).filter(visible);
                 const textTarget = nodes.find(el => {
                     const text = (el.innerText || el.textContent || '').replace(/\\s+/g, '');
@@ -1640,7 +1681,7 @@ class CRMSession:
                     const aria = el.getAttribute('aria-label') || '';
                     return /search|查询|搜索|查找|检索/i.test(cls + title + aria);
                 });
-                const target = textTarget || iconTarget;
+                const target = (textTarget || iconTarget)?.closest?.('button,a,.el-button,.el-input-group__append') || textTarget || iconTarget;
                 if (target) {
                     target.click();
                     return true;
@@ -1657,6 +1698,93 @@ class CRMSession:
             return True
         except Exception:
             return False
+
+    def _set_dialog_search_keyword(self, value):
+        return self.page.evaluate("""(value) => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const setValue = (input, nextValue) => {
+                const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                input.focus();
+                if (setter) setter.call(input, nextValue);
+                else input.value = nextValue;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+            const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                .filter(visible)
+                .reverse();
+            for (const dialog of dialogs) {
+                const inputs = Array.from(dialog.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
+                    .filter(visible)
+                    .filter(input => {
+                        const type = (input.getAttribute('type') || 'text').toLowerCase();
+                        return !['hidden', 'checkbox', 'radio'].includes(type);
+                    });
+                const keywordInput = inputs.find(input => /搜索|查找|记录/.test(input.getAttribute('placeholder') || '')) || inputs[0];
+                if (!keywordInput) continue;
+                setValue(keywordInput, value);
+                return true;
+            }
+            return false;
+        }""", str(value))
+
+    def _select_dialog_search_field(self, field_text):
+        clicked = self.page.evaluate("""() => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                .filter(visible)
+                .reverse();
+            for (const dialog of dialogs) {
+                const selects = Array.from(dialog.querySelectorAll('.el-select, [class*="select"]'))
+                    .filter(visible);
+                const target = selects.find(el => {
+                    const input = el.querySelector('input');
+                    const placeholder = input?.getAttribute('placeholder') || '';
+                    return /请选择|产品|编码|名称/.test(placeholder) || input?.readOnly;
+                }) || selects[0];
+                if (!target) continue;
+                target.scrollIntoView({ block: 'center', inline: 'center' });
+                target.click();
+                return true;
+            }
+            return false;
+        }""")
+        if not clicked:
+            return False
+        time.sleep(0.5)
+        return self._click_dropdown_text(field_text, timeout=5)
+
+    def _search_lookup_dialog(self, keyword, field_text="产品编码"):
+        try:
+            dialog = self.page.locator(".el-dialog:visible, [role='dialog']:visible, .modal:visible").last
+            field_input = dialog.locator("input[placeholder*='请选择']").first
+            if field_input.count():
+                field_input.click(timeout=3000, force=True)
+                time.sleep(0.5)
+                if not self._click_dropdown_text(field_text, timeout=5):
+                    return False
+            keyword_input = dialog.locator("input[placeholder*='搜索'], input[placeholder*='查找'], input").first
+            keyword_input.fill(str(keyword), timeout=3000)
+            keyword_input.press("Enter")
+            time.sleep(0.5)
+            search_button = dialog.locator("button:has-text('搜索'), .el-button:has-text('搜索'), button:has-text('查询'), .el-button:has-text('查询')").first
+            if search_button.count():
+                search_button.click(timeout=3000, force=True)
+            else:
+                self._click_dialog_search_button()
+            time.sleep(1.5)
+            return True
+        except Exception:
+            pass
+        if not self._select_dialog_search_field(field_text):
+            return False
+        time.sleep(0.3)
+        if not self._set_dialog_search_keyword(keyword):
+            return False
+        self._click_dialog_search_button()
+        time.sleep(1.5)
+        return True
 
     def _click_product_search_result(self, product_code, product_name=""):
         clicked = self.page.evaluate("""({ productCode, productName }) => {
@@ -1690,23 +1818,94 @@ class CRMSession:
             time.sleep(0.8)
         return bool(clicked)
 
+    def _visible_dialog_text(self):
+        try:
+            return self.page.evaluate("""() => {
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                    .filter(visible)
+                    .reverse();
+                return dialogs
+                    .map(dialog => (dialog.innerText || dialog.textContent || '').replace(/\\s+/g, ' ').trim())
+                    .filter(Boolean)
+                    .slice(0, 2)
+                    .join(' | ')
+                    .slice(0, 500);
+            }""") or ""
+        except Exception:
+            return ""
+
+    def _dialog_inputs_snapshot(self):
+        try:
+            return self.page.evaluate("""() => {
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const clean = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+                const dialogs = Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                    .filter(visible)
+                    .reverse();
+                const dialog = dialogs[0];
+                if (!dialog) return '';
+                return Array.from(dialog.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
+                    .filter(visible)
+                    .map((input, idx) => {
+                        const item = input.closest('.el-form-item, .ant-form-item, .form-group, tr');
+                        const labelEl = item?.querySelector?.('.el-form-item__label, label, th, td:first-child');
+                        const label = clean(labelEl ? (labelEl.innerText || labelEl.textContent || '') : '');
+                        return `${idx + 1}.label=${label || '-'},placeholder=${input.getAttribute('placeholder') || '-'},name=${input.getAttribute('name') || '-'},value=${input.value || '-'}`;
+                    })
+                    .join('；');
+            }""") or ""
+        except Exception:
+            return ""
+
     def _search_product_by_code(self, product_code, product_name=""):
         if not product_code:
             return False, "缺少产品编码，无法按编码搜索产品"
         if not self._click_field_action_by_label("产品名称"):
             return False, "未找到产品名称右侧搜索按钮"
-        if not self._set_dialog_input_by_label("产品编码", product_code):
-            if not self._set_dialog_input_by_label("编码", product_code):
-                self._set_any_dialog_input(product_code)
-        time.sleep(1.2)
-        if not self._click_product_search_result(product_code, product_name):
+        if self._search_lookup_dialog(product_code, "产品编码"):
+            if self._click_product_search_result(product_code, product_name):
+                self._click_dialog_button("确定")
+                time.sleep(0.8)
+                return True, ""
+        if product_name and self._search_lookup_dialog(product_name, "产品名称"):
+            if self._click_product_search_result(product_code, product_name):
+                self._click_dialog_button("确定")
+                time.sleep(0.8)
+                return True, ""
+        search_attempts = [
+            ("产品编码", product_code),
+            ("物料编码", product_code),
+            ("产品代码", product_code),
+            ("物料代码", product_code),
+            ("编码", product_code),
+            ("物料名称", product_name),
+            ("产品名称", product_name),
+            ("名称", product_name),
+        ]
+        tried = []
+        for label, value in search_attempts:
+            value = _clean_export_value(value)
+            if not value:
+                continue
+            tried.append(f"{label}={value}")
+            self._clear_dialog_inputs()
+            if not self._set_dialog_input_by_label(label, value):
+                if label == "编码" and not self._set_any_dialog_input(value):
+                    continue
+                if label != "编码":
+                    continue
             self._click_dialog_search_button()
             time.sleep(1.5)
-        if not self._click_product_search_result(product_code, product_name):
-            return False, f"产品搜索结果未找到编码 {product_code}"
-        self._click_dialog_button("确定")
-        time.sleep(0.8)
-        return True, ""
+            if self._click_product_search_result(product_code, product_name):
+                self._click_dialog_button("确定")
+                time.sleep(0.8)
+                return True, ""
+        dialog_text = self._visible_dialog_text()
+        suffix = f"，弹窗内容：{dialog_text}" if dialog_text else ""
+        inputs = self._dialog_inputs_snapshot()
+        input_suffix = f"，输入框：{inputs}" if inputs else ""
+        return False, f"产品搜索结果未找到编码 {product_code}（已尝试 {'；'.join(tried)}）{input_suffix}{suffix}"
 
     def _select_product_with_code_check(self, product_name, product_code, emit=None):
         if not self._select_input_by_label("产品名称", product_name):
