@@ -73,7 +73,7 @@
     <div class="card">
         <h2>条码识别</h2>
         <div class="library-form">
-            <div style="grid-column:span 2"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" oninput="scheduleLookup()"></div>
+            <div style="grid-column:span 2"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" oninput="scheduleLookup()"></div>
             <button class="btn btn-primary" onclick="lookupBarcode()">识别</button>
             <button class="btn btn-secondary" onclick="confirmQueryBarcode()">确认查询</button>
         </div>
