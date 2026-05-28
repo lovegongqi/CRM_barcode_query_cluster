@@ -34,6 +34,14 @@
         .btn-secondary { background:#e5e7eb; color:#334155; }
         .btn-danger { background:#dc2626; color:#fff; }
         .btn:disabled { background:#cbd5e1; cursor:not-allowed; }
+        .modal-overlay { display:none; position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:1000; align-items:center; justify-content:center; padding:18px; }
+        .modal-overlay.show { display:flex; }
+        .login-modal { width:min(520px, 100%); background:#fff; border-radius:8px; box-shadow:0 24px 72px rgba(15,23,42,.28); overflow:hidden; }
+        .login-modal-head { display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid #e5e7eb; }
+        .login-modal-head h3 { font-size:17px; }
+        .modal-close { border:none; background:transparent; font-size:24px; color:#94a3b8; cursor:pointer; }
+        .login-modal-body { padding:18px; }
+        .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
         th { background:#f8fafc; color:#475569; }
@@ -70,7 +78,7 @@
     <div class="status-bar">
         <div class="status-text"><span class="dot" id="loginDot"></span>CRM 登录状态：<span id="loginStatus">检测中</span></div>
         <div class="status-text">工具账号：<span id="appAccountStatus">检测中</span> <a href="/logout">退出</a></div>
-        <button class="btn btn-primary" onclick="location.href='/crm'">登录 CRM</button>
+        <button class="btn btn-primary" id="loginBtn" onclick="openLoginModal()">登录 CRM</button>
     </div>
 
     <div class="grid">
@@ -110,6 +118,37 @@
             <div class="card">
                 <h2>移库日志</h2>
                 <div class="log" id="transferLog"><div class="dim">等待操作...</div></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="loginModal" onclick="if(event.target.id==='loginModal')cancelLogin()">
+    <div class="login-modal">
+        <div class="login-modal-head">
+            <h3>登录 CRM</h3>
+            <button class="modal-close" onclick="cancelLogin()">×</button>
+        </div>
+        <div class="login-modal-body">
+            <div class="fields">
+                <div>
+                    <label>账号</label>
+                    <input type="text" id="loginUsername" placeholder="CRM 用户名">
+                </div>
+                <div>
+                    <label>密码</label>
+                    <input type="password" id="loginPassword" placeholder="密码">
+                </div>
+            </div>
+            <div id="captchaRow" style="display:none;margin-top:12px;">
+                <label>短信验证码</label>
+                <input type="text" id="captchaInput" placeholder="输入收到短信验证码" maxlength="6">
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="cancelLogin()">取消</button>
+                <button class="btn btn-primary" id="modalLoginBtn" onclick="doLogin()">登录</button>
+                <button class="btn btn-primary" id="captchaSubmitBtn" onclick="doLoginStep2()" style="display:none">提交验证码</button>
+                <button class="btn btn-secondary" id="resetLoginBtn" onclick="restartLogin()" style="display:none">重新登录</button>
             </div>
         </div>
     </div>
@@ -273,9 +312,138 @@ async function ensureCrmLoggedIn(actionText) {
     if (data.logged_in) return true;
     const message = `CRM 未登录，不能${actionText}。请先登录 CRM。`;
     appendLog(message, 'error');
-    alert(message);
-    location.href = '/crm';
+    openLoginModal();
     return false;
+}
+
+function openLoginModal() {
+    const modal = document.getElementById('loginModal');
+    modal.classList.add('show');
+    document.getElementById('captchaRow').style.display = 'none';
+    document.getElementById('captchaSubmitBtn').style.display = 'none';
+    document.getElementById('resetLoginBtn').style.display = 'none';
+    document.getElementById('modalLoginBtn').style.display = '';
+    document.getElementById('captchaInput').value = '';
+    const savedUsername = localStorage.getItem('crm_username');
+    const savedPassword = localStorage.getItem('crm_password');
+    if (savedUsername) document.getElementById('loginUsername').value = savedUsername;
+    if (savedPassword) document.getElementById('loginPassword').value = savedPassword;
+    setTimeout(() => document.getElementById('loginUsername').focus(), 50);
+}
+
+function closeLoginModal() {
+    document.getElementById('loginModal').classList.remove('show');
+}
+
+async function cancelLogin() {
+    closeLoginModal();
+    document.getElementById('captchaRow').style.display = 'none';
+    document.getElementById('captchaSubmitBtn').style.display = 'none';
+    document.getElementById('resetLoginBtn').style.display = 'none';
+    document.getElementById('modalLoginBtn').style.display = '';
+    document.getElementById('modalLoginBtn').disabled = false;
+    document.getElementById('modalLoginBtn').textContent = '登录';
+    document.getElementById('captchaSubmitBtn').disabled = false;
+    document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
+    document.getElementById('captchaInput').value = '';
+    try {
+        await fetch('/api/crm/login/cancel', {method:'POST'});
+    } catch (e) {}
+    refreshCrmStatus();
+}
+
+async function doLogin() {
+    const username = document.getElementById('loginUsername').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    if (!username || !password) {
+        appendLog('请输入 CRM 账号密码', 'warn');
+        return;
+    }
+    const btn = document.getElementById('modalLoginBtn');
+    btn.disabled = true;
+    btn.textContent = '登录中...';
+    appendLog('开始登录 CRM...', 'info');
+    try {
+        const r = await fetch('/api/crm/login', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, password})
+        });
+        const d = await r.json();
+        if (d.success) {
+            localStorage.setItem('crm_username', username);
+            localStorage.setItem('crm_password', password);
+            if (d.message === 'captcha_required') {
+                document.getElementById('captchaRow').style.display = '';
+                document.getElementById('modalLoginBtn').style.display = 'none';
+                document.getElementById('captchaSubmitBtn').style.display = '';
+                document.getElementById('resetLoginBtn').style.display = '';
+                document.getElementById('loginPassword').value = '';
+                document.getElementById('captchaInput').focus();
+                appendLog('验证码已发送到手机，请在弹窗中输入', 'success');
+            } else {
+                appendLog('CRM 登录成功', 'success');
+                closeLoginModal();
+            }
+        } else {
+            appendLog('登录失败：' + (d.message || d.error || '未知错误'), 'error');
+        }
+    } catch (e) {
+        appendLog('登录出错：' + e, 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = '登录';
+    refreshCrmStatus();
+}
+
+async function doLoginStep2() {
+    const captcha = document.getElementById('captchaInput').value.trim();
+    if (!captcha) {
+        appendLog('请输入验证码', 'warn');
+        return;
+    }
+    const btn = document.getElementById('captchaSubmitBtn');
+    btn.disabled = true;
+    btn.textContent = '提交中...';
+    appendLog('提交验证码...', 'info');
+    try {
+        const r = await fetch('/api/crm/login-step2', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({captcha})
+        });
+        const d = await r.json();
+        if (d.success) {
+            appendLog('CRM 登录成功', 'success');
+            closeLoginModal();
+            document.getElementById('captchaInput').value = '';
+        } else {
+            appendLog('验证码错误：' + (d.message || d.error || '请重试'), 'error');
+            document.getElementById('resetLoginBtn').style.display = '';
+            if ((d.message || '').includes('已重置')) {
+                document.getElementById('captchaSubmitBtn').style.display = 'none';
+                document.getElementById('modalLoginBtn').style.display = '';
+            }
+        }
+    } catch (e) {
+        appendLog('提交验证码出错：' + e, 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = '提交验证码';
+    refreshCrmStatus();
+}
+
+async function restartLogin() {
+    appendLog('重新打开 CRM 登录...', 'warn');
+    try {
+        await fetch('/api/crm/login/cancel', {method:'POST'});
+    } catch (e) {}
+    document.getElementById('captchaRow').style.display = 'none';
+    document.getElementById('captchaSubmitBtn').style.display = 'none';
+    document.getElementById('resetLoginBtn').style.display = 'none';
+    document.getElementById('modalLoginBtn').style.display = '';
+    document.getElementById('captchaInput').value = '';
+    doLogin();
 }
 
 async function previewTransfer() {
@@ -552,8 +720,10 @@ async function refreshCrmStatus() {
     const data = await fetch('/api/crm/status').then(r => r.json()).catch(() => ({}));
     const dot = document.getElementById('loginDot');
     const text = document.getElementById('loginStatus');
+    const loginBtn = document.getElementById('loginBtn');
     dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
     text.textContent = data.logged_in ? '已登录' : '未登录';
+    loginBtn.style.display = data.logged_in ? 'none' : '';
     const appData = await fetch('/api/app-auth/status').then(r => r.json()).catch(() => ({}));
     document.getElementById('appAccountStatus').textContent = appData.account ? appData.account.username : '未登录';
 }
