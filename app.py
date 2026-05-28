@@ -2047,6 +2047,23 @@ class CRMSession:
         except Exception:
             pass
 
+    def _wait_detail_dialog_closed(self, timeout=6):
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                open_detail_dialog = self.page.evaluate("""() => {
+                    const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                    return Array.from(document.querySelectorAll('.el-dialog, [role="dialog"], .modal'))
+                        .filter(visible)
+                        .some(dialog => /新增|修改|产品名称|产品条码|移库数量/.test(dialog.innerText || dialog.textContent || ''));
+                }""")
+                if not open_detail_dialog:
+                    return True
+            except Exception:
+                return True
+            time.sleep(0.3)
+        return False
+
     def _wait_for_input_by_label(self, label, timeout=6):
         end = time.time() + timeout
         while time.time() < end:
@@ -2243,6 +2260,8 @@ class CRMSession:
         self._set_input_by_label("移库数量", group["quantity"])
         if not self._click_dialog_button("确定"):
             return False, "移库明细未找到确定按钮"
+        if not self._wait_detail_dialog_closed():
+            return False, "移库明细确定后弹窗未关闭"
         msg = self._visible_message()
         if msg and any(key in msg for key in ["失败", "错误", "必填", "请选择", "不能为空"]):
             return False, msg
@@ -2269,12 +2288,15 @@ class CRMSession:
             return False, "条码明细未找到产品条码输入框"
         if not self._click_dialog_button("确定"):
             return False, "条码明细未找到确定按钮"
+        if not self._wait_detail_dialog_closed():
+            return False, "条码明细确定后弹窗未关闭"
         msg = self._visible_message()
         if msg and any(key in msg for key in ["失败", "错误", "必填", "请选择", "不能为空", "已安装"]):
             return False, msg
         return True, ""
 
     def _confirm_transfer(self):
+        self._close_visible_dialogs()
         if not self._click_top_button("确认"):
             return False, "未找到确认按钮"
         for _ in range(3):
