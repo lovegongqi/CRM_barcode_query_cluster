@@ -1986,6 +1986,16 @@ class CRMSession:
             return true;
         }""", text)
 
+    def _has_top_button(self, text):
+        try:
+            return bool(self.page.evaluate("""(text) => {
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                return Array.from(document.querySelectorAll('button, a'))
+                    .some(el => visible(el) && (el.innerText || el.textContent || '').trim().includes(text));
+            }""", text))
+        except Exception:
+            return False
+
     def _scroll_section_into_view(self, section_title):
         try:
             return bool(self.page.evaluate("""(sectionTitle) => {
@@ -2297,22 +2307,33 @@ class CRMSession:
 
     def _confirm_transfer(self):
         self._close_visible_dialogs()
-        if not self._click_top_button("确认"):
-            return False, "未找到确认按钮"
-        for _ in range(3):
-            time.sleep(0.8)
-            if not self._visible_message() and not self.page.locator(".el-dialog:visible").count():
-                break
-            self._click_dialog_button("确定")
+        last_msg = ""
+        for attempt in range(1, 4):
+            if not self._click_top_button("确认"):
+                return False, "未找到确认按钮"
+            for _ in range(5):
+                time.sleep(0.8)
+                if not self._visible_message() and not self.page.locator(".el-dialog:visible").count():
+                    break
+                self._click_dialog_button("确定")
 
-        for _ in range(15):
-            time.sleep(0.8)
-            msg = self._visible_message()
-            if msg and any(key in msg for key in ["失败", "错误", "必填", "请选择", "不能为空", "已安装"]):
-                return False, msg
-            if msg and any(key in msg for key in ["成功", "已确认", "移库成功"]):
-                return True, msg
-        return False, self._visible_message() or "确认后未检测到成功提示"
+            for _ in range(10):
+                time.sleep(0.8)
+                msg = self._visible_message()
+                if msg:
+                    last_msg = msg
+                if msg and any(key in msg for key in ["失败", "错误", "必填", "请选择", "不能为空", "已安装"]):
+                    return False, msg
+                if msg and any(key in msg for key in ["成功", "已确认", "移库成功"]):
+                    return True, msg
+                if not self._has_top_button("确认"):
+                    return True, msg or "确认移库已提交"
+
+            if not self._has_top_button("确认"):
+                return True, last_msg or "确认移库已提交"
+            self._close_visible_dialogs()
+
+        return False, last_msg or "确认后未检测到成功提示，且确认按钮仍存在"
 
     def create_transfer(self, summary, distributor, transfer_type="移出", remark="", log=None):
         def emit(message, level='info'):
