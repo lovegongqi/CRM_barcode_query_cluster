@@ -3175,22 +3175,12 @@ def filter_disassembly_barcodes(barcodes):
             kept.append(barcode)
     return kept, excluded
 
-def split_joined_barcode_token(token):
-    token = _clean_export_value(token)
-    if not token:
-        return []
-    if is_disassembly_barcode(token):
-        return [token]
-    if re.fullmatch(r"[A-Za-z0-9]{14,}", token):
-        return [token[i:i + 13] for i in range(0, len(token), 13) if token[i:i + 13]]
-    return [token]
-
 def normalize_input_barcodes(barcodes):
     normalized = OrderedDict()
     for barcode in barcodes or []:
-        for item in split_joined_barcode_token(barcode):
-            if item:
-                normalized[item] = True
+        barcode = _clean_export_value(barcode)
+        if barcode:
+            normalized[barcode] = True
     return list(normalized.keys())
 
 def _records_for_export(fields, sr_key):

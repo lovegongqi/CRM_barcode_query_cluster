@@ -236,8 +236,7 @@
             return String(text || '')
                 .split(/[\s,，;；]+/)
                 .map(b => b.trim())
-                .filter(Boolean)
-                .flatMap(b => /^[A-Za-z0-9]{14,}$/.test(b) && !/^[AC]/i.test(b) ? (b.match(/.{1,13}/g) || []) : [b]);
+                .filter(Boolean);
         }
 
         function setProgress(id, pct) {
