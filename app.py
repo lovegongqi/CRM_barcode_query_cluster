@@ -58,6 +58,29 @@ class CRMSession:
         self.needs_navigation = True  # 标记是否需要导航到报表页面
         self.last_report_error = ""
 
+    def _browser_crash_message(self):
+        return "CRM 浏览器页面已崩溃，已自动关闭当前会话，请重新登录 CRM 后再操作"
+
+    def _is_browser_crash_error(self, error):
+        text = str(error)
+        return any(key in text for key in [
+            "Target crashed",
+            "Target page, context or browser has been closed",
+            "Browser has been closed",
+            "Page crashed",
+            "browser has been closed",
+            "context has been closed",
+        ])
+
+    def _handle_browser_exception(self, error):
+        if not self._is_browser_crash_error(error):
+            return ""
+        self._close_browser()
+        self.logged_in = False
+        self.needs_navigation = True
+        self.last_report_error = ""
+        return self._browser_crash_message()
+
     def is_alive(self):
         try:
             if self.context and self.page:
@@ -1312,6 +1335,9 @@ class CRMSession:
                     return False, "查询结果为空"
 
             except Exception as e:
+                crash_message = self._handle_browser_exception(e)
+                if crash_message:
+                    return False, crash_message
                 self.needs_navigation = True
                 return False, str(e)
 
@@ -1329,7 +1355,8 @@ class CRMSession:
         try:
             body_text = self.page.inner_text("body", timeout=3000)
             return "移库类型" in body_text and bool(self._input_by_label("移库类型"))
-        except Exception:
+        except Exception as e:
+            self._handle_browser_exception(e)
             return False
 
     def _return_to_move_list(self):
@@ -1338,13 +1365,16 @@ class CRMSession:
             time.sleep(1)
             self.needs_navigation = True
             return True
-        except Exception:
+        except Exception as e:
+            self._handle_browser_exception(e)
             self.needs_navigation = True
             return False
 
     def _open_transfer_create_form(self, emit):
         emit("打开 CRM 移库单新增页面...")
-        self._return_to_move_list()
+        if not self._return_to_move_list() and not self.is_alive():
+            emit(self._browser_crash_message(), "error")
+            return False
         try:
             self.page.wait_for_function(
                 "() => document.body && /移库单/.test(document.body.innerText || '')",
@@ -2430,6 +2460,9 @@ class CRMSession:
                     "message": msg or self._visible_message(),
                 }
             except Exception as e:
+                crash_message = self._handle_browser_exception(e)
+                if crash_message:
+                    return False, crash_message
                 return False, str(e)
 
 class CRMWorker:
@@ -2462,8 +2495,9 @@ class CRMWorker:
                 self._update_state(session)
                 result_queue.put((True, result))
             except Exception as e:
+                crash_message = session._handle_browser_exception(e)
                 self._update_state(session)
-                result_queue.put((False, str(e)))
+                result_queue.put((False, crash_message or str(e)))
 
     def _call(self, method_name, *args, **kwargs):
         result_queue = queue.Queue(maxsize=1)
