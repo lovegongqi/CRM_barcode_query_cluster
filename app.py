@@ -81,6 +81,26 @@ class CRMSession:
         self.last_report_error = ""
         return self._browser_crash_message()
 
+    def _goto(self, url, timeout=60000, wait_until="domcontentloaded"):
+        try:
+            self.page.goto(url, wait_until=wait_until, timeout=timeout)
+            return True, ""
+        except Exception as e:
+            crash_message = self._handle_browser_exception(e)
+            if crash_message:
+                return False, crash_message
+            error_text = str(e)
+            if "Timeout" in error_text or "timeout" in error_text:
+                try:
+                    body_text = self.page.inner_text("body", timeout=3000)
+                    if body_text and len(body_text.strip()) > 20:
+                        print(f"  [WARN] 页面加载超时但已有内容，继续执行: {url}")
+                        return True, ""
+                except Exception:
+                    pass
+                return False, f"打开 CRM 页面超时，请检查云服务器到 CRM 网站的网络连通性：{_brief_batch_error(error_text, 240)}"
+            return False, error_text
+
     def is_alive(self):
         try:
             if self.context and self.page:
@@ -149,7 +169,10 @@ class CRMSession:
         self.page = self.context.pages[0] if self.context.pages else None
         if not self.page:
             return False
-        self.page.goto(cfg["website"]["url"], timeout=30000)
+        ok, message = self._goto(cfg["website"]["url"], timeout=60000)
+        if not ok:
+            print(f"  [错误] 打开 CRM 首页失败: {message}")
+            return False
         time.sleep(3)
         return True
 
@@ -1013,7 +1036,10 @@ class CRMSession:
 
             if "crmportal.ecowaterchina" not in self.page.url.lower():
                 print("  [跳转] 当前不在 CRM 主页，正在跳转...")
-                self.page.goto(cfg["website"]["url"], timeout=30000)
+                ok, message = self._goto(cfg["website"]["url"], timeout=60000)
+                if not ok:
+                    print(f"  [失败] 跳转 CRM 主页失败: {message}")
+                    return False
                 time.sleep(3)
 
             # 点击报表管理
