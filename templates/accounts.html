@@ -32,6 +32,13 @@
         .stepper { display:flex; gap:6px; align-items:center; }
         .stepper input { width:80px; height:36px; text-align:center; font-weight:800; }
         .stepper button { min-width:36px; min-height:36px; padding:0 10px; border:1px solid #cfd8e3; border-radius:6px; background:#fff; font-weight:900; cursor:pointer; }
+        .bulk-login-grid { display:grid; grid-template-columns:1fr 1fr auto; gap:12px; align-items:end; }
+        .bulk-captcha-row { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:end; margin-top:12px; }
+        .slot-status-list { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+        .slot-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 8px; border:1px solid #d9e1ec; border-radius:999px; background:#f8fafc; color:#475569; font-size:12px; font-weight:800; }
+        .slot-pill .dot { margin-right:0; }
+        .log-box { background:#0f172a; color:#d4d4d4; border-radius:8px; padding:12px; font-family:"Courier New",monospace; font-size:12px; line-height:1.7; max-height:220px; overflow:auto; }
+        .log-box .info { color:#4fc3f7; } .log-box .success { color:#81c784; } .log-box .error { color:#e57373; } .log-box .warn { color:#ffb74d; } .log-box .dim { color:#94a3b8; }
         .actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
         .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
         .btn-primary { background:#2563eb; color:#fff; }
@@ -40,7 +47,7 @@
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
         th { background:#f8fafc; color:#475569; }
-        @media (max-width:860px) { .container { padding:14px; } .form-grid, .channel-grid { grid-template-columns:1fr; } }
+        @media (max-width:860px) { .container { padding:14px; } .form-grid, .channel-grid, .bulk-login-grid, .bulk-captcha-row { grid-template-columns:1fr; } }
     </style>
 </head>
 <body>
@@ -97,6 +104,21 @@
         </div>
     </div>
 
+    <div class="card" id="bulkCrmLoginCard" style="display:none">
+        <h2>CRM 所有通道批量登录</h2>
+        <div class="bulk-login-grid">
+            <div><label>CRM 账号</label><input id="bulkCrmUsername" placeholder="CRM 用户名"></div>
+            <div><label>CRM 密码</label><input id="bulkCrmPassword" type="password" placeholder="CRM 密码"></div>
+            <button class="btn btn-primary" id="bulkCrmLoginBtn" onclick="startBulkCrmLogin()">批量登录</button>
+        </div>
+        <div class="bulk-captcha-row" id="bulkCaptchaRow" style="display:none">
+            <div><label>短信验证码</label><input id="bulkCrmCaptcha" placeholder="输入一次验证码，同步提交到所有通道" maxlength="6"></div>
+            <button class="btn btn-primary" id="bulkCaptchaBtn" onclick="submitBulkCrmCaptcha()">提交验证码</button>
+        </div>
+        <div class="slot-status-list" id="bulkCrmSlotStatus"></div>
+        <div class="log-box" id="bulkCrmLoginLog"><div class="dim">等待操作...</div></div>
+    </div>
+
     <div class="card" id="accountEditCard" style="display:none">
         <h2>账号设置</h2>
         <input type="hidden" id="accountId">
@@ -145,6 +167,153 @@ function resetForm() {
     setPermissions([]);
 }
 
+let bulkCrmSlots = [];
+let pendingBulkCrmSlots = [];
+
+function bulkLog(message, level='dim') {
+    const box = document.getElementById('bulkCrmLoginLog');
+    if (!box) return;
+    if (box.querySelector('.dim') && box.textContent.trim() === '等待操作...') box.innerHTML = '';
+    const line = document.createElement('div');
+    line.className = level;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+}
+
+function renderBulkCrmSlots() {
+    const box = document.getElementById('bulkCrmSlotStatus');
+    if (!box) return;
+    if (!bulkCrmSlots.length) {
+        box.innerHTML = '<span class="slot-pill">暂无通道</span>';
+        return;
+    }
+    box.innerHTML = bulkCrmSlots.map(slot => {
+        const logged = !!slot.logged_in;
+        const dot = logged ? 'green' : 'red';
+        const text = logged ? '已登录' : (slot.browser_running ? '未登录' : '未启动');
+        return `<span class="slot-pill"><span class="dot ${dot}"></span>${escapeHtml(slot.label)} ${escapeHtml(text)}</span>`;
+    }).join('');
+}
+
+async function loadBulkCrmSlots() {
+    const data = await fetch('/api/crm/slots').then(res => res.json()).catch(() => null);
+    if (!data || !data.success) {
+        bulkCrmSlots = [];
+        renderBulkCrmSlots();
+        return;
+    }
+    bulkCrmSlots = [...(data.query || []), ...(data.transfer || [])];
+    renderBulkCrmSlots();
+}
+
+function slotLoginPayload(slot, extra={}) {
+    return Object.assign({kind: slot.kind, slot_id: slot.id}, extra);
+}
+
+function isLoggedInMessage(message) {
+    return ['已登录（会话有效）', '登录成功', '登录成功（页面已跳转）'].includes(message || '');
+}
+
+async function startBulkCrmLogin() {
+    const username = document.getElementById('bulkCrmUsername').value.trim();
+    const password = document.getElementById('bulkCrmPassword').value;
+    if (!username || !password) return alert('请输入 CRM 账号和密码');
+    const btn = document.getElementById('bulkCrmLoginBtn');
+    btn.disabled = true;
+    btn.textContent = '登录中...';
+    pendingBulkCrmSlots = [];
+    document.getElementById('bulkCaptchaRow').style.display = 'none';
+    document.getElementById('bulkCrmLoginLog').innerHTML = '';
+    localStorage.setItem('crm_username', username);
+    try {
+        await loadBulkCrmSlots();
+        const targets = bulkCrmSlots.filter(slot => !slot.logged_in);
+        if (!targets.length) {
+            bulkLog('所有 CRM 通道都已登录', 'success');
+            return;
+        }
+        bulkLog(`开始批量登录 ${targets.length} 个 CRM 通道`, 'info');
+        for (const slot of targets) {
+            bulkLog(`打开 ${slot.label} 登录页`, 'info');
+            try {
+                const data = await fetch('/api/crm/login-step1', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify(slotLoginPayload(slot, {username, password}))
+                }).then(res => res.json());
+                const msg = data.message || data.error || '';
+                if (!data.success) {
+                    bulkLog(`${slot.label} 登录失败：${msg || '未知错误'}`, 'error');
+                    continue;
+                }
+                if (isLoggedInMessage(msg)) {
+                    bulkLog(`${slot.label} 已登录`, 'success');
+                    continue;
+                }
+                pendingBulkCrmSlots.push(slot);
+                bulkLog(`${slot.label} 已进入验证码步骤`, msg === 'captcha_not_found' ? 'warn' : 'success');
+            } catch (e) {
+                bulkLog(`${slot.label} 登录请求出错：${e}`, 'error');
+            }
+        }
+        if (pendingBulkCrmSlots.length) {
+            document.getElementById('bulkCaptchaRow').style.display = '';
+            document.getElementById('bulkCrmCaptcha').focus();
+            bulkLog(`请输入短信验证码，将同步提交到 ${pendingBulkCrmSlots.length} 个通道`, 'warn');
+        } else {
+            bulkLog('批量登录完成，没有需要提交验证码的通道', 'success');
+        }
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '批量登录';
+        await loadBulkCrmSlots();
+    }
+}
+
+async function submitBulkCrmCaptcha() {
+    const captcha = document.getElementById('bulkCrmCaptcha').value.trim();
+    if (!captcha) return alert('请输入验证码');
+    if (!pendingBulkCrmSlots.length) return alert('没有等待验证码的通道');
+    const btn = document.getElementById('bulkCaptchaBtn');
+    btn.disabled = true;
+    btn.textContent = '提交中...';
+    const stillPending = [];
+    try {
+        bulkLog(`开始同步提交验证码到 ${pendingBulkCrmSlots.length} 个通道`, 'info');
+        for (const slot of pendingBulkCrmSlots) {
+            try {
+                const data = await fetch('/api/crm/login-step2', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify(slotLoginPayload(slot, {captcha}))
+                }).then(res => res.json());
+                if (data.success) {
+                    bulkLog(`${slot.label} 登录成功`, 'success');
+                } else {
+                    stillPending.push(slot);
+                    bulkLog(`${slot.label} 验证码提交失败：${data.message || data.error || '未知错误'}`, 'error');
+                }
+            } catch (e) {
+                stillPending.push(slot);
+                bulkLog(`${slot.label} 验证码提交出错：${e}`, 'error');
+            }
+        }
+        pendingBulkCrmSlots = stillPending;
+        if (!pendingBulkCrmSlots.length) {
+            document.getElementById('bulkCaptchaRow').style.display = 'none';
+            document.getElementById('bulkCrmCaptcha').value = '';
+            bulkLog('所有等待验证码的通道已处理完成', 'success');
+        } else {
+            bulkLog(`仍有 ${pendingBulkCrmSlots.length} 个通道未登录，可重新输入验证码再提交`, 'warn');
+        }
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '提交验证码';
+        await loadBulkCrmSlots();
+    }
+}
+
 function changeWorkerCount(inputId, delta) {
     const input = document.getElementById(inputId);
     let value = Number.parseInt(input.value, 10);
@@ -176,6 +345,7 @@ async function saveRuntimeConfig() {
     const config = data.config || {};
     document.getElementById('queryWorkerCount').value = config.query_workers || queryWorkers;
     document.getElementById('transferWorkerCount').value = config.transfer_workers || transferWorkers;
+    loadBulkCrmSlots();
     alert('通道数量已更新');
 }
 
@@ -188,7 +358,12 @@ async function loadAccounts() {
     document.getElementById('accountEditCard').style.display = canManage ? '' : 'none';
     document.getElementById('accountListCard').style.display = canManage ? '' : 'none';
     document.getElementById('runtimeConfigCard').style.display = canManage ? '' : 'none';
-    if (canManage) loadRuntimeConfig();
+    document.getElementById('bulkCrmLoginCard').style.display = canManage ? '' : 'none';
+    if (canManage) {
+        loadRuntimeConfig();
+        loadBulkCrmSlots();
+        document.getElementById('bulkCrmUsername').value = localStorage.getItem('crm_username') || '';
+    }
     if (!data.success) {
         document.getElementById('accountsBox').innerHTML = `<div class="status-text">${escapeHtml(data.error || '请先以管理员登录')}</div>`;
         return;
