@@ -2598,8 +2598,8 @@ def _crm_session_base_dir():
 
 class CRMWorkerPool:
     def __init__(self):
-        self.query_count = max(2, _positive_int_env("CRM_QUERY_WORKERS", 2))
-        self.transfer_count = max(2, _positive_int_env("CRM_TRANSFER_WORKERS", 2))
+        self.query_count = _positive_int_env("CRM_QUERY_WORKERS", 2)
+        self.transfer_count = _positive_int_env("CRM_TRANSFER_WORKERS", 2)
         self.session_base = _crm_session_base_dir()
         self.workers = {}
         self.query_slots = self._make_slots("query", self.query_count)

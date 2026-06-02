@@ -6,8 +6,8 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
-      CRM_QUERY_WORKERS: "2"
-      CRM_TRANSFER_WORKERS: "2"
+      CRM_QUERY_WORKERS: "${CRM_QUERY_WORKERS:-2}"
+      CRM_TRANSFER_WORKERS: "${CRM_TRANSFER_WORKERS:-2}"
       CRM_DATA_DIR: /app/data
       CRM_SESSION_BASE: /app/session
       CRM_LEGACY_BARCODE_DIR: /app/legacy/barcode
