@@ -14,6 +14,7 @@ import html as html_mod
 import threading
 import queue
 import uuid
+import shutil
 from collections import OrderedDict
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session, redirect
 from datetime import datetime
@@ -3124,14 +3125,45 @@ except ImportError:
 app = Flask(__name__, template_folder=os.path.join(RESOURCE_BASE_DIR, "templates"))
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crm-barcode-query-local-secret")
 
-BARCODE_DIR = os.path.join(RUNTIME_BASE_DIR, "barcode")
+DATA_BASE_DIR = os.environ.get("CRM_DATA_DIR", RUNTIME_BASE_DIR)
+BARCODE_DIR = os.path.join(DATA_BASE_DIR, "barcode")
 ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
 DATA_FILE = os.path.join(BARCODE_DIR, "barcode_data.json")
 PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")
 ACCOUNTS_FILE = os.path.join(BARCODE_DIR, "accounts.json")
 DISTRIBUTOR_HISTORY_FILE = os.path.join(BARCODE_DIR, "distributor_history.json")
+RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
 OWN_DEALER_NAME = "江西省天麓工贸有限公司"
 FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
+
+def _directory_has_files(path):
+    if not os.path.isdir(path):
+        return False
+    for _root, _dirs, files in os.walk(path):
+        if files:
+            return True
+    return False
+
+def _migrate_legacy_runtime_data():
+    if os.environ.get("CRM_DISABLE_DATA_MIGRATION") in ("1", "true", "yes"):
+        return
+    legacy_pairs = [
+        (os.environ.get("CRM_LEGACY_BARCODE_DIR", "/app/legacy/barcode"), BARCODE_DIR),
+        (os.environ.get("CRM_LEGACY_RESULTS_DIR", "/app/legacy/results"), RESULTS_DIR),
+    ]
+    for source, target in legacy_pairs:
+        if not source or not os.path.isdir(source) or not _directory_has_files(source):
+            continue
+        if _directory_has_files(target):
+            continue
+        try:
+            os.makedirs(target, exist_ok=True)
+            shutil.copytree(source, target, dirs_exist_ok=True)
+            print(f"  [DATA] 已迁移旧数据目录: {source} -> {target}")
+        except Exception as e:
+            print(f"  [DATA] 迁移旧数据目录失败: {source} -> {target}: {e}")
+
+_migrate_legacy_runtime_data()
 
 FIELD_IDS = {
     'newisclosed1': '结单状态',
