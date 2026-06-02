@@ -22,6 +22,10 @@
         .grid { display:grid; grid-template-columns: 1fr; gap:16px; align-items:start; }
         .card { background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,.06); margin-bottom:16px; }
         .card h2 { font-size:16px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #e5e7eb; }
+        .card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #e5e7eb; }
+        .card-head h2 { margin:0; padding:0; border:0; }
+        .crm-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+        .crm-actions .btn { min-height:34px; padding:6px 12px; font-size:12px; white-space:nowrap; }
         label { display:block; font-size:12px; color:#667085; font-weight:700; margin-bottom:6px; }
         textarea, input, select { width:100%; border:1px solid #cfd8e3; border-radius:6px; padding:9px 10px; font-size:14px; outline:none; background:#fff; }
         textarea { min-height:150px; font-family:"Courier New", monospace; resize:vertical; }
@@ -58,8 +62,8 @@
         .distributor-option:last-child { border-bottom:none; }
         .distributor-option:hover, .distributor-option.active { background:#eef4ff; color:#1d4ed8; }
         .distributor-empty { padding:9px 10px; font-size:13px; color:#94a3b8; }
-        .slot-tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
-        .slot-tab { min-height:34px; padding:7px 14px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-weight:800; cursor:pointer; }
+        .slot-tabs { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; margin-bottom:14px; }
+        .slot-tab { width:100%; min-width:0; min-height:34px; padding:7px 6px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:clamp(10px, 2.6vw, 13px); line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .slot-tab.active { background:#0f766e; color:#fff; border-color:#0f766e; }
         .slot-tab.busy { border-color:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.12); }
         .slot-config { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px; padding:10px 12px; border:1px solid #d9e1ec; border-radius:8px; background:#f8fafc; }
@@ -87,13 +91,18 @@
     <div class="status-bar">
         <div class="status-text"><span class="dot" id="loginDot"></span>CRM 登录状态：<span id="loginStatus">检测中</span></div>
         <div class="status-text">工具账号：<span id="appAccountStatus">检测中</span> <a href="/logout">退出</a></div>
-        <button class="btn btn-primary" id="loginBtn" onclick="openLoginModal()">登录 CRM</button>
     </div>
 
     <div class="grid">
         <div>
             <div class="card">
-                <h2>提交移库</h2>
+                <div class="card-head">
+                    <h2>提交移库</h2>
+                    <div class="crm-actions">
+                        <button class="btn btn-primary" id="loginBtn" onclick="openLoginModal()">登录 CRM</button>
+                        <button class="btn btn-danger" id="logoutBtn" onclick="doLogout()" style="display:none">退出登录</button>
+                    </div>
+                </div>
                 <div class="slot-tabs" id="transferSlotTabs"></div>
                 <div class="slot-config" id="transferWorkerConfig" style="display:none">
                     <div>
@@ -555,6 +564,18 @@ async function restartLogin() {
     doLogin();
 }
 
+async function doLogout() {
+    appendLog('正在退出 CRM...', 'warn');
+    try {
+        await fetch('/api/crm/logout?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot), {method:'POST'});
+        appendLog('CRM 已退出登录', 'warn');
+    } catch (e) {
+        appendLog('退出 CRM 出错：' + e, 'error');
+    }
+    closeLoginModal();
+    refreshCrmStatus();
+}
+
 async function previewTransfer() {
     const barcodes = parseBarcodes();
     if (!barcodes.length) return alert('请输入条码');
@@ -843,9 +864,11 @@ async function refreshCrmStatus() {
     const dot = document.getElementById('loginDot');
     const text = document.getElementById('loginStatus');
     const loginBtn = document.getElementById('loginBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
     dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
     text.textContent = data.logged_in ? '已登录' : '未登录';
     loginBtn.style.display = data.logged_in ? 'none' : '';
+    if (logoutBtn) logoutBtn.style.display = data.logged_in ? '' : 'none';
     const appData = await fetch('/api/app-auth/status').then(r => r.json()).catch(() => ({}));
     document.getElementById('appAccountStatus').textContent = appData.account ? appData.account.username : '未登录';
 }
