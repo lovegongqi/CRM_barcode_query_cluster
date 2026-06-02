@@ -1,6 +1,7 @@
 # Local secrets and runtime config
 accounts.json
 config.json
+runtime_config.json
 .env
 
 # Generated query output

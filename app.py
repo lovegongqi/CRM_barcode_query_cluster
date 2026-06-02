@@ -2587,6 +2587,36 @@ def _positive_int_env(name, default):
         value = default
     return max(1, value)
 
+def _runtime_data_base_dir():
+    return os.environ.get("CRM_DATA_DIR", RUNTIME_BASE_DIR)
+
+def _runtime_config_path():
+    return os.path.join(_runtime_data_base_dir(), "runtime_config.json")
+
+def _normalize_worker_count(value, default=2):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = default
+    return max(1, min(count, 10))
+
+def _load_worker_count_config():
+    defaults = {
+        "query_workers": _normalize_worker_count(os.environ.get("CRM_QUERY_WORKERS"), 2),
+        "transfer_workers": _normalize_worker_count(os.environ.get("CRM_TRANSFER_WORKERS"), 2),
+    }
+    config_path = _runtime_config_path()
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                defaults["query_workers"] = _normalize_worker_count(data.get("query_workers"), defaults["query_workers"])
+                defaults["transfer_workers"] = _normalize_worker_count(data.get("transfer_workers"), defaults["transfer_workers"])
+        except Exception:
+            pass
+    return defaults
+
 def _crm_session_base_dir():
     env_base = os.environ.get("CRM_SESSION_BASE")
     if env_base:
@@ -2598,37 +2628,50 @@ def _crm_session_base_dir():
 
 class CRMWorkerPool:
     def __init__(self):
-        self.query_count = _positive_int_env("CRM_QUERY_WORKERS", 2)
-        self.transfer_count = _positive_int_env("CRM_TRANSFER_WORKERS", 2)
+        worker_config = _load_worker_count_config()
+        self.query_count = worker_config["query_workers"]
+        self.transfer_count = worker_config["transfer_workers"]
         self.session_base = _crm_session_base_dir()
         self.workers = {}
+        self.pool_lock = threading.Lock()
         self.query_slots = self._make_slots("query", self.query_count)
         self.transfer_slots = self._make_slots("transfer", self.transfer_count)
+
+    def _ensure_worker(self, slot_id):
+        if slot_id not in self.workers:
+            session_dir = os.path.join(self.session_base, slot_id)
+            self.workers[slot_id] = CRMWorker(slot_id, session_dir)
+        return self.workers[slot_id]
 
     def _make_slots(self, prefix, count):
         slots = []
         for index in range(1, count + 1):
             slot_id = f"{prefix}-{index}"
-            session_dir = os.path.join(self.session_base, slot_id)
-            self.workers[slot_id] = CRMWorker(slot_id, session_dir)
+            self._ensure_worker(slot_id)
             slots.append(slot_id)
         return slots
 
     def default_slot(self, kind="query"):
-        return (self.transfer_slots if kind == "transfer" else self.query_slots)[0]
+        with self.pool_lock:
+            return (self.transfer_slots if kind == "transfer" else self.query_slots)[0]
 
     def get(self, slot_id=None, kind="query"):
-        slot_id = (slot_id or "").strip() or self.default_slot(kind)
-        worker = self.workers.get(slot_id)
-        if not worker:
-            worker = self.workers[self.default_slot(kind)]
-        return worker
+        with self.pool_lock:
+            default_slot = (self.transfer_slots if kind == "transfer" else self.query_slots)[0]
+            slot_id = (slot_id or "").strip() or default_slot
+            worker = self.workers.get(slot_id)
+            if not worker:
+                worker = self.workers[default_slot]
+            return worker
 
     def normalize_slot(self, slot_id=None, kind="query"):
         worker = self.get(slot_id, kind)
         return worker.slot_id
 
     def slots_payload(self):
+        with self.pool_lock:
+            query_slots = list(self.query_slots)
+            transfer_slots = list(self.transfer_slots)
         def rows(slot_ids, kind):
             return [{
                 "id": slot_id,
@@ -2638,13 +2681,23 @@ class CRMWorkerPool:
                 "logged_in": self.workers[slot_id].logged_in,
             } for index, slot_id in enumerate(slot_ids, 1)]
         return {
-            "query": rows(self.query_slots, "query"),
-            "transfer": rows(self.transfer_slots, "transfer"),
+            "query": rows(query_slots, "query"),
+            "transfer": rows(transfer_slots, "transfer"),
             "defaults": {
-                "query": self.default_slot("query"),
-                "transfer": self.default_slot("transfer"),
+                "query": query_slots[0],
+                "transfer": transfer_slots[0],
             }
         }
+
+    def resize(self, query_count, transfer_count):
+        query_count = _normalize_worker_count(query_count, self.query_count)
+        transfer_count = _normalize_worker_count(transfer_count, self.transfer_count)
+        with self.pool_lock:
+            self.query_count = query_count
+            self.transfer_count = transfer_count
+            self.query_slots = self._make_slots("query", self.query_count)
+            self.transfer_slots = self._make_slots("transfer", self.transfer_count)
+        return self.slots_payload()
 
 crm_pool = CRMWorkerPool()
 crm_session = crm_pool.get(kind="query")
@@ -3125,7 +3178,7 @@ except ImportError:
 app = Flask(__name__, template_folder=os.path.join(RESOURCE_BASE_DIR, "templates"))
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crm-barcode-query-local-secret")
 
-DATA_BASE_DIR = os.environ.get("CRM_DATA_DIR", RUNTIME_BASE_DIR)
+DATA_BASE_DIR = _runtime_data_base_dir()
 BARCODE_DIR = os.path.join(DATA_BASE_DIR, "barcode")
 ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
 DATA_FILE = os.path.join(BARCODE_DIR, "barcode_data.json")
@@ -3133,6 +3186,7 @@ PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")
 ACCOUNTS_FILE = os.path.join(BARCODE_DIR, "accounts.json")
 DISTRIBUTOR_HISTORY_FILE = os.path.join(BARCODE_DIR, "distributor_history.json")
 RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
+RUNTIME_CONFIG_FILE = _runtime_config_path()
 OWN_DEALER_NAME = "江西省天麓工贸有限公司"
 FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
 
@@ -3164,6 +3218,33 @@ def _migrate_legacy_runtime_data():
             print(f"  [DATA] 迁移旧数据目录失败: {source} -> {target}: {e}")
 
 _migrate_legacy_runtime_data()
+
+def load_runtime_config():
+    defaults = {
+        "query_workers": _normalize_worker_count(os.environ.get("CRM_QUERY_WORKERS"), 2),
+        "transfer_workers": _normalize_worker_count(os.environ.get("CRM_TRANSFER_WORKERS"), 2),
+    }
+    if os.path.exists(RUNTIME_CONFIG_FILE):
+        try:
+            with open(RUNTIME_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                defaults["query_workers"] = _normalize_worker_count(data.get("query_workers"), defaults["query_workers"])
+                defaults["transfer_workers"] = _normalize_worker_count(data.get("transfer_workers"), defaults["transfer_workers"])
+        except Exception:
+            pass
+    return defaults
+
+def save_runtime_config(config):
+    os.makedirs(DATA_BASE_DIR, exist_ok=True)
+    payload = {
+        "query_workers": _normalize_worker_count(config.get("query_workers"), 2),
+        "transfer_workers": _normalize_worker_count(config.get("transfer_workers"), 2),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with open(RUNTIME_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
 
 FIELD_IDS = {
     'newisclosed1': '结单状态',
@@ -4839,6 +4920,42 @@ def api_accounts_delete(account_id):
 @app.route("/api/app-auth/status")
 def api_app_auth_status():
     return jsonify({'success': True, 'account': current_account_public(), 'is_admin': is_admin_account()})
+
+@app.route("/api/runtime-config", methods=["GET"])
+def api_runtime_config():
+    config = load_runtime_config()
+    return jsonify({
+        'success': True,
+        'config': config,
+        'active': {
+            'query_workers': len(crm_pool.query_slots),
+            'transfer_workers': len(crm_pool.transfer_slots),
+        },
+        'can_edit': is_admin_account(),
+    })
+
+@app.route("/api/runtime-config", methods=["POST"])
+def api_runtime_config_save():
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以修改通道数量'})
+    data = request.get_json() or {}
+    current = load_runtime_config()
+    query_workers = data.get('query_workers', current.get('query_workers', 2))
+    transfer_workers = data.get('transfer_workers', current.get('transfer_workers', 2))
+    config = save_runtime_config({
+        'query_workers': query_workers,
+        'transfer_workers': transfer_workers,
+    })
+    slots = crm_pool.resize(config['query_workers'], config['transfer_workers'])
+    return jsonify({
+        'success': True,
+        'config': config,
+        'active': {
+            'query_workers': len(crm_pool.query_slots),
+            'transfer_workers': len(crm_pool.transfer_slots),
+        },
+        'slots': slots,
+    })
 
 @app.route("/api/app-auth/login", methods=["POST"])
 def api_app_auth_login():
