@@ -62,11 +62,11 @@
         .distributor-option:last-child { border-bottom:none; }
         .distributor-option:hover, .distributor-option.active { background:#eef4ff; color:#1d4ed8; }
         .distributor-empty { padding:9px 10px; font-size:13px; color:#94a3b8; }
-        .slot-tabs { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; margin-bottom:14px; }
-        .slot-tab { width:100%; min-width:0; min-height:34px; padding:7px 6px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:clamp(10px, 2.6vw, 13px); line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .slot-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+        .slot-tab { flex:0 0 auto; min-width:96px; min-height:34px; padding:7px 10px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:13px; line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .slot-tab.active { background:#0f766e; color:#fff; border-color:#0f766e; }
         .slot-tab.busy { border-color:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.12); }
-        @media (max-width: 860px) { .container { padding:14px; } .grid, .fields { grid-template-columns:1fr; } }
+        @media (max-width: 860px) { .container { padding:14px; } .grid, .fields { grid-template-columns:1fr; } .slot-tabs { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); } .slot-tab { width:100%; min-width:0; padding:7px 6px; font-size:clamp(10px, 2.6vw, 13px); } }
     </style>
 </head>
 <body>
@@ -74,7 +74,7 @@
     <div class="header">
         <div>
             <h1>CRM 移库</h1>
-            <p class="muted">直接粘贴条码即可移库。未查询条码会按条码匹配前缀匹配产品名称和编码。</p>
+            <p class="muted">直接粘贴条码即可移库。未查询条码会按前缀匹配产品名称和编码。</p>
         </div>
         <div class="page-nav">
             {% for link in nav_links %}

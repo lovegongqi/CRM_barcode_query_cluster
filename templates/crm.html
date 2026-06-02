@@ -88,8 +88,8 @@
         .login-modal-body { padding: 18px 20px 20px; }
         .login-modal-body .form-row { flex-direction: column; align-items: stretch; gap: 12px; }
         .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
-        .slot-tabs { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; margin-bottom:16px; }
-        .slot-tab { width:100%; min-width:0; min-height:34px; padding:7px 6px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:clamp(10px, 2.6vw, 13px); line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .slot-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+        .slot-tab { flex:0 0 auto; min-width:96px; min-height:34px; padding:7px 10px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:13px; line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .slot-tab.active { background:#2563eb; color:#fff; border-color:#2563eb; }
         .slot-tab.busy { border-color:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.12); }
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -100,6 +100,8 @@
             .status-bar { align-items: center; flex-direction: row; flex-wrap: wrap; }
             .status-actions { margin-left:auto; justify-content:flex-end; }
             .card-head { align-items:center; }
+            .slot-tabs { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); }
+            .slot-tab { width:100%; min-width:0; padding:7px 6px; font-size:clamp(10px, 2.6vw, 13px); }
         }
     </style>
 </head>
