@@ -1807,13 +1807,27 @@
             const modal = document.getElementById('transferSlotModal');
             const list = document.getElementById('transferSlotList');
             list.innerHTML = '<button class="transfer-slot-option">正在加载移库窗口...</button>';
-            modal.classList.add('show');
-            const data = await fetch('/api/crm/transfer/slots-status').then(r => r.json()).catch(() => null);
-            const slots = (data && data.success ? data.transfer : []) || [];
+            modal.classList.add('overlay-show');
+            let data = null;
+            try {
+                data = await fetch('/api/crm/transfer/slots-status').then(r => r.json());
+            } catch(e) {
+                list.innerHTML = '<button class="transfer-slot-option busy" disabled>无法读取移库窗口，请检查登录或网络</button>';
+                showToast('无法读取移库窗口，请检查登录或网络');
+                return;
+            }
+            if (!data || !data.success) {
+                const reason = (data && data.error) || '无法读取移库窗口';
+                list.innerHTML = `<button class="transfer-slot-option busy" disabled>${escapeHtml(reason)}</button>`;
+                showToast(reason);
+                return;
+            }
+            const slots = data.transfer || [];
             if (!slots.length) {
                 list.innerHTML = `<button class="transfer-slot-option" onclick="openTransferInSlot('transfer-1')">移库1</button>`;
                 return;
             }
+            const allBusy = slots.every(slot => slot.transfer_running || slot.summary_running);
             list.innerHTML = slots.map(slot => {
                 const loginStatus = slot.logged_in ? '已登录' : (slot.browser_running ? '未登录' : '未启动');
                 const busyText = slot.transfer_running ? '正在移库' : (slot.summary_running ? '正在汇总' : '');
@@ -1822,10 +1836,11 @@
                 }
                 return `<button class="transfer-slot-option" onclick="openTransferInSlot('${slot.id}')">${escapeHtml(slot.label)} · ${escapeHtml(loginStatus)}</button>`;
             }).join('');
+            if (allBusy) showToast('所有移库窗口都在执行任务，请等待完成后再提交');
         }
 
         function closeTransferSlotModal() {
-            document.getElementById('transferSlotModal').classList.remove('show');
+            document.getElementById('transferSlotModal').classList.remove('overlay-show');
         }
 
         function openTransferInSlot(slotId) {
