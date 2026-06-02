@@ -549,9 +549,9 @@
         .container { max-width: 1280px; }
         .app-header {
             display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-            gap: 20px;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 12px;
             margin-bottom: 18px;
         }
         .app-title h1 {
@@ -577,22 +577,27 @@
         }
         .page-nav {
             display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            justify-content: flex-end;
+            flex-wrap: nowrap;
+            gap: 6px;
+            justify-content: flex-start;
             align-items: center;
+            width: 100%;
         }
         .page-nav a {
+            flex: 0 0 calc((100% - 24px)/5);
+            width: calc((100% - 24px)/5);
+            min-width: 0;
+            max-width: calc((100% - 24px)/5);
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            min-height: 38px;
-            padding: 0 16px;
+            min-height: 34px;
+            padding: 0 3px;
             border: 1px solid var(--line);
-            border-radius: 8px;
+            border-radius: 6px;
             background: #fff;
             color: var(--muted);
-            font-size: 13px;
+            font-size: 11px;
             line-height: 1;
             font-weight: 800;
             text-decoration: none;
@@ -770,8 +775,7 @@
         }
         .footer { color: var(--muted); }
         @media (max-width: 760px) {
-            body { padding: 12px; }
-            .app-header { align-items: flex-start; flex-direction: column; }
+            body { padding: 14px; }
             .query-card, .card { padding: 16px; }
             .query-status-bar { flex-direction: column; align-items: flex-start; gap: 8px; }
             .login-row, .query-row, .search-row { flex-direction: column; }

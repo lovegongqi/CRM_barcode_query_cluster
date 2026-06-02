@@ -8,11 +8,11 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(180deg,#eaf1fb 0,#f7f9fc 320px,#f7f9fc 100%); color: #202938; min-height: 100vh; }
         .container { max-width: 1280px; margin: 0 auto; padding: 24px; }
-        .header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+        .header { display:flex; flex-direction:column; align-items:stretch; gap:12px; margin-bottom:20px; }
         .header h1 { font-size: 26px; color: #202938; margin-bottom: 6px; }
         .header p { color: #667085; font-size: 13px; }
-        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
-        .page-nav a { display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 16px; font-size:13px; line-height:1; font-weight:800; color:#667085; text-decoration:none; border:1px solid #d9e1ec; border-radius:8px; background:#fff; white-space:nowrap; }
+        .page-nav { display:flex; gap:6px; flex-wrap:nowrap; justify-content:flex-start; align-items:center; width:100%; }
+        .page-nav a { flex:0 0 calc((100% - 24px)/5); width:calc((100% - 24px)/5); min-width:0; max-width:calc((100% - 24px)/5); display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:0 3px; font-size:11px; line-height:1; font-weight:800; color:#667085; text-decoration:none; border:1px solid #d9e1ec; border-radius:6px; background:#fff; white-space:nowrap; }
         .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
         .page-nav a:hover { border-color:#bfdbfe; color:#2563eb; }
         .page-nav a.active:hover { color:#fff; }
@@ -96,8 +96,7 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         @media (max-width: 760px) {
             .container { padding: 14px; }
-            .header, .form-row { align-items: stretch; flex-direction: column; }
-            .page-nav { justify-content: flex-start; }
+            .form-row { align-items: stretch; flex-direction: column; }
             .form-group { width: 100%; }
             .status-bar { align-items: center; flex-direction: row; flex-wrap: wrap; }
             .status-actions { margin-left:auto; justify-content:flex-end; }

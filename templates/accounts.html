@@ -8,11 +8,11 @@
         * { box-sizing: border-box; margin:0; padding:0; }
         body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f4f7fb; color:#202938; min-height:100vh; }
         .container { max-width:1280px; margin:0 auto; padding:24px; }
-        .header { display:flex; justify-content:space-between; gap:16px; align-items:flex-end; margin-bottom:20px; }
+        .header { display:flex; flex-direction:column; align-items:stretch; gap:12px; margin-bottom:20px; }
         h1 { font-size:26px; margin-bottom:6px; }
         .muted { color:#667085; font-size:13px; }
-        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
-        .page-nav a { display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 16px; font-size:13px; line-height:1; font-weight:800; color:#667085; text-decoration:none; border:1px solid #d9e1ec; border-radius:8px; background:#fff; white-space:nowrap; }
+        .page-nav { display:flex; gap:6px; flex-wrap:nowrap; justify-content:flex-start; align-items:center; width:100%; }
+        .page-nav a { flex:0 0 calc((100% - 24px)/5); width:calc((100% - 24px)/5); min-width:0; max-width:calc((100% - 24px)/5); display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:0 3px; font-size:11px; line-height:1; font-weight:800; color:#667085; text-decoration:none; border:1px solid #d9e1ec; border-radius:6px; background:#fff; white-space:nowrap; }
         .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
         .status-bar, .card { background:#fff; border:1px solid #d9e1ec; border-radius:8px; box-shadow:0 8px 24px rgba(15,23,42,.06); }
         .status-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; margin-bottom:16px; }
@@ -36,7 +36,7 @@
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
         th { background:#f8fafc; color:#475569; }
-        @media (max-width:860px) { .header { flex-direction:column; align-items:flex-start; } .form-grid { grid-template-columns:1fr; } }
+        @media (max-width:860px) { .container { padding:14px; } .form-grid { grid-template-columns:1fr; } }
     </style>
 </head>
 <body>
