@@ -2856,7 +2856,8 @@ def _run_library_query_job(barcode, worker=None):
         return
     _library_query_log(f"开始查询条码：{barcode}", 'info')
     try:
-        success, result = (worker or crm_pool.get(kind="query")).query_barcode(barcode, _library_query_log)
+        actual_worker = worker or crm_pool.get(kind="query")
+        success, result = actual_worker.query_barcode(barcode, _library_query_log)
         with library_query_lock:
             library_query_job['running'] = False
             library_query_job['done'] = True
@@ -2867,6 +2868,8 @@ def _run_library_query_job(barcode, worker=None):
             else:
                 library_query_job['error'] = _brief_batch_error(result, 800)
         if success:
+            if (actual_worker.slot_id or '').startswith('query-'):
+                update_barcode_query_slot(barcode, actual_worker.slot_id)
             _library_query_log(f"条码查询完成：{barcode}", 'success')
         else:
             _library_query_log(f"条码查询失败：{result}", 'error')
@@ -3126,6 +3129,7 @@ def _run_batch_job(job_id, worker, barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIM
             if not job:
                 return
             if success:
+                update_barcode_query_slot(barcode, job.get('slot_id') or worker.slot_id)
                 job['success'] += 1
                 job['results'].append({
                     'barcode': barcode,
@@ -3355,6 +3359,7 @@ FILTER_FIELDS = {
     'myproductdealer1_sr5': '归属经销商',
     'newdealername1_sr2': '服务经销商',
     'newisclosed1_sr2': '是否结单',
+    'querySlotLabel': '查询通道',
 }
 
 SUBREPORT_NAMES = {
@@ -3612,12 +3617,17 @@ def _suggest_column_width(label, values):
         return min(max(max_width + 2, 14), 20)
     return min(max(max_width + 2, 12), 28)
 
+def _get_filter_value(item, field_id):
+    if field_id == 'querySlotLabel':
+        return _clean_export_value(item.get('querySlotLabel'))
+    return _get_field(item.get('fields') or {}, field_id)
+
 def get_filter_options(barcodes):
     options = {}
     for field_id, label in FILTER_FIELDS.items():
         values = set()
         for b in barcodes:
-            val = _get_field(b['fields'], field_id)
+            val = _get_filter_value(b, field_id)
             if val:
                 values.add(val)
         options[field_id] = {
@@ -4127,6 +4137,17 @@ def update_barcode_info(barcode, info):
     data[barcode] = info
     save_data(data)
 
+def update_barcode_query_slot(barcode, slot_id):
+    barcode = _clean_export_value(barcode)
+    slot_id = _clean_export_value(slot_id)
+    if not barcode or not slot_id or not slot_id.startswith('query-'):
+        return
+    info = get_barcode_info(barcode)
+    info['querySlotId'] = slot_id
+    info['querySlotLabel'] = _query_slot_label(slot_id)
+    info['queryUpdatedAt'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    update_barcode_info(barcode, info)
+
 def load_accounts():
     default_admin = {
         'id': 'admin',
@@ -4315,6 +4336,9 @@ def scan_barcodes():
             'fields': fields,
             'currentDealerOverride': info.get('currentDealerOverride', ''),
             'transferUpdatedAt': info.get('transferUpdatedAt', ''),
+            'querySlotId': info.get('querySlotId', ''),
+            'querySlotLabel': info.get('querySlotLabel', ''),
+            'queryUpdatedAt': info.get('queryUpdatedAt', ''),
             'remark': info.get('remark', ''),
         })
 
@@ -4350,6 +4374,9 @@ def scan_archived():
                 'fields': fields,
                 'currentDealerOverride': info.get('currentDealerOverride', ''),
                 'transferUpdatedAt': info.get('transferUpdatedAt', ''),
+                'querySlotId': info.get('querySlotId', ''),
+                'querySlotLabel': info.get('querySlotLabel', ''),
+                'queryUpdatedAt': info.get('queryUpdatedAt', ''),
                 'remark': info.get('remark', ''),
                 'archiveTime': info.get('archiveTime', ''),
             })
@@ -4373,6 +4400,9 @@ def api_get_barcodes():
             'fields': b['fields'],
             'currentDealerOverride': b.get('currentDealerOverride', ''),
             'transferUpdatedAt': b.get('transferUpdatedAt', ''),
+            'querySlotId': b.get('querySlotId', ''),
+            'querySlotLabel': b.get('querySlotLabel', ''),
+            'queryUpdatedAt': b.get('queryUpdatedAt', ''),
             'remark': b.get('remark', ''),
         } for b in barcodes]
     })
@@ -4390,6 +4420,9 @@ def api_get_archived():
             'fields': b['fields'],
             'currentDealerOverride': b.get('currentDealerOverride', ''),
             'transferUpdatedAt': b.get('transferUpdatedAt', ''),
+            'querySlotId': b.get('querySlotId', ''),
+            'querySlotLabel': b.get('querySlotLabel', ''),
+            'queryUpdatedAt': b.get('queryUpdatedAt', ''),
             'remark': b.get('remark', ''),
             'archiveTime': b.get('archiveTime', ''),
         } for b in barcodes]
@@ -5178,6 +5211,7 @@ def api_crm_query():
         return jsonify({'success': False, 'error': '这是拆机条码，CRM 不查询'})
     success, result = worker.query_barcode(barcode)
     if success:
+        update_barcode_query_slot(barcode, worker.slot_id)
         return jsonify({
             'success': True,
             'slot_id': worker.slot_id,

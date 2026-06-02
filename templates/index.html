@@ -1385,13 +1385,13 @@
                         const otherSel = activeFilters[otherFc.fieldId] || [];
                         if (otherSel.length > 0) {
                             let otherVal;
-                            try { otherVal = gfFields(b.fields, otherFc.fieldId); } catch(e) { otherVal = ''; }
+                            try { otherVal = getFilterFieldValue(b, otherFc.fieldId); } catch(e) { otherVal = ''; }
                             if (!valMatch(otherVal, otherSel)) { passes = false; break; }
                         }
                     }
                     if (passes) {
                         let val;
-                        try { val = gfFields(b.fields, fc.fieldId); } catch(e) { val = ''; }
+                        try { val = getFilterFieldValue(b, fc.fieldId); } catch(e) { val = ''; }
                         if (val) availableVals.add(val);
                     }
                 });
@@ -1506,6 +1506,11 @@
             applyFilters();
         }
 
+        function getFilterFieldValue(item, fieldId) {
+            if (fieldId === 'querySlotLabel') return (item && item.querySlotLabel ? String(item.querySlotLabel).trim() : '');
+            return gfFields((item && item.fields) || {}, fieldId);
+        }
+
         function gfFields(fields, fieldId) {
             const idx = fieldId.lastIndexOf('_sr');
             if (idx === -1) {
@@ -1544,7 +1549,7 @@
                 for (const fc of filterConfigs) {
                     const selected = activeFilters[fc.fieldId] || [];
                     if (selected.length > 0) {
-                        const val = gfFields(b.fields, fc.fieldId);
+                        const val = getFilterFieldValue(b, fc.fieldId);
                         if (!valMatch(val, selected)) return false;
                     }
                 }

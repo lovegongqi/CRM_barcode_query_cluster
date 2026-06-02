@@ -92,11 +92,6 @@
         .slot-tab { width:100%; min-width:0; min-height:34px; padding:7px 6px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:clamp(10px, 2.6vw, 13px); line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .slot-tab.active { background:#2563eb; color:#fff; border-color:#2563eb; }
         .slot-tab.busy { border-color:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.12); }
-        .slot-config { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 16px; padding:10px 12px; border:1px solid #d9e1ec; border-radius:8px; background:#f8fafc; }
-        .slot-config label { display:block; font-size:12px; color:#667085; font-weight:700; margin-bottom:5px; }
-        .stepper { display:flex; gap:6px; align-items:center; }
-        .stepper input { width:70px; height:34px; text-align:center; border:1px solid #cfd8e3; border-radius:6px; font-weight:800; }
-        .stepper button { min-width:34px; min-height:34px; padding:0 10px; border:1px solid #cfd8e3; border-radius:6px; background:#fff; font-weight:900; cursor:pointer; }
         @keyframes spin { to { transform: rotate(360deg); } }
         @media (max-width: 760px) {
             .container { padding: 14px; }
@@ -149,17 +144,6 @@
                 </div>
             </div>
             <div class="slot-tabs" id="querySlotTabs"></div>
-            <div class="slot-config" id="queryWorkerConfig" style="display:none">
-                <div>
-                    <label>查询通道数量</label>
-                    <div class="stepper">
-                        <button onclick="changeWorkerCount('queryWorkerCount', -1)">-</button>
-                        <input id="queryWorkerCount" type="number" min="1" max="10" value="2">
-                        <button onclick="changeWorkerCount('queryWorkerCount', 1)">+</button>
-                    </div>
-                </div>
-                <button class="btn btn-primary" onclick="saveQueryWorkerCount()">保存查询通道数量</button>
-            </div>
             <div class="form-group">
                 <label>条码查询（可一行一个，也可用逗号、空格分隔）</label>
                 <textarea id="batchInput" oninput="saveQueryInput()" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" placeholder="6923445601003
@@ -233,7 +217,6 @@
         let currentQuerySlot = localStorage.getItem('crm_query_slot') || 'query-1';
         let currentBatchJobId = sessionStorage.getItem(`crm_batch_job_id_${currentQuerySlot}`) || '';
         let querySlots = [];
-        let runtimeConfig = null;
 
         function slotPayload(extra={}) {
             return Object.assign({slot_id: currentQuerySlot, kind: 'query'}, extra);
@@ -294,40 +277,6 @@
                 sessionStorage.removeItem('crm_query_input');
             }
             document.getElementById('batchInput').value = savedBarcodeText || '';
-        }
-
-        function changeWorkerCount(inputId, delta) {
-            const input = document.getElementById(inputId);
-            let value = Number.parseInt(input.value, 10);
-            if (Number.isNaN(value)) value = 2;
-            input.value = Math.max(1, Math.min(10, value + delta));
-        }
-
-        async function loadRuntimeConfig() {
-            const data = await fetch('/api/runtime-config').then(r => r.json()).catch(() => null);
-            if (!data || !data.success) return;
-            runtimeConfig = data.config || {};
-            const card = document.getElementById('queryWorkerConfig');
-            if (card) card.style.display = data.can_edit ? 'flex' : 'none';
-            const input = document.getElementById('queryWorkerCount');
-            if (input) input.value = runtimeConfig.query_workers || querySlots.length || 2;
-        }
-
-        async function saveQueryWorkerCount() {
-            const queryWorkers = Number.parseInt(document.getElementById('queryWorkerCount').value, 10);
-            const data = await fetch('/api/runtime-config', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({query_workers: queryWorkers})
-            }).then(r => r.json()).catch(() => null);
-            if (!data || !data.success) {
-                showToast((data && data.error) || '保存失败');
-                return;
-            }
-            showToast('查询通道数量已更新');
-            await loadSlots();
-            await loadRuntimeConfig();
-            checkStatus();
         }
 
         function log(msg, type='') {
@@ -826,7 +775,6 @@
         }
 
         checkStatus();
-        loadRuntimeConfig();
         setInterval(checkStatus, 5000);
         pollBatchStatus();
 

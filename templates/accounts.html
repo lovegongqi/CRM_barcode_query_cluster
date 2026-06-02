@@ -28,6 +28,10 @@
         .permissions { display:flex; gap:10px; flex-wrap:wrap; margin:12px 0; }
         .permissions label { display:flex; align-items:center; gap:6px; color:#334155; font-size:13px; margin:0; }
         .permissions input { width:auto; }
+        .channel-grid { display:grid; grid-template-columns:1fr 1fr auto; gap:12px; align-items:end; }
+        .stepper { display:flex; gap:6px; align-items:center; }
+        .stepper input { width:80px; height:36px; text-align:center; font-weight:800; }
+        .stepper button { min-width:36px; min-height:36px; padding:0 10px; border:1px solid #cfd8e3; border-radius:6px; background:#fff; font-weight:900; cursor:pointer; }
         .actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
         .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
         .btn-primary { background:#2563eb; color:#fff; }
@@ -36,7 +40,7 @@
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
         th { background:#f8fafc; color:#475569; }
-        @media (max-width:860px) { .container { padding:14px; } .form-grid { grid-template-columns:1fr; } }
+        @media (max-width:860px) { .container { padding:14px; } .form-grid, .channel-grid { grid-template-columns:1fr; } }
     </style>
 </head>
 <body>
@@ -67,6 +71,29 @@
             <div><label>原密码</label><input id="oldPassword" type="password"></div>
             <div><label>新密码</label><input id="newPassword" type="password"></div>
             <div style="display:flex;align-items:end;"><button class="btn btn-primary" onclick="changePassword()">修改密码</button></div>
+        </div>
+    </div>
+
+    <div class="card" id="runtimeConfigCard" style="display:none">
+        <h2>通道数量</h2>
+        <div class="channel-grid">
+            <div>
+                <label>查询通道数量</label>
+                <div class="stepper">
+                    <button type="button" onclick="changeWorkerCount('queryWorkerCount', -1)">-</button>
+                    <input id="queryWorkerCount" type="number" min="1" max="10" value="2">
+                    <button type="button" onclick="changeWorkerCount('queryWorkerCount', 1)">+</button>
+                </div>
+            </div>
+            <div>
+                <label>移库通道数量</label>
+                <div class="stepper">
+                    <button type="button" onclick="changeWorkerCount('transferWorkerCount', -1)">-</button>
+                    <input id="transferWorkerCount" type="number" min="1" max="10" value="2">
+                    <button type="button" onclick="changeWorkerCount('transferWorkerCount', 1)">+</button>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="saveRuntimeConfig()">保存通道数量</button>
         </div>
     </div>
 
@@ -118,6 +145,40 @@ function resetForm() {
     setPermissions([]);
 }
 
+function changeWorkerCount(inputId, delta) {
+    const input = document.getElementById(inputId);
+    let value = Number.parseInt(input.value, 10);
+    if (Number.isNaN(value)) value = 2;
+    input.value = Math.max(1, Math.min(10, value + delta));
+}
+
+async function loadRuntimeConfig() {
+    const data = await fetch('/api/runtime-config').then(res => res.json()).catch(() => null);
+    if (!data || !data.success || !data.can_edit) {
+        document.getElementById('runtimeConfigCard').style.display = 'none';
+        return;
+    }
+    const config = data.config || {};
+    document.getElementById('runtimeConfigCard').style.display = '';
+    document.getElementById('queryWorkerCount').value = config.query_workers || 2;
+    document.getElementById('transferWorkerCount').value = config.transfer_workers || 2;
+}
+
+async function saveRuntimeConfig() {
+    const queryWorkers = Number.parseInt(document.getElementById('queryWorkerCount').value, 10);
+    const transferWorkers = Number.parseInt(document.getElementById('transferWorkerCount').value, 10);
+    const data = await fetch('/api/runtime-config', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({query_workers: queryWorkers, transfer_workers: transferWorkers})
+    }).then(res => res.json()).catch(() => null);
+    if (!data || !data.success) return alert((data && data.error) || '保存失败');
+    const config = data.config || {};
+    document.getElementById('queryWorkerCount').value = config.query_workers || queryWorkers;
+    document.getElementById('transferWorkerCount').value = config.transfer_workers || transferWorkers;
+    alert('通道数量已更新');
+}
+
 async function loadAccounts() {
     const data = await fetch('/api/accounts').then(res => res.json());
     const account = data.account || null;
@@ -126,6 +187,8 @@ async function loadAccounts() {
     const canManage = !!(account && account.is_admin);
     document.getElementById('accountEditCard').style.display = canManage ? '' : 'none';
     document.getElementById('accountListCard').style.display = canManage ? '' : 'none';
+    document.getElementById('runtimeConfigCard').style.display = canManage ? '' : 'none';
+    if (canManage) loadRuntimeConfig();
     if (!data.success) {
         document.getElementById('accountsBox').innerHTML = `<div class="status-text">${escapeHtml(data.error || '请先以管理员登录')}</div>`;
         return;
