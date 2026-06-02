@@ -48,11 +48,12 @@ def load_crm_config():
     raise FileNotFoundError("未找到 config.json 或示例配置文件")
 
 class CRMSession:
-    def __init__(self):
+    def __init__(self, session_dir=None):
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
+        self.session_dir = session_dir
         self.lock = threading.Lock()
         self.logged_in = False
         self.needs_navigation = True  # 标记是否需要导航到报表页面
@@ -114,7 +115,7 @@ class CRMSession:
         """启动或复用浏览器实例"""
         cfg = load_crm_config()
         browser_cfg = cfg.get("browser", {})
-        session_dir = cfg["session"]["state_path"]
+        session_dir = self.session_dir or cfg["session"]["state_path"]
         os.makedirs(session_dir, exist_ok=True)
 
         if self.is_alive():
@@ -2493,7 +2494,9 @@ class CRMSession:
 
 class CRMWorker:
     """把所有 Playwright 操作固定到同一个线程里执行。"""
-    def __init__(self):
+    def __init__(self, slot_id="default", session_dir=None):
+        self.slot_id = slot_id
+        self.session_dir = session_dir
         self.tasks = queue.Queue()
         self.state_lock = threading.Lock()
         self.browser_running = False
@@ -2513,7 +2516,7 @@ class CRMWorker:
             self.logged_in_cache = logged_in
 
     def _run(self):
-        session = CRMSession()
+        session = CRMSession(self.session_dir)
         while True:
             method_name, args, kwargs, result_queue = self.tasks.get()
             try:
@@ -2576,7 +2579,74 @@ class CRMWorker:
     def create_transfer(self, summary, distributor, transfer_type="移出", remark="", log=None):
         return self._call("create_transfer", summary, distributor, transfer_type, remark, log)
 
-crm_session = CRMWorker()
+def _positive_int_env(name, default):
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, value)
+
+def _crm_session_base_dir():
+    env_base = os.environ.get("CRM_SESSION_BASE")
+    if env_base:
+        return env_base
+    try:
+        return load_crm_config()["session"]["state_path"]
+    except Exception:
+        return os.path.join(RUNTIME_BASE_DIR, "session")
+
+class CRMWorkerPool:
+    def __init__(self):
+        self.query_count = max(2, _positive_int_env("CRM_QUERY_WORKERS", 2))
+        self.transfer_count = max(2, _positive_int_env("CRM_TRANSFER_WORKERS", 2))
+        self.session_base = _crm_session_base_dir()
+        self.workers = {}
+        self.query_slots = self._make_slots("query", self.query_count)
+        self.transfer_slots = self._make_slots("transfer", self.transfer_count)
+
+    def _make_slots(self, prefix, count):
+        slots = []
+        for index in range(1, count + 1):
+            slot_id = f"{prefix}-{index}"
+            session_dir = os.path.join(self.session_base, slot_id)
+            self.workers[slot_id] = CRMWorker(slot_id, session_dir)
+            slots.append(slot_id)
+        return slots
+
+    def default_slot(self, kind="query"):
+        return (self.transfer_slots if kind == "transfer" else self.query_slots)[0]
+
+    def get(self, slot_id=None, kind="query"):
+        slot_id = (slot_id or "").strip() or self.default_slot(kind)
+        worker = self.workers.get(slot_id)
+        if not worker:
+            worker = self.workers[self.default_slot(kind)]
+        return worker
+
+    def normalize_slot(self, slot_id=None, kind="query"):
+        worker = self.get(slot_id, kind)
+        return worker.slot_id
+
+    def slots_payload(self):
+        def rows(slot_ids, kind):
+            return [{
+                "id": slot_id,
+                "label": f"{'移库' if kind == 'transfer' else '查询'}{index}",
+                "kind": kind,
+                "browser_running": self.workers[slot_id].is_alive(),
+                "logged_in": self.workers[slot_id].logged_in,
+            } for index, slot_id in enumerate(slot_ids, 1)]
+        return {
+            "query": rows(self.query_slots, "query"),
+            "transfer": rows(self.transfer_slots, "transfer"),
+            "defaults": {
+                "query": self.default_slot("query"),
+                "transfer": self.default_slot("transfer"),
+            }
+        }
+
+crm_pool = CRMWorkerPool()
+crm_session = crm_pool.get(kind="query")
 
 DEFAULT_BATCH_RETRY_LIMIT = 5
 MAX_BATCH_RETRY_LIMIT = 5
@@ -2584,19 +2654,8 @@ MAX_BATCH_RETRY_LIMIT = 5
 BATCH_LOG_LIMIT = 5000
 
 batch_job_lock = threading.Lock()
-batch_job = {
-    'running': False,
-    'stop_requested': False,
-    'barcodes': [],
-    'total': 0,
-    'current': 0,
-    'success': 0,
-    'failed': 0,
-    'retry_limit': DEFAULT_BATCH_RETRY_LIMIT,
-    'log_seq': 0,
-    'logs': [],
-    'results': [],
-}
+batch_jobs = {}
+latest_batch_job_by_slot = {}
 
 library_query_lock = threading.Lock()
 library_query_job = {
@@ -2611,32 +2670,69 @@ library_query_job = {
 }
 
 transfer_job_lock = threading.Lock()
-transfer_job = {
-    'running': False,
-    'done': False,
-    'success': False,
-    'error': '',
-    'result': None,
-    'summary': None,
-    'distributor': '',
-    'transfer_type': '',
-    'remark': '',
-    'logs': [],
-    'started_at': '',
-    'finished_at': '',
-}
+transfer_jobs = {}
+latest_transfer_job_by_slot = {}
 
 summary_job_lock = threading.Lock()
-summary_job = {
-    'running': False,
-    'done': False,
-    'success': False,
-    'error': '',
-    'summary': None,
-    'logs': [],
-    'started_at': '',
-    'finished_at': '',
-}
+summary_jobs = {}
+latest_summary_job_by_slot = {}
+
+def _empty_batch_job(slot_id=None, barcodes=None, retry_limit=DEFAULT_BATCH_RETRY_LIMIT):
+    return {
+        'job_id': uuid.uuid4().hex,
+        'slot_id': slot_id or crm_pool.default_slot("query"),
+        'running': False,
+        'stop_requested': False,
+        'barcodes': list(barcodes or []),
+        'total': len(barcodes or []),
+        'current': 0,
+        'success': 0,
+        'failed': 0,
+        'retry_limit': retry_limit,
+        'log_seq': 0,
+        'logs': [],
+        'results': [],
+        'started_at': '',
+        'finished_at': '',
+    }
+
+def _empty_transfer_job(slot_id=None, summary=None, distributor='', transfer_type='', remark=''):
+    return {
+        'job_id': uuid.uuid4().hex,
+        'slot_id': slot_id or crm_pool.default_slot("transfer"),
+        'running': False,
+        'done': False,
+        'success': False,
+        'error': '',
+        'result': None,
+        'summary': summary,
+        'distributor': distributor,
+        'transfer_type': transfer_type,
+        'remark': remark,
+        'log_seq': 0,
+        'logs': [],
+        'started_at': '',
+        'finished_at': '',
+    }
+
+def _empty_summary_job(slot_id=None):
+    return {
+        'job_id': uuid.uuid4().hex,
+        'slot_id': slot_id or crm_pool.default_slot("transfer"),
+        'running': False,
+        'done': False,
+        'success': False,
+        'error': '',
+        'summary': None,
+        'log_seq': 0,
+        'logs': [],
+        'started_at': '',
+        'finished_at': '',
+    }
+
+batch_job = _empty_batch_job()
+transfer_job = _empty_transfer_job()
+summary_job = _empty_summary_job()
 
 def _normalize_retry_limit(value):
     try:
@@ -2651,19 +2747,37 @@ def _brief_batch_error(error, limit=240):
         return text
     return text[:limit].rstrip() + "..."
 
-def _append_batch_log_unlocked(message, level='dim'):
-    batch_job['log_seq'] = int(batch_job.get('log_seq') or 0) + 1
-    batch_job['logs'].append({
-        'id': batch_job['log_seq'],
+def _append_job_log_unlocked(job, message, level='dim', limit=300):
+    job['log_seq'] = int(job.get('log_seq') or 0) + 1
+    job['logs'].append({
+        'id': job['log_seq'],
         'time': datetime.now().strftime('%H:%M:%S'),
         'message': message,
         'level': level,
     })
-    batch_job['logs'] = batch_job['logs'][-BATCH_LOG_LIMIT:]
+    job['logs'] = job['logs'][-limit:]
+
+def _append_batch_log_unlocked(message, level='dim'):
+    _append_job_log_unlocked(batch_job, message, level, BATCH_LOG_LIMIT)
 
 def _batch_log(message, level='dim'):
     with batch_job_lock:
         _append_batch_log_unlocked(message, level)
+
+def _job_log(lock, jobs, job_id, message, level='dim', limit=300):
+    with lock:
+        job = jobs.get(job_id)
+        if job:
+            _append_job_log_unlocked(job, message, level, limit)
+
+def _batch_job_log(job_id, message, level='dim'):
+    _job_log(batch_job_lock, batch_jobs, job_id, message, level, BATCH_LOG_LIMIT)
+
+def _summary_job_log(job_id, message, level='dim'):
+    _job_log(summary_job_lock, summary_jobs, job_id, message, level, 500)
+
+def _transfer_job_log(job_id, message, level='dim'):
+    _job_log(transfer_job_lock, transfer_jobs, job_id, message, level, 500)
 
 def _library_query_log(message, level='dim'):
     with library_query_lock:
@@ -2674,7 +2788,7 @@ def _library_query_log(message, level='dim'):
         })
         library_query_job['logs'] = library_query_job['logs'][-300:]
 
-def _run_library_query_job(barcode):
+def _run_library_query_job(barcode, worker=None):
     if is_disassembly_barcode(barcode):
         _library_query_log(f"已跳过拆机条码：{barcode}，CRM 不查询", 'warn')
         with library_query_lock:
@@ -2686,7 +2800,7 @@ def _run_library_query_job(barcode):
         return
     _library_query_log(f"开始查询条码：{barcode}", 'info')
     try:
-        success, result = crm_session.query_barcode(barcode, _library_query_log)
+        success, result = (worker or crm_pool.get(kind="query")).query_barcode(barcode, _library_query_log)
         with library_query_lock:
             library_query_job['running'] = False
             library_query_job['done'] = True
@@ -2765,202 +2879,237 @@ def _exclude_unmatched_transfer_barcodes(summary):
     summary['excluded_unmatched'] = missing
     return missing
 
-def _run_summary_job(barcodes, transfer_type, distributor, excluded=None):
+def _run_summary_job(job_id, worker, barcodes, transfer_type, distributor, excluded=None):
+    def log(message, level='dim'):
+        _summary_job_log(job_id, message, level)
+
+    def finish(success, error='', summary=None):
+        with summary_job_lock:
+            job = summary_jobs.get(job_id)
+            if not job:
+                return
+            job['running'] = False
+            job['done'] = True
+            job['success'] = bool(success)
+            job['error'] = error
+            job['summary'] = summary
+            job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     try:
         barcodes, filtered = filter_disassembly_barcodes(barcodes)
         excluded = list(excluded or []) + filtered
         if excluded:
-            _summary_log(f"已排除拆机条码 {len(excluded)} 个，不查询不移库：{', '.join(excluded[:10])}", 'warn')
+            log(f"已排除拆机条码 {len(excluded)} 个，不查询不移库：{', '.join(excluded[:10])}", 'warn')
         if not barcodes:
             error = '输入的条码都是拆机条码，无需汇总或移库'
-            _summary_log(error, 'warn')
-            _finish_summary_job(False, error, {'total': 0, 'details': [], 'groups': [], 'missing': [], 'incomplete': [], 'blocked': [], 'excluded': excluded})
+            log(error, 'warn')
+            finish(False, error, {'total': 0, 'details': [], 'groups': [], 'missing': [], 'incomplete': [], 'blocked': [], 'excluded': excluded})
             return
-        _summary_log(f"开始汇总预览，共 {len(barcodes)} 个条码", 'info')
-        _summary_log("开始检查条码匹配前缀和已有查询结果", 'info')
+        log(f"开始汇总预览，共 {len(barcodes)} 个条码", 'info')
+        log("开始检查条码匹配前缀和已有查询结果", 'info')
         auto_library = {'queried': [], 'failed': []}
         representatives = _missing_product_library_representatives(barcodes)
         if representatives:
             items = "，".join([f"{prefix}←{barcode}" for prefix, barcode in representatives.items()])
-            _summary_log(f"发现 {len(representatives)} 个缺失前缀：{items}", 'info')
-            _summary_log("将自动逐个查询代表条码补充条码匹配；离开本页面不会停止后台汇总，可返回移库页查看日志", 'dim')
-            with transfer_job_lock:
-                if transfer_job['running']:
-                    error = '已有移库任务正在执行，请等待完成后再汇总'
-                    _summary_log(error, 'error')
-                    _finish_summary_job(False, error)
-                    return
-            with batch_job_lock:
-                if batch_job['running']:
-                    error = '批量条码查询正在执行，请等待查询完成后再汇总'
-                    _summary_log(error, 'error')
-                    _finish_summary_job(False, error)
-                    return
-            ready, ready_message = _crm_ready_for_auto_query()
+            log(f"发现 {len(representatives)} 个缺失前缀：{items}", 'info')
+            log("将自动逐个查询代表条码补充条码匹配；离开本页面不会停止后台汇总，可返回移库页查看日志", 'dim')
+            ready, ready_message = _crm_ready_for_auto_query(worker)
             if not ready:
-                _summary_log(ready_message, 'error')
-                _finish_summary_job(False, ready_message)
+                log(ready_message, 'error')
+                finish(False, ready_message)
                 return
-            auto_library = ensure_product_library_for_barcodes(barcodes, _summary_log)
+            auto_library = ensure_product_library_for_barcodes(barcodes, log, worker)
             if auto_library.get('failed'):
                 failed_items = "，".join([
                     f"{row.get('prefix')}←{row.get('barcode')}"
                     for row in auto_library.get('failed', [])
                 ])
-                _summary_log(f"仍有前缀自动补充失败：{failed_items}", 'warn')
+                log(f"仍有前缀自动补充失败：{failed_items}", 'warn')
         else:
-            _summary_log("条码匹配已覆盖所有条码前缀，不需要自动查询", 'success')
+            log("条码匹配已覆盖所有条码前缀，不需要自动查询", 'success')
 
-        _summary_log("开始按产品名称和编码汇总移库明细", 'info')
+        log("开始按产品名称和编码汇总移库明细", 'info')
         summary = build_transfer_summary(barcodes, transfer_type, distributor)
         summary['excluded'] = excluded
         summary['auto_library'] = auto_library
         excluded_unmatched = _exclude_unmatched_transfer_barcodes(summary)
         if excluded_unmatched:
-            _summary_log(
+            log(
                 f"已临时排除 {len(excluded_unmatched)} 个查不到产品信息的条码：{', '.join(excluded_unmatched[:10])}",
                 'warn'
             )
         if not summary.get('groups'):
             error = '本次没有可移库条码，未匹配到产品信息的条码已临时排除'
-            _summary_log(error, 'error')
-            _finish_summary_job(False, error, summary)
+            log(error, 'error')
+            finish(False, error, summary)
             return
         error = _summary_error_from_result(summary)
         if error:
-            _summary_log(error, 'error')
-            _finish_summary_job(False, error, summary)
+            log(error, 'error')
+            finish(False, error, summary)
             return
-        _summary_log(f"汇总完成：产品 {len(summary.get('groups', []))} 条，条码 {summary.get('total', 0)} 个", 'success')
-        _finish_summary_job(True, '', summary)
+        log(f"汇总完成：产品 {len(summary.get('groups', []))} 条，条码 {summary.get('total', 0)} 个", 'success')
+        finish(True, '', summary)
     except Exception as e:
         error = _brief_batch_error(e, 800)
-        _summary_log(f"汇总预览出错：{error}", 'error')
-        _finish_summary_job(False, error)
+        log(f"汇总预览出错：{error}", 'error')
+        finish(False, error)
 
-def _run_transfer_job(summary, distributor, transfer_type, remark):
-    _transfer_log(f"开始提交移库：{transfer_type}，分销商 {distributor}", 'info')
+def _run_transfer_job(job_id, worker, summary, distributor, transfer_type, remark):
+    def log(message, level='dim'):
+        _transfer_job_log(job_id, message, level)
+
+    log(f"开始提交移库：{transfer_type}，分销商 {distributor}", 'info')
     try:
-        success, result = crm_session.create_transfer(summary, distributor, transfer_type, remark, _transfer_log)
+        success, result = worker.create_transfer(summary, distributor, transfer_type, remark, log)
         with transfer_job_lock:
-            transfer_job['running'] = False
-            transfer_job['done'] = True
-            transfer_job['success'] = bool(success)
-            transfer_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            job = transfer_jobs.get(job_id)
+            if not job:
+                return
+            job['running'] = False
+            job['done'] = True
+            job['success'] = bool(success)
+            job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             if success:
-                transfer_job['result'] = result
-                transfer_job['error'] = ''
+                job['result'] = result
+                job['error'] = ''
             else:
-                transfer_job['error'] = _brief_batch_error(result, 800)
+                job['error'] = _brief_batch_error(result, 800)
         if success:
             save_distributor_history(distributor)
             order_no = result.get('order_no') if isinstance(result, dict) else ''
             if isinstance(result, dict) and result.get('pending_approval'):
-                _transfer_log(f"移库单已保存待审批：{order_no or '已保存'}", 'success')
+                log(f"移库单已保存待审批：{order_no or '已保存'}", 'success')
             else:
                 _apply_transfer_local_dealer(summary, transfer_type, distributor)
-                _transfer_log(f"移库完成：{order_no or '已完成'}", 'success')
+                log(f"移库完成：{order_no or '已完成'}", 'success')
         else:
-            _transfer_log(f"移库失败：{result}", 'error')
+            log(f"移库失败：{result}", 'error')
     except Exception as e:
         with transfer_job_lock:
-            transfer_job['running'] = False
-            transfer_job['done'] = True
-            transfer_job['success'] = False
-            transfer_job['error'] = _brief_batch_error(e, 800)
-            transfer_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        _transfer_log(f"移库出错：{e}", 'error')
+            job = transfer_jobs.get(job_id)
+            if job:
+                job['running'] = False
+                job['done'] = True
+                job['success'] = False
+                job['error'] = _brief_batch_error(e, 800)
+                job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log(f"移库出错：{e}", 'error')
 
-def _batch_stop_requested(idx):
+def _batch_stop_requested(job_id, idx):
     with batch_job_lock:
-        if not batch_job['stop_requested']:
+        job = batch_jobs.get(job_id)
+        if not job or not job['stop_requested']:
             return False
-        batch_job['running'] = False
-        batch_job['stop_requested'] = False
-    _batch_log(f"已停止，停在第 {idx} 个条码", 'warn')
+        job['running'] = False
+        job['stop_requested'] = False
+        job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _batch_job_log(job_id, f"已停止，停在第 {idx} 个条码", 'warn')
     return True
 
-def _run_batch_job(barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIMIT, excluded=None):
+def _run_batch_job(job_id, worker, barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIMIT, excluded=None):
     retry_limit = _normalize_retry_limit(retry_limit)
     barcodes, filtered = filter_disassembly_barcodes(barcodes)
     excluded = list(excluded or []) + filtered
     retry_text = f"，失败最多重试 {retry_limit} 次" if retry_limit else ""
     if excluded:
-        _batch_log(f"已排除拆机条码 {len(excluded)} 个，不查询：{', '.join(excluded[:10])}", 'warn')
+        _batch_job_log(job_id, f"已排除拆机条码 {len(excluded)} 个，不查询：{', '.join(excluded[:10])}", 'warn')
     if not barcodes:
         with batch_job_lock:
-            batch_job['running'] = False
-            batch_job['stop_requested'] = False
-        _batch_log("输入的条码都是拆机条码，无需查询", 'warn')
+            job = batch_jobs.get(job_id)
+            if job:
+                job['running'] = False
+                job['stop_requested'] = False
+                job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _batch_job_log(job_id, "输入的条码都是拆机条码，无需查询", 'warn')
         return
-    _batch_log(f"开始批量查询 {len(barcodes)} 个条码{retry_text}...", 'info')
+    _batch_job_log(job_id, f"开始批量查询 {len(barcodes)} 个条码{retry_text}...", 'info')
     for idx, barcode in enumerate(barcodes, start=1):
         with batch_job_lock:
-            if batch_job['stop_requested']:
-                batch_job['running'] = False
-                batch_job['stop_requested'] = False
+            job = batch_jobs.get(job_id)
+            if not job:
+                return
+            if job['stop_requested']:
+                job['running'] = False
+                job['stop_requested'] = False
+                job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 stopped_at = idx
                 should_stop = True
             else:
-                batch_job['current'] = idx
+                job['current'] = idx
                 should_stop = False
         if should_stop:
-            _batch_log(f"已停止，停在第 {stopped_at} 个条码", 'warn')
+            _batch_job_log(job_id, f"已停止，停在第 {stopped_at} 个条码", 'warn')
             return
 
         success = False
         result = ""
         attempts = retry_limit + 1
         for attempt in range(1, attempts + 1):
-            if _batch_stop_requested(idx):
+            if _batch_stop_requested(job_id, idx):
                 return
             if attempt == 1:
-                _batch_log(f"正在查询第 {idx}/{len(barcodes)} 个：{barcode}", 'info')
+                _batch_job_log(job_id, f"正在查询第 {idx}/{len(barcodes)} 个：{barcode}", 'info')
             else:
-                _batch_log(f"{barcode} 第 {attempt - 1}/{retry_limit} 次重试中...", 'warn')
+                _batch_job_log(job_id, f"{barcode} 第 {attempt - 1}/{retry_limit} 次重试中...", 'warn')
 
-            success, result = crm_session.query_barcode(barcode, _batch_log)
+            success, result = worker.query_barcode(barcode, lambda msg, level='dim': _batch_job_log(job_id, msg, level))
             if success:
                 break
 
             if attempt <= retry_limit:
-                _batch_log(
+                _batch_job_log(
+                    job_id,
                     f"{barcode} 查询失败，将重试 {attempt}/{retry_limit}: {_brief_batch_error(result)}",
                     'warn'
                 )
                 time.sleep(2)
 
         with batch_job_lock:
+            job = batch_jobs.get(job_id)
+            if not job:
+                return
             if success:
-                batch_job['success'] += 1
-                batch_job['results'].append({
+                job['success'] += 1
+                job['results'].append({
                     'barcode': barcode,
                     'success': True,
                     'attempts': attempt,
                     'view_url': f'/barcode/{barcode}.html',
                 })
-                _append_batch_log_unlocked(
+                _append_job_log_unlocked(
+                    job,
                     f"✓ {barcode} 查询成功" + (f"（重试第 {attempt - 1} 次）" if attempt > 1 else ""),
-                    'success'
+                    'success',
+                    BATCH_LOG_LIMIT
                 )
             else:
-                batch_job['failed'] += 1
-                batch_job['results'].append({
+                job['failed'] += 1
+                job['results'].append({
                     'barcode': barcode,
                     'success': False,
                     'attempts': attempts,
                     'error': _brief_batch_error(result),
                 })
-                _append_batch_log_unlocked(
+                _append_job_log_unlocked(
+                    job,
                     f"✗ {barcode} 查询失败（已重试 {retry_limit} 次）: {_brief_batch_error(result)}",
-                    'error'
+                    'error',
+                    BATCH_LOG_LIMIT
                 )
 
     with batch_job_lock:
-        batch_job['running'] = False
-        batch_job['stop_requested'] = False
-    _batch_log(
-        f"批量查询完成，成功 {batch_job['success']} 个，失败 {batch_job['failed']} 个",
+        job = batch_jobs.get(job_id)
+        if not job:
+            return
+        job['running'] = False
+        job['stop_requested'] = False
+        job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        success_count = job['success']
+        failed_count = job['failed']
+    _batch_job_log(
+        job_id,
+        f"批量查询完成，成功 {success_count} 个，失败 {failed_count} 个",
         'success'
     )
 
@@ -3521,7 +3670,7 @@ def _missing_product_library_representatives(selected_barcodes):
             groups[prefix] = barcode
     return groups
 
-def ensure_product_library_for_barcodes(selected_barcodes, log=None):
+def ensure_product_library_for_barcodes(selected_barcodes, log=None, worker=None):
     representatives = _missing_product_library_representatives(selected_barcodes)
     result = {'queried': [], 'failed': []}
     if not representatives:
@@ -3536,7 +3685,7 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None):
     for index, (prefix, barcode) in enumerate(representatives.items(), 1):
         emit(f"自动补充 {index}/{total}：前缀 {prefix}，代表条码 {barcode}", "info")
         emit(f"准备查询代表条码 {barcode}，用于补充前缀 {prefix}", "dim")
-        success, message = crm_session.query_barcode(barcode, log)
+        success, message = (worker or crm_pool.get(kind="query")).query_barcode(barcode, log)
         emit(f"代表条码 {barcode} 查询返回：{'成功' if success else '失败'}", "success" if success else "warn")
         if success and match_product_library(barcode):
             result['queried'].append({'prefix': prefix, 'barcode': barcode})
@@ -3555,12 +3704,32 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None):
     )
     return result
 
-def _crm_ready_for_auto_query():
-    if not crm_session.is_alive():
+def _crm_ready_for_auto_query(worker=None):
+    worker = worker or crm_pool.get(kind="query")
+    if not worker.is_alive():
         return False, "CRM 浏览器未启动，请先到在线查询页面登录 CRM"
-    if not crm_session.logged_in:
+    if not worker.logged_in:
         return False, "CRM 当前未登录，请先到在线查询页面完成登录"
     return True, ""
+
+def _request_slot_id(kind="query"):
+    data = request.get_json(silent=True) or {}
+    slot_id = (
+        request.args.get("slot_id")
+        or data.get("slot_id")
+        or data.get("slot")
+        or ""
+    )
+    return crm_pool.normalize_slot(slot_id, kind)
+
+def _latest_job_id(mapping, slot_id):
+    return mapping.get(slot_id) or ""
+
+def _job_logs_since(job, since):
+    logs = list(job.get('logs') or [])
+    if since > 0:
+        logs = [row for row in logs if int(row.get('id') or 0) > since]
+    return logs
 
 def _replace_html_field_values(html, field_ids, value):
     escaped_value = html_mod.escape(_clean_export_value(value), quote=False)
@@ -4162,6 +4331,8 @@ def api_export_xlsx():
 @app.route("/api/transfer/summary", methods=["POST"])
 def api_transfer_summary():
     data = request.get_json() or {}
+    slot_id = _request_slot_id("transfer")
+    worker = crm_pool.get(slot_id, "transfer")
     barcodes = data.get('barcodes') or []
     barcodes = normalize_input_barcodes(barcodes)
     barcodes, excluded = filter_disassembly_barcodes(barcodes)
@@ -4173,16 +4344,10 @@ def api_transfer_summary():
     auto_library = {'queried': [], 'failed': []}
     representatives = _missing_product_library_representatives(barcodes)
     if representatives:
-        with transfer_job_lock:
-            if transfer_job['running']:
-                return jsonify({'success': False, 'error': '已有移库任务正在执行，请等待完成后再汇总'})
-        with batch_job_lock:
-            if batch_job['running']:
-                return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再汇总'})
-        ready, ready_message = _crm_ready_for_auto_query()
+        ready, ready_message = _crm_ready_for_auto_query(worker)
         if not ready:
             return jsonify({'success': False, 'error': ready_message})
-        auto_library = ensure_product_library_for_barcodes(barcodes)
+        auto_library = ensure_product_library_for_barcodes(barcodes, None, worker)
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
     summary['excluded'] = excluded
@@ -4228,6 +4393,8 @@ def api_save_distributor_history():
 @app.route("/api/transfer/summary/start", methods=["POST"])
 def api_transfer_summary_start():
     data = request.get_json() or {}
+    slot_id = _request_slot_id("transfer")
+    worker = crm_pool.get(slot_id, "transfer")
     barcodes = data.get('barcodes') or []
     barcodes = normalize_input_barcodes(barcodes)
     barcodes, excluded = filter_disassembly_barcodes(barcodes)
@@ -4237,55 +4404,56 @@ def api_transfer_summary_start():
         return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需移库' if excluded else '请先选择要移库的条码', 'excluded': excluded})
 
     with summary_job_lock:
-        if summary_job['running']:
-            return jsonify({'success': False, 'error': '已有汇总预览正在执行，请等待完成'})
-    with library_query_lock:
-        if library_query_job['running']:
-            return jsonify({'success': False, 'error': '条码匹配查询正在执行，请等待完成后再汇总'})
-    with transfer_job_lock:
-        if transfer_job['running']:
-            return jsonify({'success': False, 'error': '已有移库任务正在执行，请等待完成后再汇总'})
-    with batch_job_lock:
-        if batch_job['running']:
-            return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再汇总'})
-
-    with summary_job_lock:
-        summary_job.update({
+        running_job_id = latest_summary_job_by_slot.get(slot_id)
+        running_job = summary_jobs.get(running_job_id)
+        if running_job and running_job.get('running'):
+            return jsonify({'success': False, 'error': f'{slot_id} 已有汇总预览正在执行，请等待完成'})
+        job = _empty_summary_job(slot_id)
+        job.update({
             'running': True,
             'done': False,
             'success': False,
             'error': '',
             'summary': None,
-            'logs': [],
             'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'finished_at': '',
         })
+        summary_jobs[job['job_id']] = job
+        latest_summary_job_by_slot[slot_id] = job['job_id']
 
     threading.Thread(
         target=_run_summary_job,
-        args=(barcodes, transfer_type, distributor, excluded),
+        args=(job['job_id'], worker, barcodes, transfer_type, distributor, excluded),
         daemon=True
     ).start()
-    return jsonify({'success': True, 'message': '汇总预览已开始'})
+    return jsonify({'success': True, 'job_id': job['job_id'], 'slot_id': slot_id, 'message': '汇总预览已开始'})
 
 @app.route("/api/transfer/summary/status", methods=["GET"])
 def api_transfer_summary_status():
+    slot_id = crm_pool.normalize_slot(request.args.get("slot_id"), "transfer")
+    job_id = request.args.get("job_id") or _latest_job_id(latest_summary_job_by_slot, slot_id)
     with summary_job_lock:
+        job = summary_jobs.get(job_id) or _empty_summary_job(slot_id)
         return jsonify({
             'success': True,
-            'running': summary_job['running'],
-            'done': summary_job['done'],
-            'summary_success': summary_job['success'],
-            'error': summary_job['error'],
-            'summary': summary_job['summary'],
-            'logs': list(summary_job['logs']),
-            'started_at': summary_job['started_at'],
-            'finished_at': summary_job['finished_at'],
+            'job_id': job.get('job_id') or '',
+            'slot_id': job.get('slot_id') or slot_id,
+            'running': job['running'],
+            'done': job['done'],
+            'summary_success': job['success'],
+            'error': job['error'],
+            'summary': job['summary'],
+            'logs': list(job['logs']),
+            'log_seq': job.get('log_seq') or 0,
+            'started_at': job['started_at'],
+            'finished_at': job['finished_at'],
         })
 
 @app.route("/api/crm/transfer", methods=["POST"])
 def api_crm_transfer():
     data = request.get_json() or {}
+    slot_id = _request_slot_id("transfer")
+    worker = crm_pool.get(slot_id, "transfer")
     barcodes = data.get('barcodes') or []
     barcodes = normalize_input_barcodes(barcodes)
     barcodes, excluded = filter_disassembly_barcodes(barcodes)
@@ -4297,22 +4465,13 @@ def api_crm_transfer():
         return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需移库' if excluded else '请先选择要移库的条码', 'excluded': excluded})
     if not distributor:
         return jsonify({'success': False, 'error': '目标分销商不能为空'})
-    with library_query_lock:
-        if library_query_job['running']:
-            return jsonify({'success': False, 'error': '条码匹配查询正在执行，请等待完成后再移库'})
 
     representatives = _missing_product_library_representatives(barcodes)
     if representatives:
-        with transfer_job_lock:
-            if transfer_job['running']:
-                return jsonify({'success': False, 'error': '已有移库任务正在执行，请等待完成后再提交'})
-        with batch_job_lock:
-            if batch_job['running']:
-                return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再移库'})
-        ready, ready_message = _crm_ready_for_auto_query()
+        ready, ready_message = _crm_ready_for_auto_query(worker)
         if not ready:
             return jsonify({'success': False, 'error': ready_message})
-        ensure_product_library_for_barcodes(barcodes)
+        ensure_product_library_for_barcodes(barcodes, None, worker)
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
     summary['excluded'] = excluded
@@ -4329,36 +4488,34 @@ def api_crm_transfer():
         return jsonify({'success': False, 'error': '部分条码缺少产品名称或产品编码，无法自动移库', 'summary': summary})
 
     with transfer_job_lock:
-        if transfer_job['running']:
-            return jsonify({'success': False, 'error': '已有移库任务正在执行，请等待完成后再提交'})
-    with batch_job_lock:
-        if batch_job['running']:
-            return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待查询完成后再移库'})
-    with transfer_job_lock:
-        transfer_job.update({
+        running_job_id = latest_transfer_job_by_slot.get(slot_id)
+        running_job = transfer_jobs.get(running_job_id)
+        if running_job and running_job.get('running'):
+            return jsonify({'success': False, 'error': f'{slot_id} 已有移库任务正在执行，请等待完成后再提交'})
+        job = _empty_transfer_job(slot_id, summary, distributor, transfer_type, remark)
+        job.update({
             'running': True,
             'done': False,
             'success': False,
             'error': '',
             'result': None,
-            'summary': summary,
-            'distributor': distributor,
-            'transfer_type': transfer_type,
-            'remark': remark,
-            'logs': [],
             'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'finished_at': '',
         })
+        transfer_jobs[job['job_id']] = job
+        latest_transfer_job_by_slot[slot_id] = job['job_id']
 
     threading.Thread(
         target=_run_transfer_job,
-        args=(summary, distributor, transfer_type, remark),
+        args=(job['job_id'], worker, summary, distributor, transfer_type, remark),
         daemon=True
     ).start()
 
     return jsonify({
         'success': True,
         'started': True,
+        'job_id': job['job_id'],
+        'slot_id': slot_id,
         'message': '移库任务已开始，请查看日志',
         'summary': summary,
         'transfer': {
@@ -4371,33 +4528,39 @@ def api_crm_transfer():
 
 @app.route("/api/crm/transfer/status", methods=["GET"])
 def api_crm_transfer_status():
+    slot_id = crm_pool.normalize_slot(request.args.get("slot_id"), "transfer")
+    job_id = request.args.get("job_id") or _latest_job_id(latest_transfer_job_by_slot, slot_id)
     with transfer_job_lock:
-        result = transfer_job.get('result') or {}
+        job = transfer_jobs.get(job_id) or _empty_transfer_job(slot_id)
+        result = job.get('result') or {}
         order_no = result.get('order_no') if isinstance(result, dict) else ''
-        if transfer_job['success'] and isinstance(result, dict) and result.get('pending_approval'):
+        if job['success'] and isinstance(result, dict) and result.get('pending_approval'):
             message = f"移库单已保存待审批：{order_no or '已保存'}"
-        elif transfer_job['success']:
+        elif job['success']:
             message = f"移库单已创建：{order_no or '已保存'}"
         else:
-            message = transfer_job['error']
+            message = job['error']
         return jsonify({
             'success': True,
-            'running': transfer_job['running'],
-            'done': transfer_job['done'],
-            'transfer_success': transfer_job['success'],
-            'error': transfer_job['error'],
+            'job_id': job.get('job_id') or '',
+            'slot_id': job.get('slot_id') or slot_id,
+            'running': job['running'],
+            'done': job['done'],
+            'transfer_success': job['success'],
+            'error': job['error'],
             'message': message,
-            'result': transfer_job['result'],
-            'summary': transfer_job['summary'],
+            'result': job['result'],
+            'summary': job['summary'],
             'transfer': {
                 'dealer': '江西省天麓工贸有限公司',
-                'distributor': transfer_job.get('distributor', ''),
-                'transfer_type': transfer_job.get('transfer_type', ''),
-                'remark': transfer_job.get('remark', ''),
+                'distributor': job.get('distributor', ''),
+                'transfer_type': job.get('transfer_type', ''),
+                'remark': job.get('remark', ''),
             },
-            'logs': list(transfer_job['logs']),
-            'started_at': transfer_job['started_at'],
-            'finished_at': transfer_job['finished_at'],
+            'logs': list(job['logs']),
+            'log_seq': job.get('log_seq') or 0,
+            'started_at': job['started_at'],
+            'finished_at': job['finished_at'],
         })
 
 @app.route("/barcode/<filename>")
@@ -4516,18 +4679,14 @@ def api_product_library_lookup():
 @app.route("/api/product-library/query/start", methods=["POST"])
 def api_product_library_query_start():
     data = request.get_json() or {}
+    slot_id = _request_slot_id("query")
+    worker = crm_pool.get(slot_id, "query")
     barcode = str(data.get('barcode') or '').strip()
     if not barcode:
         return jsonify({'success': False, 'error': '请输入条码'})
     if is_disassembly_barcode(barcode):
         return jsonify({'success': False, 'error': '这是拆机条码，CRM 不查询，也不写入条码匹配'})
-    with transfer_job_lock:
-        if transfer_job['running']:
-            return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询'})
-    with batch_job_lock:
-        if batch_job['running']:
-            return jsonify({'success': False, 'error': '批量条码查询正在执行，请等待完成'})
-    ready, _ready_message = _crm_ready_for_auto_query()
+    ready, _ready_message = _crm_ready_for_auto_query(worker)
     if not ready:
         return jsonify({'success': False, 'error': '请先让管理员到在线查询页面登录 CRM 后再查询'})
     with library_query_lock:
@@ -4540,11 +4699,12 @@ def api_product_library_query_start():
             'barcode': barcode,
             'error': '',
             'logs': [],
+            'slot_id': slot_id,
             'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'finished_at': '',
         })
-    threading.Thread(target=_run_library_query_job, args=(barcode,), daemon=True).start()
-    return jsonify({'success': True, 'message': '条码查询已开始'})
+    threading.Thread(target=_run_library_query_job, args=(barcode, worker), daemon=True).start()
+    return jsonify({'success': True, 'slot_id': slot_id, 'message': '条码查询已开始'})
 
 @app.route("/api/product-library/query/status")
 def api_product_library_query_status():
@@ -4692,76 +4852,94 @@ def api_app_auth_password():
 
 @app.route("/api/crm/status")
 def api_crm_status():
+    kind = request.args.get("kind") or "query"
+    slot_id = _request_slot_id(kind)
+    worker = crm_pool.get(slot_id, kind)
     return jsonify({
-        'browser_running': crm_session.is_alive(),
-        'logged_in': crm_session.logged_in
+        'slot_id': worker.slot_id,
+        'browser_running': worker.is_alive(),
+        'logged_in': worker.logged_in
     })
+
+@app.route("/api/crm/slots")
+def api_crm_slots():
+    return jsonify({'success': True, **crm_pool.slots_payload()})
 
 @app.route("/api/crm/login", methods=["POST"])
 def api_crm_login():
     """统一登录接口：自动填账号密码 → 点登录 → 点发送验证码 → 等待用户输入验证码填入 → 点确定"""
     data = request.get_json()
+    slot_id = _request_slot_id(data.get("kind") or "query")
+    worker = crm_pool.get(slot_id, data.get("kind") or "query")
     username = data.get('username', '').strip()
     password = data.get('password', '')
     captcha = data.get('captcha', '').strip()
 
     if captcha:
-        success, msg = crm_session.login_step2(captcha)
+        success, msg = worker.login_step2(captcha)
     else:
-        success, msg = crm_session.login(username, password)
-    return jsonify({'success': success, 'message': msg})
+        success, msg = worker.login(username, password)
+    return jsonify({'success': success, 'message': msg, 'slot_id': worker.slot_id})
 
 @app.route("/api/crm/login-step1", methods=["POST"])
 def api_crm_login_step1():
     """Step1: 填账号密码 → 点登录 → 点发送验证码 → 返回给前端"""
     data = request.get_json()
+    slot_id = _request_slot_id(data.get("kind") or "query")
+    worker = crm_pool.get(slot_id, data.get("kind") or "query")
     username = data.get('username', '').strip()
     password = data.get('password', '')
-    success, msg = crm_session.login_step1(username, password)
-    return jsonify({'success': success, 'message': msg})
+    success, msg = worker.login_step1(username, password)
+    return jsonify({'success': success, 'message': msg, 'slot_id': worker.slot_id})
 
 @app.route("/api/crm/login-step2", methods=["POST"])
 def api_crm_login_step2():
     """Step2: 收到验证码后提交"""
     data = request.get_json()
+    slot_id = _request_slot_id(data.get("kind") or "query")
+    worker = crm_pool.get(slot_id, data.get("kind") or "query")
     captcha = data.get('captcha', '').strip()
-    success, msg = crm_session.login_step2(captcha)
-    return jsonify({'success': success, 'message': msg})
+    success, msg = worker.login_step2(captcha)
+    return jsonify({'success': success, 'message': msg, 'slot_id': worker.slot_id})
 
 @app.route("/api/crm/logout", methods=["POST"])
 def api_crm_logout():
-    crm_session.logout()
-    return jsonify({'success': True})
+    kind = request.args.get("kind") or "query"
+    slot_id = _request_slot_id(kind)
+    crm_pool.get(slot_id, kind).logout()
+    return jsonify({'success': True, 'slot_id': slot_id})
 
 @app.route("/api/crm/login/cancel", methods=["POST"])
 def api_crm_login_cancel():
-    crm_session.cancel_login()
-    return jsonify({'success': True})
+    kind = request.args.get("kind") or "query"
+    slot_id = _request_slot_id(kind)
+    crm_pool.get(slot_id, kind).cancel_login()
+    return jsonify({'success': True, 'slot_id': slot_id})
 
 @app.route("/api/crm/check-login", methods=["POST"])
 def api_crm_check_login():
     """手动完成登录后调用此接口，后端检查浏览器状态并更新登录状态"""
-    success, msg = crm_session.check_login_status()
-    return jsonify({'success': success, 'message': msg, 'logged_in': crm_session.logged_in})
+    kind = request.args.get("kind") or "query"
+    slot_id = _request_slot_id(kind)
+    worker = crm_pool.get(slot_id, kind)
+    success, msg = worker.check_login_status()
+    return jsonify({'success': success, 'message': msg, 'logged_in': worker.logged_in, 'slot_id': worker.slot_id})
 
 @app.route("/api/crm/query", methods=["POST"])
 def api_crm_query():
     data = request.get_json()
+    slot_id = _request_slot_id(data.get("kind") or "query")
+    worker = crm_pool.get(slot_id, data.get("kind") or "query")
     barcode = data.get('barcode', '').strip()
     if not barcode:
         return jsonify({'success': False, 'error': '条码不能为空'})
     if is_disassembly_barcode(barcode):
         return jsonify({'success': False, 'error': '这是拆机条码，CRM 不查询'})
-    with transfer_job_lock:
-        if transfer_job['running']:
-            return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
-    with library_query_lock:
-        if library_query_job['running']:
-            return jsonify({'success': False, 'error': '条码匹配查询正在执行，请等待完成后再查询'})
-    success, result = crm_session.query_barcode(barcode)
+    success, result = worker.query_barcode(barcode)
     if success:
         return jsonify({
             'success': True,
+            'slot_id': worker.slot_id,
             'barcode': result,
             'view_url': f'/barcode/{barcode}.html'
         })
@@ -4771,39 +4949,31 @@ def api_crm_query():
 @app.route("/api/crm/batch/start", methods=["POST"])
 def api_crm_batch_start():
     data = request.get_json()
+    slot_id = _request_slot_id("query")
+    worker = crm_pool.get(slot_id, "query")
     barcodes = data.get('barcodes') or []
     barcodes = normalize_input_barcodes(barcodes)
     barcodes, excluded = filter_disassembly_barcodes(barcodes)
     retry_limit = _normalize_retry_limit(data.get('retry_limit', DEFAULT_BATCH_RETRY_LIMIT))
     if not barcodes:
         return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需查询' if excluded else '条码不能为空', 'excluded': excluded})
-    with transfer_job_lock:
-        if transfer_job['running']:
-            return jsonify({'success': False, 'error': '移库任务正在执行，请等待完成后再查询条码'})
-    with library_query_lock:
-        if library_query_job['running']:
-            return jsonify({'success': False, 'error': '条码匹配查询正在执行，请等待完成后再批量查询'})
 
     with batch_job_lock:
-        if batch_job['running']:
-            return jsonify({'success': False, 'error': '已有批量查询正在运行'})
-        batch_job.update({
+        running_job_id = latest_batch_job_by_slot.get(slot_id)
+        running_job = batch_jobs.get(running_job_id)
+        if running_job and running_job.get('running'):
+            return jsonify({'success': False, 'error': f'{slot_id} 已有批量查询正在运行'})
+        job = _empty_batch_job(slot_id, barcodes, retry_limit)
+        job.update({
             'running': True,
-            'stop_requested': False,
-            'barcodes': barcodes,
-            'total': len(barcodes),
-            'current': 0,
-            'success': 0,
-            'failed': 0,
-            'retry_limit': retry_limit,
-            'log_seq': 0,
-            'logs': [],
-            'results': [],
+            'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         })
+        batch_jobs[job['job_id']] = job
+        latest_batch_job_by_slot[slot_id] = job['job_id']
 
-    t = threading.Thread(target=_run_batch_job, args=(barcodes, retry_limit, excluded), daemon=True)
+    t = threading.Thread(target=_run_batch_job, args=(job['job_id'], worker, barcodes, retry_limit, excluded), daemon=True)
     t.start()
-    return jsonify({'success': True, 'total': len(barcodes), 'retry_limit': retry_limit, 'excluded': excluded})
+    return jsonify({'success': True, 'job_id': job['job_id'], 'slot_id': slot_id, 'total': len(barcodes), 'retry_limit': retry_limit, 'excluded': excluded})
 
 @app.route("/api/crm/batch/status")
 def api_crm_batch_status():
@@ -4812,33 +4982,42 @@ def api_crm_batch_status():
     except (TypeError, ValueError):
         since = 0
     include_results = request.args.get('include_results') in ('1', 'true', 'yes')
+    slot_id = crm_pool.normalize_slot(request.args.get("slot_id"), "query")
+    job_id = request.args.get("job_id") or _latest_job_id(latest_batch_job_by_slot, slot_id)
     with batch_job_lock:
-        logs = list(batch_job['logs'])
-        if since > 0:
-            logs = [row for row in logs if int(row.get('id') or 0) > since]
+        job = batch_jobs.get(job_id) or _empty_batch_job(slot_id)
+        logs = _job_logs_since(job, since)
         payload = {
             'success': True,
-            'running': batch_job['running'],
-            'stop_requested': batch_job['stop_requested'],
-            'total': batch_job['total'],
-            'current': batch_job['current'],
-            'success_count': batch_job['success'],
-            'failed_count': batch_job['failed'],
-            'retry_limit': batch_job['retry_limit'],
-            'log_seq': batch_job.get('log_seq') or 0,
+            'job_id': job.get('job_id') or '',
+            'slot_id': job.get('slot_id') or slot_id,
+            'running': job['running'],
+            'stop_requested': job['stop_requested'],
+            'total': job['total'],
+            'current': job['current'],
+            'success_count': job['success'],
+            'failed_count': job['failed'],
+            'retry_limit': job['retry_limit'],
+            'log_seq': job.get('log_seq') or 0,
             'logs': logs,
-            'results_count': len(batch_job['results']),
+            'results_count': len(job['results']),
+            'started_at': job.get('started_at', ''),
+            'finished_at': job.get('finished_at', ''),
         }
         if include_results:
-            payload['results'] = list(batch_job['results'])
+            payload['results'] = list(job['results'])
         return jsonify(payload)
 
 @app.route("/api/crm/batch/stop", methods=["POST"])
 def api_crm_batch_stop():
+    data = request.get_json(silent=True) or {}
+    slot_id = crm_pool.normalize_slot(request.args.get("slot_id") or data.get("slot_id"), "query")
+    job_id = request.args.get("job_id") or data.get("job_id") or _latest_job_id(latest_batch_job_by_slot, slot_id)
     with batch_job_lock:
-        if batch_job['running']:
-            batch_job['stop_requested'] = True
-            return jsonify({'success': True})
+        job = batch_jobs.get(job_id)
+        if job and job['running']:
+            job['stop_requested'] = True
+            return jsonify({'success': True, 'job_id': job_id, 'slot_id': slot_id})
     return jsonify({'success': False, 'error': '没有正在运行的批量查询'})
 
 if __name__ == "__main__":

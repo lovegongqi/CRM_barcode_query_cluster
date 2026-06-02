@@ -58,6 +58,10 @@
         .distributor-option:last-child { border-bottom:none; }
         .distributor-option:hover, .distributor-option.active { background:#eef4ff; color:#1d4ed8; }
         .distributor-empty { padding:9px 10px; font-size:13px; color:#94a3b8; }
+        .slot-tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+        .slot-tab { min-height:34px; padding:7px 14px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-weight:800; cursor:pointer; }
+        .slot-tab.active { background:#0f766e; color:#fff; border-color:#0f766e; }
+        .slot-tab.busy { border-color:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.12); }
         @media (max-width: 860px) { .grid, .fields { grid-template-columns:1fr; } .header { flex-direction:column; align-items:flex-start; } }
     </style>
 </head>
@@ -85,6 +89,7 @@
         <div>
             <div class="card">
                 <h2>提交移库</h2>
+                <div class="slot-tabs" id="transferSlotTabs"></div>
                 <label>条码列表</label>
                 <textarea id="barcodeInput" placeholder="每行一个条码，也可以用逗号、空格混合分隔" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive"></textarea>
                 <div class="fields">
@@ -161,7 +166,50 @@ let previewTimer = null;
 let lastRenderedLogKey = '';
 let highlightedDistributorIndex = -1;
 let submittedTransferDistributor = '';
+let currentTransferSlot = localStorage.getItem('crm_transfer_slot') || 'transfer-1';
+let currentSummaryJobId = sessionStorage.getItem(`crm_summary_job_id_${currentTransferSlot}`) || '';
+let currentTransferJobId = sessionStorage.getItem(`crm_transfer_job_id_${currentTransferSlot}`) || '';
+let transferSlots = [];
 const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
+
+function transferPayload(extra={}) {
+    return Object.assign({slot_id: currentTransferSlot, kind: 'transfer'}, extra);
+}
+
+async function loadSlots() {
+    const data = await fetch('/api/crm/slots').then(r => r.json()).catch(() => null);
+    if (!data || !data.success) return;
+    transferSlots = data.transfer || [];
+    if (!transferSlots.some(slot => slot.id === currentTransferSlot)) {
+        currentTransferSlot = (data.defaults && data.defaults.transfer) || (transferSlots[0] && transferSlots[0].id) || 'transfer-1';
+        localStorage.setItem('crm_transfer_slot', currentTransferSlot);
+    }
+    renderTransferSlots();
+}
+
+function renderTransferSlots() {
+    const box = document.getElementById('transferSlotTabs');
+    if (!box) return;
+    box.innerHTML = transferSlots.map(slot => {
+        const active = slot.id === currentTransferSlot ? ' active' : '';
+        const busy = slot.browser_running && !slot.logged_in ? ' busy' : '';
+        const status = slot.logged_in ? '已登录' : (slot.browser_running ? '未登录' : '未启动');
+        return `<button class="slot-tab${active}${busy}" onclick="switchTransferSlot('${slot.id}')">${slot.label} · ${status}</button>`;
+    }).join('');
+}
+
+function switchTransferSlot(slotId) {
+    if (slotId === currentTransferSlot) return;
+    currentTransferSlot = slotId;
+    localStorage.setItem('crm_transfer_slot', currentTransferSlot);
+    currentSummaryJobId = sessionStorage.getItem(`crm_summary_job_id_${currentTransferSlot}`) || '';
+    currentTransferJobId = sessionStorage.getItem(`crm_transfer_job_id_${currentTransferSlot}`) || '';
+    lastRenderedLogKey = '';
+    document.getElementById('transferLog').innerHTML = '<div class="dim">等待操作...</div>';
+    renderTransferSlots();
+    refreshCrmStatus();
+    resumeBackgroundJobs();
+}
 
 function escapeHtml(text) {
     return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
@@ -307,7 +355,7 @@ function renderSummary(summary) {
 }
 
 async function ensureCrmLoggedIn(actionText) {
-    const data = await fetch('/api/crm/status').then(r => r.json()).catch(() => ({}));
+    const data = await fetch('/api/crm/status?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot)).then(r => r.json()).catch(() => ({}));
     if (data.logged_in) return true;
     const message = `CRM 未登录，不能${actionText}。请先登录 CRM。`;
     appendLog(message, 'error');
@@ -346,7 +394,7 @@ async function cancelLogin() {
     document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
     document.getElementById('captchaInput').value = '';
     try {
-        await fetch('/api/crm/login/cancel', {method:'POST'});
+        await fetch('/api/crm/login/cancel?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot), {method:'POST'});
     } catch (e) {}
     refreshCrmStatus();
 }
@@ -366,7 +414,7 @@ async function doLogin() {
         const r = await fetch('/api/crm/login', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username, password})
+            body: JSON.stringify(transferPayload({username, password}))
         });
         const d = await r.json();
         if (d.success) {
@@ -409,7 +457,7 @@ async function doLoginStep2() {
         const r = await fetch('/api/crm/login-step2', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({captcha})
+            body: JSON.stringify(transferPayload({captcha}))
         });
         const d = await r.json();
         if (d.success) {
@@ -435,7 +483,7 @@ async function doLoginStep2() {
 async function restartLogin() {
     appendLog('重新打开 CRM 登录...', 'warn');
     try {
-        await fetch('/api/crm/login/cancel', {method:'POST'});
+        await fetch('/api/crm/login/cancel?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot), {method:'POST'});
     } catch (e) {}
     document.getElementById('captchaRow').style.display = 'none';
     document.getElementById('captchaSubmitBtn').style.display = 'none';
@@ -459,11 +507,11 @@ async function previewTransfer() {
     appendLog('开始汇总预览，缺少条码匹配前缀时会自动查询代表条码...', 'info');
     let data = null;
     try {
-        const payload = JSON.stringify({
+        const payload = JSON.stringify(transferPayload({
             barcodes,
             transfer_type: document.getElementById('transferType').value,
             distributor: document.getElementById('transferDistributor').value.trim()
-        });
+        }));
         const res = await fetch('/api/transfer/summary/start', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -483,12 +531,15 @@ async function previewTransfer() {
         previewBtn.textContent = '汇总预览';
         return;
     }
+    currentSummaryJobId = data.job_id || '';
+    if (currentSummaryJobId) sessionStorage.setItem(`crm_summary_job_id_${currentTransferSlot}`, currentSummaryJobId);
     previewTimer = setInterval(pollSummaryStatus, 1000);
     pollSummaryStatus();
 }
 
 async function pollSummaryStatus() {
-    const data = await fetch('/api/transfer/summary/status').then(res => res.json());
+    const params = new URLSearchParams({slot_id: currentTransferSlot, job_id: currentSummaryJobId || ''});
+    const data = await fetch('/api/transfer/summary/status?' + params.toString()).then(res => res.json());
     renderLogs(data.logs || []);
     if (data.summary) renderSummary(data.summary);
     if (!data.done) return;
@@ -516,12 +567,12 @@ async function submitTransfer() {
     const res = await fetch('/api/crm/transfer', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
+        body: JSON.stringify(transferPayload({
             barcodes: parseBarcodes(),
             distributor,
             transfer_type: document.getElementById('transferType').value,
             remark: document.getElementById('transferRemark').value.trim()
-        })
+        }))
     });
     const data = await res.json();
     if (!data.success) {
@@ -529,6 +580,8 @@ async function submitTransfer() {
         document.getElementById('submitBtn').disabled = false;
         return;
     }
+    currentTransferJobId = data.job_id || '';
+    if (currentTransferJobId) sessionStorage.setItem(`crm_transfer_job_id_${currentTransferSlot}`, currentTransferJobId);
     submittedTransferDistributor = distributor;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(pollStatus, 1200);
@@ -557,7 +610,8 @@ function renderLogs(logs) {
 }
 
 async function pollStatus() {
-    const res = await fetch('/api/crm/transfer/status');
+    const params = new URLSearchParams({slot_id: currentTransferSlot, job_id: currentTransferJobId || ''});
+    const res = await fetch('/api/crm/transfer/status?' + params.toString());
     const data = await res.json();
     renderLogs(data.logs || []);
     if (data.summary) renderSummary(data.summary);
@@ -573,7 +627,8 @@ async function pollStatus() {
 }
 
 async function restoreTransferStatus() {
-    const data = await fetch('/api/crm/transfer/status').then(res => res.json()).catch(() => null);
+    const params = new URLSearchParams({slot_id: currentTransferSlot, job_id: currentTransferJobId || ''});
+    const data = await fetch('/api/crm/transfer/status?' + params.toString()).then(res => res.json()).catch(() => null);
     if (!data || (!data.running && !data.done && !(data.logs || []).length && !data.summary)) return false;
 
     renderLogs(data.logs || []);
@@ -608,7 +663,8 @@ async function restoreTransferStatus() {
 }
 
 async function restoreSummaryStatus() {
-    const data = await fetch('/api/transfer/summary/status').then(res => res.json()).catch(() => null);
+    const params = new URLSearchParams({slot_id: currentTransferSlot, job_id: currentSummaryJobId || ''});
+    const data = await fetch('/api/transfer/summary/status?' + params.toString()).then(res => res.json()).catch(() => null);
     if (!data || (!data.running && !data.done && !(data.logs || []).length)) return false;
 
     renderLogs(data.logs || []);
@@ -716,7 +772,8 @@ function loadIncomingBarcodes() {
 }
 
 async function refreshCrmStatus() {
-    const data = await fetch('/api/crm/status').then(r => r.json()).catch(() => ({}));
+    await loadSlots();
+    const data = await fetch('/api/crm/status?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot)).then(r => r.json()).catch(() => ({}));
     const dot = document.getElementById('loginDot');
     const text = document.getElementById('loginStatus');
     const loginBtn = document.getElementById('loginBtn');
@@ -735,6 +792,7 @@ async function loadQueriedDealerHistory() {
 }
 
 (async function initPage() {
+    await loadSlots();
     renderDistributorHistory();
     loadIncomingBarcodes();
     loadQueriedDealerHistory();

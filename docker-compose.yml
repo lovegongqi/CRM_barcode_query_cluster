@@ -6,6 +6,9 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
+      CRM_QUERY_WORKERS: "2"
+      CRM_TRANSFER_WORKERS: "2"
+      CRM_SESSION_BASE: /app/session
     ports:
       - "5001:5001"
     volumes:
