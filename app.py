@@ -3198,24 +3198,54 @@ def _directory_has_files(path):
             return True
     return False
 
+def _copy_missing_tree(source, target):
+    copied = 0
+    for root, _dirs, files in os.walk(source):
+        rel_root = os.path.relpath(root, source)
+        target_root = target if rel_root == "." else os.path.join(target, rel_root)
+        os.makedirs(target_root, exist_ok=True)
+        for filename in files:
+            src = os.path.join(root, filename)
+            dst = os.path.join(target_root, filename)
+            if os.path.exists(dst):
+                continue
+            shutil.copy2(src, dst)
+            copied += 1
+    return copied
+
 def _migrate_legacy_runtime_data():
     if os.environ.get("CRM_DISABLE_DATA_MIGRATION") in ("1", "true", "yes"):
         return
     legacy_pairs = [
-        (os.environ.get("CRM_LEGACY_BARCODE_DIR", "/app/legacy/barcode"), BARCODE_DIR),
-        (os.environ.get("CRM_LEGACY_RESULTS_DIR", "/app/legacy/results"), RESULTS_DIR),
+        (
+            [
+                os.environ.get("CRM_LEGACY_BARCODE_DIR", "/app/legacy/barcode"),
+                "/app/barcode",
+                os.path.join(RESOURCE_BASE_DIR, "barcode"),
+            ],
+            BARCODE_DIR,
+        ),
+        (
+            [
+                os.environ.get("CRM_LEGACY_RESULTS_DIR", "/app/legacy/results"),
+                "/app/results",
+                os.path.join(RESOURCE_BASE_DIR, "results"),
+            ],
+            RESULTS_DIR,
+        ),
     ]
-    for source, target in legacy_pairs:
-        if not source or not os.path.isdir(source) or not _directory_has_files(source):
-            continue
-        if _directory_has_files(target):
-            continue
-        try:
-            os.makedirs(target, exist_ok=True)
-            shutil.copytree(source, target, dirs_exist_ok=True)
-            print(f"  [DATA] 已迁移旧数据目录: {source} -> {target}")
-        except Exception as e:
-            print(f"  [DATA] 迁移旧数据目录失败: {source} -> {target}: {e}")
+    for sources, target in legacy_pairs:
+        for source in sources:
+            if not source or os.path.abspath(source) == os.path.abspath(target):
+                continue
+            if not os.path.isdir(source) or not _directory_has_files(source):
+                continue
+            try:
+                copied = _copy_missing_tree(source, target)
+                if copied:
+                    print(f"  [DATA] 已补充旧数据目录: {source} -> {target}，新增 {copied} 个文件")
+            except Exception as e:
+                print(f"  [DATA] 迁移旧数据目录失败: {source} -> {target}: {e}")
 
 _migrate_legacy_runtime_data()
 
@@ -3320,9 +3350,9 @@ FIELD_IDS = {
 }
 
 FILTER_FIELDS = {
-    'myproductdealer1_sr5': '所属经销商',
+    'myproductdealer1_sr5': '归属经销商',
     'newdealername1_sr2': '服务经销商',
-    'newisclosed1_sr2': '结单状态',
+    'newisclosed1_sr2': '是否结单',
 }
 
 SUBREPORT_NAMES = {

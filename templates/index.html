@@ -1811,7 +1811,7 @@
             const data = await fetch('/api/crm/transfer/slots-status').then(r => r.json()).catch(() => null);
             const slots = (data && data.success ? data.transfer : []) || [];
             if (!slots.length) {
-                list.innerHTML = '<button class="transfer-slot-option" onclick="openTransferInSlot(\\'transfer-1\\')">移库1</button>';
+                list.innerHTML = `<button class="transfer-slot-option" onclick="openTransferInSlot('transfer-1')">移库1</button>`;
                 return;
             }
             list.innerHTML = slots.map(slot => {
@@ -2105,15 +2105,26 @@ ${section(9, '移机单', 'moveid1', [
                         document.getElementById('totalCount').textContent = allBarcodes.length;
                         document.getElementById('filteredCount').textContent = allBarcodes.length;
                         applyFilters();
+                    } else {
+                        allBarcodes = [];
+                        document.getElementById('totalCount').textContent = 0;
+                        document.getElementById('filteredCount').textContent = 0;
+                        document.getElementById('barcodeList').innerHTML = `<div class="empty-state"><p>${escapeHtml(data.error || '加载条码失败')}</p></div>`;
+                        showToast(data.error || '加载条码失败');
                     }
                 })
-                .catch(err => console.error(err));
+                .catch(err => {
+                    console.error(err);
+                    document.getElementById('barcodeList').innerHTML = `<div class="empty-state"><p>加载条码失败：${escapeHtml(err.message || err)}</p></div>`;
+                });
 
             fetch('/api/filter-options')
                 .then(r => r.json())
                 .then(data => {
                     if (data.success && data.filters) {
                         buildFilterUI(data.filters);
+                    } else if (data.error) {
+                        document.getElementById('filterArea').innerHTML = `<div class="empty-state"><p>${escapeHtml(data.error)}</p></div>`;
                     }
                 })
                 .catch(err => console.error(err));

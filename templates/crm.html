@@ -236,10 +236,12 @@
             const data = await fetch('/api/crm/slots').then(r => r.json()).catch(() => null);
             if (!data || !data.success) return;
             querySlots = data.query || [];
+            const previousSlot = currentQuerySlot;
             if (!querySlots.some(slot => slot.id === currentQuerySlot)) {
                 currentQuerySlot = (data.defaults && data.defaults.query) || (querySlots[0] && querySlots[0].id) || 'query-1';
                 localStorage.setItem('crm_query_slot', currentQuerySlot);
             }
+            if (currentQuerySlot !== previousSlot) restoreQueryInput();
             renderQuerySlots();
         }
 
@@ -256,18 +258,35 @@
 
         function switchQuerySlot(slotId) {
             if (slotId === currentQuerySlot) return;
+            saveQueryInput();
             currentQuerySlot = slotId;
             localStorage.setItem('crm_query_slot', currentQuerySlot);
             currentBatchJobId = sessionStorage.getItem(`crm_batch_job_id_${currentQuerySlot}`) || '';
             lastBatchLogSeq = 0;
             document.getElementById('logArea').innerHTML = '<div class="dim">等待操作...</div>';
+            restoreQueryInput();
             renderQuerySlots();
             checkStatus();
             pollBatchStatus();
         }
 
+        function queryInputStorageKey(slotId=currentQuerySlot) {
+            return `crm_query_input_${slotId}`;
+        }
+
         function saveQueryInput() {
-            sessionStorage.setItem('crm_query_input', document.getElementById('batchInput').value);
+            sessionStorage.setItem(queryInputStorageKey(), document.getElementById('batchInput').value);
+        }
+
+        function restoreQueryInput() {
+            let savedBarcodeText = sessionStorage.getItem(queryInputStorageKey());
+            const legacyText = sessionStorage.getItem('crm_query_input');
+            if (!savedBarcodeText && legacyText) {
+                savedBarcodeText = legacyText;
+                sessionStorage.setItem(queryInputStorageKey(), legacyText);
+                sessionStorage.removeItem('crm_query_input');
+            }
+            document.getElementById('batchInput').value = savedBarcodeText || '';
         }
 
         function changeWorkerCount(inputId, delta) {
@@ -579,7 +598,6 @@
             log('正在退出...', 'warn');
             localStorage.removeItem('crm_username');
             localStorage.removeItem('crm_password');
-            sessionStorage.removeItem('crm_query_input');
             await fetch('/api/crm/logout?kind=query&slot_id=' + encodeURIComponent(currentQuerySlot), {method:'POST'});
             log('已退出', 'warn');
             closeLoginModal();
@@ -784,7 +802,6 @@
                         clearInterval(batchPollTimer);
                         batchPollTimer = null;
                     }
-                    sessionStorage.removeItem('crm_query_input');
                 }
             } catch(e) {
                 console.error(e);
@@ -812,10 +829,9 @@
             document.getElementById('loginUsername').value = savedUsername;
         }
 
-        // 页面加载时恢复未完成的批量条码
-        const savedBarcodeText = sessionStorage.getItem('crm_query_input');
-        if (savedBarcodeText) {
-            document.getElementById('batchInput').value = savedBarcodeText;
+        // 页面加载时恢复当前查询窗口自己的条码
+        restoreQueryInput();
+        if (document.getElementById('batchInput').value) {
             log('已恢复上次的条码列表', 'info');
         }
     </script>
