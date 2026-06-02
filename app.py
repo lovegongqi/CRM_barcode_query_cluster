@@ -2717,6 +2717,8 @@ library_query_job = {
     'done': False,
     'success': False,
     'barcode': '',
+    'slot_id': '',
+    'slot_label': '',
     'error': '',
     'logs': [],
     'started_at': '',
@@ -3855,6 +3857,35 @@ def _crm_ready_for_auto_query(worker=None):
         return False, "CRM 当前未登录，请先到在线查询页面完成登录"
     return True, ""
 
+def _query_slot_label(slot_id):
+    with crm_pool.pool_lock:
+        slots = list(crm_pool.query_slots)
+    if slot_id in slots:
+        return f"查询{slots.index(slot_id) + 1}"
+    return slot_id or "查询通道"
+
+def _query_slot_has_running_batch(slot_id):
+    with batch_job_lock:
+        job_id = latest_batch_job_by_slot.get(slot_id)
+        job = batch_jobs.get(job_id)
+        return bool(job and job.get('running'))
+
+def _select_idle_query_worker_desc():
+    with crm_pool.pool_lock:
+        slots = list(crm_pool.query_slots)
+    logged_in_count = 0
+    for slot_id in reversed(slots):
+        worker = crm_pool.get(slot_id, "query")
+        if not worker.is_alive() or not worker.logged_in:
+            continue
+        logged_in_count += 1
+        if _query_slot_has_running_batch(slot_id):
+            continue
+        return worker, slot_id, _query_slot_label(slot_id), ""
+    if logged_in_count == 0:
+        return None, "", "", "没有已登录的查询通道，请先到在线查询页登录 CRM"
+    return None, "", "", "所有已登录查询通道都在查询中，请稍后再试"
+
 def _request_slot_id(kind="query"):
     data = request.get_json(silent=True) or {}
     slot_id = (
@@ -4822,16 +4853,19 @@ def api_product_library_lookup():
 @app.route("/api/product-library/query/start", methods=["POST"])
 def api_product_library_query_start():
     data = request.get_json() or {}
-    slot_id = _request_slot_id("query")
-    worker = crm_pool.get(slot_id, "query")
     barcode = str(data.get('barcode') or '').strip()
     if not barcode:
         return jsonify({'success': False, 'error': '请输入条码'})
     if is_disassembly_barcode(barcode):
         return jsonify({'success': False, 'error': '这是拆机条码，CRM 不查询，也不写入条码匹配'})
-    ready, _ready_message = _crm_ready_for_auto_query(worker)
-    if not ready:
-        return jsonify({'success': False, 'error': '请先让管理员到在线查询页面登录 CRM 后再查询'})
+    with library_query_lock:
+        if library_query_job['running']:
+            return jsonify({'success': False, 'error': '已有条码匹配查询正在执行'})
+
+    worker, slot_id, slot_label, error = _select_idle_query_worker_desc()
+    if error:
+        return jsonify({'success': False, 'error': error})
+
     with library_query_lock:
         if library_query_job['running']:
             return jsonify({'success': False, 'error': '已有条码匹配查询正在执行'})
@@ -4843,11 +4877,13 @@ def api_product_library_query_start():
             'error': '',
             'logs': [],
             'slot_id': slot_id,
+            'slot_label': slot_label,
             'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'finished_at': '',
         })
+    _library_query_log(f"已分配查询通道：{slot_label}", 'info')
     threading.Thread(target=_run_library_query_job, args=(barcode, worker), daemon=True).start()
-    return jsonify({'success': True, 'slot_id': slot_id, 'message': '条码查询已开始'})
+    return jsonify({'success': True, 'slot_id': slot_id, 'slot_label': slot_label, 'message': '条码查询已开始'})
 
 @app.route("/api/product-library/query/status")
 def api_product_library_query_status():
@@ -4858,6 +4894,8 @@ def api_product_library_query_status():
             'done': library_query_job['done'],
             'query_success': library_query_job['success'],
             'barcode': library_query_job['barcode'],
+            'slot_id': library_query_job.get('slot_id', ''),
+            'slot_label': library_query_job.get('slot_label', ''),
             'error': library_query_job['error'],
             'logs': list(library_query_job['logs']),
             'started_at': library_query_job['started_at'],
