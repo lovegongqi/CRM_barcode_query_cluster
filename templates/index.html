@@ -362,6 +362,11 @@
         }
         .modal-close:hover { color: #333; }
         .modal-body { padding: 16px; }
+        .transfer-slot-list { display:grid; gap:8px; }
+        .transfer-slot-option { width:100%; min-height:42px; border:1px solid #d9e1ec; border-radius:8px; background:#fff; color:#334155; font-size:13px; font-weight:800; cursor:pointer; }
+        .transfer-slot-option:hover { border-color:#0f766e; color:#0f766e; }
+        .transfer-slot-option.busy { background:#f8fafc; color:#94a3b8; cursor:not-allowed; }
+        .transfer-slot-option.busy:hover { border-color:#d9e1ec; color:#94a3b8; }
         .transfer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
         .transfer-field { display: flex; flex-direction: column; gap: 6px; }
         .transfer-field label { color: #667085; font-size: 12px; font-weight: 700; }
@@ -575,18 +580,20 @@
             flex-wrap: wrap;
             gap: 8px;
             justify-content: flex-end;
+            align-items: center;
         }
         .page-nav a {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            min-height: 36px;
-            padding: 8px 13px;
+            min-height: 38px;
+            padding: 0 16px;
             border: 1px solid var(--line);
-            border-radius: 999px;
-            background: rgba(255,255,255,0.76);
+            border-radius: 8px;
+            background: #fff;
             color: var(--muted);
-            font-size: 12px;
+            font-size: 13px;
+            line-height: 1;
             font-weight: 800;
             text-decoration: none;
             white-space: nowrap;
@@ -1265,6 +1272,18 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="transferSlotModal">
+        <div class="modal-content" style="max-width:420px;">
+            <div class="modal-header">
+                <span class="modal-title-text">选择移库窗口</span>
+                <button class="modal-close" onclick="closeTransferSlotModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div id="transferSlotList" class="transfer-slot-list"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- 备注弹窗 -->
     <div class="remark-overlay" id="remarkOverlay" style="display:none" onclick="closeRemark()"></div>
     <div class="remark-popup" id="remarkPopup" style="display:none">
@@ -1281,6 +1300,7 @@
     <script>
         const BARCODE_DIR = '/barcode/';
         const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
+        let pendingTransferPayload = null;
         let allBarcodes = [];
         var selectedBarcodes = new Set();
         var filterConfigs = [];
@@ -1778,6 +1798,47 @@
             btn.textContent = '导出 XLSX';
         }
 
+        async function chooseTransferSlotAndGo(payload) {
+            pendingTransferPayload = payload;
+            const modal = document.getElementById('transferSlotModal');
+            const list = document.getElementById('transferSlotList');
+            list.innerHTML = '<button class="transfer-slot-option">正在加载移库窗口...</button>';
+            modal.classList.add('show');
+            const data = await fetch('/api/crm/transfer/slots-status').then(r => r.json()).catch(() => null);
+            const slots = (data && data.success ? data.transfer : []) || [];
+            if (!slots.length) {
+                list.innerHTML = '<button class="transfer-slot-option" onclick="openTransferInSlot(\\'transfer-1\\')">移库1</button>';
+                return;
+            }
+            list.innerHTML = slots.map(slot => {
+                const loginStatus = slot.logged_in ? '已登录' : (slot.browser_running ? '未登录' : '未启动');
+                const busyText = slot.transfer_running ? '正在移库' : (slot.summary_running ? '正在汇总' : '');
+                if (busyText) {
+                    return `<button class="transfer-slot-option busy" disabled>${escapeHtml(slot.label)} · ${escapeHtml(busyText)}，请选择其他窗口</button>`;
+                }
+                return `<button class="transfer-slot-option" onclick="openTransferInSlot('${slot.id}')">${escapeHtml(slot.label)} · ${escapeHtml(loginStatus)}</button>`;
+            }).join('');
+        }
+
+        function closeTransferSlotModal() {
+            document.getElementById('transferSlotModal').classList.remove('show');
+        }
+
+        function openTransferInSlot(slotId) {
+            if (!pendingTransferPayload) return;
+            sessionStorage.setItem('transferBarcodes', JSON.stringify(pendingTransferPayload.barcodes));
+            sessionStorage.setItem('transferBarcodesSource', 'results');
+            sessionStorage.setItem('transferTargetSlot', slotId);
+            sessionStorage.setItem('transferType', pendingTransferPayload.transferType);
+            if (pendingTransferPayload.transferDistributor) {
+                sessionStorage.setItem('transferDistributor', pendingTransferPayload.transferDistributor);
+            } else {
+                sessionStorage.removeItem('transferDistributor');
+            }
+            closeTransferSlotModal();
+            window.location.href = '/transfer';
+        }
+
         function goSelectedTransfer() {
             const barcodes = getSelectedBarcodeArray();
             if (barcodes.length === 0) { showToast('请先选择要移库的条码'); return; }
@@ -1829,14 +1890,7 @@
             }
             const transferType = uniqueTypes[0] || '移出';
             const transferDistributor = hasMissingDistributor ? '' : (uniqueDistributors[0] || '');
-            sessionStorage.setItem('transferBarcodes', JSON.stringify(barcodes));
-            sessionStorage.setItem('transferType', transferType);
-            if (transferDistributor) {
-                sessionStorage.setItem('transferDistributor', transferDistributor);
-            } else {
-                sessionStorage.removeItem('transferDistributor');
-            }
-            window.location.href = '/transfer';
+            chooseTransferSlotAndGo({barcodes, transferType, transferDistributor});
         }
 
         function showDetail(barcode) {

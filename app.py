@@ -5014,6 +5014,30 @@ def api_crm_status():
 def api_crm_slots():
     return jsonify({'success': True, **crm_pool.slots_payload()})
 
+@app.route("/api/crm/transfer/slots-status")
+def api_crm_transfer_slots_status():
+    payload = crm_pool.slots_payload()
+    rows = payload.get("transfer", [])
+    with transfer_job_lock:
+        transfer_snapshot = {
+            slot_id: dict(transfer_jobs.get(job_id) or {})
+            for slot_id, job_id in latest_transfer_job_by_slot.items()
+        }
+    with summary_job_lock:
+        summary_snapshot = {
+            slot_id: dict(summary_jobs.get(job_id) or {})
+            for slot_id, job_id in latest_summary_job_by_slot.items()
+        }
+    for row in rows:
+        slot_id = row.get("id")
+        transfer_job_row = transfer_snapshot.get(slot_id) or {}
+        summary_job_row = summary_snapshot.get(slot_id) or {}
+        row["transfer_running"] = bool(transfer_job_row.get("running"))
+        row["summary_running"] = bool(summary_job_row.get("running"))
+        row["transfer_job_id"] = transfer_job_row.get("job_id", "")
+        row["summary_job_id"] = summary_job_row.get("job_id", "")
+    return jsonify({'success': True, 'transfer': rows})
+
 @app.route("/api/crm/login", methods=["POST"])
 def api_crm_login():
     """统一登录接口：自动填账号密码 → 点登录 → 点发送验证码 → 等待用户输入验证码填入 → 点确定"""

@@ -11,8 +11,8 @@
         .header { display:flex; justify-content:space-between; gap:16px; align-items:flex-end; margin-bottom:20px; }
         h1 { font-size:26px; margin-bottom:6px; }
         .muted { color:#667085; font-size:13px; }
-        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-        .page-nav a { font-size:13px; font-weight:800; color:#667085; text-decoration:none; padding:8px 14px; border:1px solid #d9e1ec; border-radius:999px; background:#fff; }
+        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
+        .page-nav a { display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 16px; font-size:13px; line-height:1; font-weight:800; color:#667085; text-decoration:none; border:1px solid #d9e1ec; border-radius:8px; background:#fff; white-space:nowrap; }
         .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
         .status-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#fff; border:1px solid #d9e1ec; border-radius:8px; padding:12px 14px; margin-bottom:16px; box-shadow:0 6px 18px rgba(15,23,42,.05); }
         .status-text { font-size:13px; font-weight:800; color:#334155; }
@@ -107,7 +107,7 @@
                     <button class="btn btn-transfer" onclick="saveTransferWorkerCount()">保存移库通道数量</button>
                 </div>
                 <label>条码列表</label>
-                <textarea id="barcodeInput" placeholder="每行一个条码，也可以用逗号、空格混合分隔" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive"></textarea>
+                <textarea id="barcodeInput" placeholder="每行一个条码，也可以用逗号、空格混合分隔" oninput="saveTransferInput()" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive"></textarea>
                 <div class="fields">
                     <div>
                         <label>移库类型</label>
@@ -217,15 +217,25 @@ function renderTransferSlots() {
 
 function switchTransferSlot(slotId) {
     if (slotId === currentTransferSlot) return;
+    saveTransferInput();
     currentTransferSlot = slotId;
     localStorage.setItem('crm_transfer_slot', currentTransferSlot);
     currentSummaryJobId = sessionStorage.getItem(`crm_summary_job_id_${currentTransferSlot}`) || '';
     currentTransferJobId = sessionStorage.getItem(`crm_transfer_job_id_${currentTransferSlot}`) || '';
     lastRenderedLogKey = '';
     document.getElementById('transferLog').innerHTML = '<div class="dim">等待操作...</div>';
+    restoreTransferInput();
     renderTransferSlots();
     refreshCrmStatus();
     resumeBackgroundJobs();
+}
+
+function saveTransferInput() {
+    sessionStorage.setItem(`transfer_page_input_${currentTransferSlot}`, document.getElementById('barcodeInput').value);
+}
+
+function restoreTransferInput() {
+    document.getElementById('barcodeInput').value = sessionStorage.getItem(`transfer_page_input_${currentTransferSlot}`) || '';
 }
 
 function changeWorkerCount(inputId, delta) {
@@ -369,6 +379,7 @@ function clearForm() {
         previewTimer = null;
     }
     document.getElementById('barcodeInput').value = '';
+    sessionStorage.removeItem(`transfer_page_input_${currentTransferSlot}`);
     document.getElementById('summaryBox').style.display = 'none';
     document.getElementById('summaryBox').innerHTML = '';
     document.getElementById('submitBtn').disabled = true;
@@ -798,14 +809,18 @@ function loadIncomingBarcodes() {
     }
     if (!barcodes.length) {
         try {
-            barcodes = JSON.parse(sessionStorage.getItem('transferBarcodes') || '[]');
+            if (sessionStorage.getItem('transferBarcodesSource') === 'results') {
+                barcodes = JSON.parse(sessionStorage.getItem('transferBarcodes') || '[]');
+            }
             sessionStorage.removeItem('transferBarcodes');
+            sessionStorage.removeItem('transferBarcodesSource');
         } catch(e) {
             barcodes = [];
         }
     }
     if (barcodes.length) {
         document.getElementById('barcodeInput').value = Array.from(new Set(barcodes)).join('\n');
+        saveTransferInput();
         appendLog(`已从结果管理带入 ${barcodes.length} 个条码`, 'info');
     }
     const distributor = sessionStorage.getItem('transferDistributor') || '';
@@ -844,8 +859,18 @@ async function loadQueriedDealerHistory() {
 
 (async function initPage() {
     await loadSlots();
+    const targetSlot = sessionStorage.getItem('transferTargetSlot') || '';
+    if (targetSlot && transferSlots.some(slot => slot.id === targetSlot)) {
+        currentTransferSlot = targetSlot;
+        localStorage.setItem('crm_transfer_slot', currentTransferSlot);
+        currentSummaryJobId = sessionStorage.getItem(`crm_summary_job_id_${currentTransferSlot}`) || '';
+        currentTransferJobId = sessionStorage.getItem(`crm_transfer_job_id_${currentTransferSlot}`) || '';
+        renderTransferSlots();
+    }
+    sessionStorage.removeItem('transferTargetSlot');
     await loadRuntimeConfig();
     renderDistributorHistory();
+    restoreTransferInput();
     loadIncomingBarcodes();
     loadQueriedDealerHistory();
     refreshCrmStatus();

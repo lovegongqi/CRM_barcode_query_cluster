@@ -11,8 +11,8 @@
         .header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
         .header h1 { font-size: 26px; color: #202938; margin-bottom: 6px; }
         .header p { color: #667085; font-size: 13px; }
-        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-        .page-nav a { font-size: 13px; font-weight: 800; color: #667085; text-decoration: none; padding: 8px 14px; border: 1px solid #d9e1ec; border-radius: 999px; background: rgba(255,255,255,.8); }
+        .page-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
+        .page-nav a { display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 16px; font-size:13px; line-height:1; font-weight:800; color:#667085; text-decoration:none; border:1px solid #d9e1ec; border-radius:8px; background:#fff; white-space:nowrap; }
         .page-nav a.active { background:#2563eb; color:#fff; border-color:#2563eb; }
         .page-nav a:hover { border-color:#bfdbfe; color:#2563eb; }
         .page-nav a.active:hover { color:#fff; }
@@ -156,7 +156,7 @@
             </div>
             <div class="form-group">
                 <label>条码查询（可一行一个，也可用逗号、空格分隔）</label>
-                <textarea id="batchInput" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" placeholder="6923445601003
+                <textarea id="batchInput" oninput="saveQueryInput()" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" placeholder="6923445601003
 6923445601004,6923445601005
 6923445601006 6923445601007"></textarea>
             </div>
@@ -265,6 +265,10 @@
             renderQuerySlots();
             checkStatus();
             pollBatchStatus();
+        }
+
+        function saveQueryInput() {
+            sessionStorage.setItem('crm_query_input', document.getElementById('batchInput').value);
         }
 
         function changeWorkerCount(inputId, delta) {
@@ -576,7 +580,7 @@
             log('正在退出...', 'warn');
             localStorage.removeItem('crm_username');
             localStorage.removeItem('crm_password');
-            sessionStorage.removeItem('pending_batch_barcodes');
+            sessionStorage.removeItem('crm_query_input');
             await fetch('/api/crm/logout?kind=query&slot_id=' + encodeURIComponent(currentQuerySlot), {method:'POST'});
             log('已退出', 'warn');
             closeLoginModal();
@@ -636,7 +640,7 @@
 
             // 保存条码到全局变量和 sessionStorage
             pendingBarcodes = [...uniqueBarcodes];
-            sessionStorage.setItem('pending_batch_barcodes', text);
+            saveQueryInput();
 
             // 检查登录状态，未登录则自动登录
             let statusData;
@@ -781,7 +785,7 @@
                         clearInterval(batchPollTimer);
                         batchPollTimer = null;
                     }
-                    sessionStorage.removeItem('pending_batch_barcodes');
+                    sessionStorage.removeItem('crm_query_input');
                 }
             } catch(e) {
                 console.error(e);
@@ -810,16 +814,10 @@
         }
 
         // 页面加载时恢复未完成的批量条码
-        const savedBarcodeText = sessionStorage.getItem('pending_batch_barcodes');
+        const savedBarcodeText = sessionStorage.getItem('crm_query_input');
         if (savedBarcodeText) {
             document.getElementById('batchInput').value = savedBarcodeText;
             log('已恢复上次的条码列表', 'info');
-        }
-        const incomingQueryBarcodes = sessionStorage.getItem('queryBarcodes');
-        if (incomingQueryBarcodes) {
-            document.getElementById('batchInput').value = incomingQueryBarcodes;
-            sessionStorage.removeItem('queryBarcodes');
-            log('已带入条码匹配识别条码', 'info');
         }
     </script>
 </body>
