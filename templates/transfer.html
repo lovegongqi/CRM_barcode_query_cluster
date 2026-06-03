@@ -229,7 +229,6 @@ function switchTransferSlot(slotId) {
     lastRenderedLogKey = '';
     resetTransferActionUi();
     document.getElementById('transferLog').innerHTML = '<div class="dim">等待操作...</div>';
-    if (window.globalLogClear) window.globalLogClear();
     restoreTransferInput();
     renderTransferSlots();
     refreshCrmStatus();

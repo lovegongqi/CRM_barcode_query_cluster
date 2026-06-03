@@ -309,6 +309,16 @@
             }
         }
 
+        function formatDuration(seconds) {
+            seconds = Math.max(0, Math.floor(Number(seconds) || 0));
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            if (hours) return `${hours}小时${minutes}分${secs}秒`;
+            if (minutes) return `${minutes}分${secs}秒`;
+            return `${secs}秒`;
+        }
+
         function renderQuerySummary(statusText='查询中') {
             const area = document.getElementById('logArea');
             if (!area || !multiBatchJobs || !multiBatchJobs.total) return;
@@ -327,6 +337,11 @@
             const pending = Math.max(0, (multiBatchJobs.pending || []).length);
             const failedBarcodes = Array.from(new Set(multiBatchJobs.failedBarcodes || []));
             const notices = (multiBatchJobs.notices || []).slice(-3);
+            const startedMs = Number(multiBatchJobs.startedAtMs || 0) || Date.parse(multiBatchJobs.started_at || '');
+            const elapsedText = Number.isFinite(startedMs) && startedMs > 0
+                ? formatDuration((Date.now() - startedMs) / 1000)
+                : '';
+            const elapsedLabel = ['查询完成', '查询已停止'].includes(statusText) ? '总耗时' : '已耗时';
             const runningText = runningBarcodes.length
                 ? `正在查询 ${runningBarcodes.length} 个：${runningBarcodes.map(escapeHtml).join('，')}`
                 : (pending ? '等待空闲通道领取条码' : '没有正在查询的条码');
@@ -334,6 +349,7 @@
                 <div class="info">[${new Date().toLocaleTimeString()}] ${escapeHtml(statusText)}</div>
                 <div>总条码数：${total}</div>
                 <div>已完成：${completed}/${total}　成功：${success}　失败：${failed}　待查询：${pending}</div>
+                ${elapsedText ? `<div>${elapsedLabel}：${escapeHtml(elapsedText)}</div>` : ''}
                 <div class="dim">${runningText}</div>
                 ${runningBarcodes.length ? '<div class="dim">同一条码等待时间变长，通常是在等 CRM 报表返回；失败后会按重试上限继续查。</div>' : ''}
                 ${failedBarcodes.length ? `<div class="error">失败条码：${failedBarcodes.map(escapeHtml).join('，')}</div>` : '<div class="dim">失败条码：无</div>'}
@@ -381,6 +397,10 @@
                     if (slot.running && slot.barcode && !slot.startedAt) slot.startedAt = Date.now();
                     if (!slot.running) slot.startedAt = 0;
                 });
+                if (!multiBatchJobs.startedAtMs && multiBatchJobs.started_at) {
+                    const parsedStartedAt = Date.parse(multiBatchJobs.started_at);
+                    if (Number.isFinite(parsedStartedAt)) multiBatchJobs.startedAtMs = parsedStartedAt;
+                }
                 isMultiBatchRunning = true;
             } catch(e) {
                 clearMultiBatchJobs();
@@ -773,6 +793,7 @@
                 notices: [],
                 retryLimit,
                 stopRequested: false,
+                startedAtMs: Date.now(),
                 started_at: new Date().toISOString()
             };
             loggedSlots.forEach(slot => {
@@ -789,7 +810,6 @@
                 };
             });
             lastBatchLogSeq = 0;
-            if (window.globalLogClear) window.globalLogClear();
             if (window.globalLogAppend) window.globalLogAppend(`开始多线程查询，共 ${uniqueBarcodes.length} 个条码`, 'info');
             setProgress('queryProgressBar', 0);
             setQueryButtonsRunning('多线程查询中...', '停止多线程查询');

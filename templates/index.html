@@ -2164,6 +2164,17 @@ ${section(9, '移机单', 'moveid1', [
         let isBatchRunning = false;
         let stopRequested = false;
         let lastBatchLogSeq = 0;
+        let batchStartAtMs = 0;
+
+        function formatDuration(seconds) {
+            seconds = Math.max(0, Math.floor(Number(seconds) || 0));
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            if (hours) return `${hours}小时${minutes}分${secs}秒`;
+            if (minutes) return `${minutes}分${secs}秒`;
+            return `${secs}秒`;
+        }
 
         function qlog(msg, type='dim') {
             const area = document.getElementById('queryLog');
@@ -2413,6 +2424,9 @@ ${section(9, '移机单', 'moveid1', [
                 document.getElementById('stopBtn').style.display = 'none';
                 isBatchRunning = false;
                 loadAllData(false);
+                if (batchStartAtMs) {
+                    qlog(`批量查询完成，总耗时：${formatDuration((Date.now() - batchStartAtMs) / 1000)}`, 'success');
+                }
                 showToast(`批量查询完成，成功 ${d.success_count || 0} 个，失败 ${d.failed_count || 0} 个`);
                 return true;
             }
@@ -2474,8 +2488,8 @@ ${section(9, '移机单', 'moveid1', [
             document.getElementById('stopBtn').style.display = '';
             document.getElementById('queryProgress').classList.add('show');
             document.getElementById('queryLog').innerHTML = '';
-            if (window.globalLogClear) window.globalLogClear();
             lastBatchLogSeq = 0;
+            batchStartAtMs = Date.now();
             qlog(`提交后台批量查询任务：${uniqueBarcodes.length} 个条码`, 'info');
 
             try {
