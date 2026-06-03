@@ -351,11 +351,20 @@
             try {
                 const raw = sessionStorage.getItem('crm_multi_batch_jobs');
                 multiBatchJobs = raw ? JSON.parse(raw) : {};
-                isMultiBatchRunning = Object.keys(multiBatchJobs).length > 0;
+                if (!multiBatchJobs || !multiBatchJobs.slots || !Array.isArray(multiBatchJobs.pending)) {
+                    clearMultiBatchJobs();
+                    isMultiBatchRunning = false;
+                    return;
+                }
+                isMultiBatchRunning = true;
             } catch(e) {
                 clearMultiBatchJobs();
                 isMultiBatchRunning = false;
             }
+        }
+
+        function multiSlotRows() {
+            return Object.values((multiBatchJobs && multiBatchJobs.slots) || {});
         }
 
         function getUniqueBarcodesFromInput() {
@@ -765,111 +774,142 @@
                 log(`跳过 ${skippedSlots.length} 个未登录查询通道：${skippedSlots.map(s => s.label).join('，')}`, 'warn');
             }
 
-            const chunks = {};
-            loggedSlots.forEach(slot => chunks[slot.id] = []);
-            uniqueBarcodes.forEach((barcode, index) => {
-                const slot = loggedSlots[index % loggedSlots.length];
-                chunks[slot.id].push(barcode);
-            });
-
             const retryLimit = getRetryLimit();
-            clearMultiBatchJobs();
+            multiBatchJobs = {
+                pending: [...uniqueBarcodes],
+                slots: {},
+                total: uniqueBarcodes.length,
+                completed: 0,
+                successCount: 0,
+                failedCount: 0,
+                retryLimit,
+                stopRequested: false,
+                started_at: new Date().toISOString()
+            };
+            loggedSlots.forEach(slot => {
+                multiBatchJobs.slots[slot.id] = {
+                    slot_id: slot.id,
+                    label: slot.label,
+                    job_id: '',
+                    barcode: '',
+                    lastLogSeq: 0,
+                    running: false,
+                    current: 0
+                };
+            });
             lastBatchLogSeq = 0;
             setProgress('queryProgressBar', 0);
             setQueryButtonsRunning('多线程查询中...', '停止多线程查询');
-            log(`开始多线程查询：${uniqueBarcodes.length} 个条码，调度 ${loggedSlots.length} 个查询通道`, 'info');
-
-            const startResults = await Promise.all(loggedSlots.map(async slot => {
-                const barcodes = chunks[slot.id] || [];
-                if (!barcodes.length) return null;
-                try {
-                    const r = await fetch('/api/crm/batch/start', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({slot_id: slot.id, kind: 'query', barcodes, retry_limit: retryLimit})
-                    });
-                    const d = await r.json();
-                    if (!d.success) {
-                        log(`${slot.label} 启动失败：${d.error || '未知错误'}`, 'error');
-                        return null;
-                    }
-                    log(`${slot.label} 已启动，分配 ${barcodes.length} 个条码`, 'success');
-                    return {
-                        slot_id: slot.id,
-                        label: slot.label,
-                        job_id: d.job_id || '',
-                        lastLogSeq: 0,
-                        running: true,
-                        total: d.total || barcodes.length,
-                        current: 0,
-                        success_count: 0,
-                        failed_count: 0
-                    };
-                } catch(e) {
-                    log(`${slot.label} 启动出错：${e}`, 'error');
-                    return null;
-                }
-            }));
-
-            batchStartPending = false;
-            startResults.filter(Boolean).forEach(job => multiBatchJobs[job.slot_id] = job);
-            if (!Object.keys(multiBatchJobs).length) {
-                isMultiBatchRunning = false;
-                resetQueryButtons();
-                showToast('多线程查询启动失败');
-                return;
-            }
             isMultiBatchRunning = true;
             persistMultiBatchJobs();
+            log(`开始多线程查询：${uniqueBarcodes.length} 个条码，${loggedSlots.length} 个查询通道动态领取`, 'info');
+            await Promise.all(loggedSlots.map(slot => startNextMultiBarcode(slot.id)));
+            batchStartPending = false;
             pollMultiBatchStatus();
         }
 
+        async function startNextMultiBarcode(slotId) {
+            if (!isMultiBatchRunning || !multiBatchJobs || multiBatchJobs.stopRequested) return false;
+            const slot = multiBatchJobs.slots && multiBatchJobs.slots[slotId];
+            if (!slot || slot.running || !multiBatchJobs.pending.length) return false;
+            const barcode = multiBatchJobs.pending.shift();
+            slot.barcode = barcode;
+            slot.job_id = '';
+            slot.lastLogSeq = 0;
+            slot.current = 0;
+            slot.running = true;
+            persistMultiBatchJobs();
+            try {
+                const r = await fetch('/api/crm/batch/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        slot_id: slot.slot_id,
+                        kind: 'query',
+                        barcodes: [barcode],
+                        retry_limit: multiBatchJobs.retryLimit
+                    })
+                });
+                const d = await r.json();
+                if (!d.success) {
+                    slot.running = false;
+                    slot.job_id = '';
+                    multiBatchJobs.completed += 1;
+                    multiBatchJobs.failedCount += 1;
+                    log(`${slot.label} 领取 ${barcode} 失败：${d.error || '未知错误'}`, 'error');
+                    persistMultiBatchJobs();
+                    return false;
+                }
+                slot.job_id = d.job_id || '';
+                log(`${slot.label} 领取条码：${barcode}`, 'info');
+                persistMultiBatchJobs();
+                return true;
+            } catch(e) {
+                slot.running = false;
+                slot.job_id = '';
+                multiBatchJobs.completed += 1;
+                multiBatchJobs.failedCount += 1;
+                log(`${slot.label} 领取 ${barcode} 出错：${e}`, 'error');
+                persistMultiBatchJobs();
+                return false;
+            }
+        }
+
         async function pollMultiBatchStatus() {
-            if (!Object.keys(multiBatchJobs).length) {
+            if (!multiBatchJobs || !multiBatchJobs.slots || !multiSlotRows().length) {
                 isMultiBatchRunning = false;
                 resetQueryButtons();
                 return;
             }
             let anyRunning = false;
-            let total = 0;
-            let current = 0;
-            let successCount = 0;
-            let failedCount = 0;
+            let activeCurrent = 0;
 
-            for (const job of Object.values(multiBatchJobs)) {
+            for (const job of multiSlotRows()) {
                 try {
-                    const params = new URLSearchParams({
-                        since: String(job.lastLogSeq || 0),
-                        slot_id: job.slot_id,
-                        job_id: job.job_id || ''
-                    });
-                    const r = await fetch('/api/crm/batch/status?' + params.toString());
-                    const d = await r.json();
-                    if (!d.success) continue;
-                    (d.logs || []).forEach(entry => {
-                        appendMultiServerLog({label: job.label}, entry);
-                        job.lastLogSeq = Math.max(job.lastLogSeq || 0, Number(entry.id || 0));
-                    });
-                    job.running = !!d.running;
-                    job.total = d.total || job.total || 0;
-                    job.current = d.current || 0;
-                    job.success_count = d.success_count || 0;
-                    job.failed_count = d.failed_count || 0;
-                    if (job.running) anyRunning = true;
+                    if (job.job_id) {
+                        const params = new URLSearchParams({
+                            since: String(job.lastLogSeq || 0),
+                            slot_id: job.slot_id,
+                            job_id: job.job_id || ''
+                        });
+                        const r = await fetch('/api/crm/batch/status?' + params.toString());
+                        const d = await r.json();
+                        if (!d.success) continue;
+                        (d.logs || []).forEach(entry => {
+                            appendMultiServerLog({label: job.label}, entry);
+                            job.lastLogSeq = Math.max(job.lastLogSeq || 0, Number(entry.id || 0));
+                        });
+                        job.current = d.current || 0;
+                        if (d.running) {
+                            anyRunning = true;
+                            activeCurrent += Math.min(job.current || 0, 1);
+                        } else if (job.running) {
+                            job.running = false;
+                            job.job_id = '';
+                            multiBatchJobs.completed += 1;
+                            multiBatchJobs.successCount += d.success_count || 0;
+                            multiBatchJobs.failedCount += d.failed_count || 0;
+                            log(`${job.label} 完成条码：${job.barcode}，继续领取下一个`, (d.failed_count || 0) ? 'warn' : 'success');
+                            job.barcode = '';
+                            job.current = 0;
+                            const started = await startNextMultiBarcode(job.slot_id);
+                            if (started) anyRunning = true;
+                        }
+                    } else if (!multiBatchJobs.stopRequested && multiBatchJobs.pending.length) {
+                        const started = await startNextMultiBarcode(job.slot_id);
+                        if (started) anyRunning = true;
+                    }
                 } catch(e) {
                     log(`${job.label} 状态获取失败：${e}`, 'error');
                 }
-                total += job.total || 0;
-                current += Math.min(job.current || 0, job.total || job.current || 0);
-                successCount += job.success_count || 0;
-                failedCount += job.failed_count || 0;
             }
 
-            const pct = total ? Math.round((current / total) * 100) : 0;
+            const total = multiBatchJobs.total || 0;
+            const pct = total ? Math.round(((multiBatchJobs.completed || 0) + activeCurrent) / total * 100) : 0;
             setProgress('queryProgressBar', pct);
             persistMultiBatchJobs();
 
-            if (anyRunning) {
+            if (anyRunning || (!multiBatchJobs.stopRequested && multiBatchJobs.pending.length)) {
                 isMultiBatchRunning = true;
                 setQueryButtonsRunning('多线程查询中...', '停止多线程查询');
                 if (!multiBatchPollTimer) {
@@ -883,9 +923,13 @@
                 clearInterval(multiBatchPollTimer);
                 multiBatchPollTimer = null;
             }
+            const finalSuccess = multiBatchJobs.successCount || 0;
+            const finalFailed = multiBatchJobs.failedCount || 0;
+            const wasStopped = !!multiBatchJobs.stopRequested;
             clearMultiBatchJobs();
             resetQueryButtons();
-            log(`多线程查询完成，成功 ${successCount} 个，失败 ${failedCount} 个`, failedCount ? 'warn' : 'success');
+            const stoppedText = wasStopped ? '已停止，' : '';
+            log(`${stoppedText}多线程查询完成，成功 ${finalSuccess} 个，失败 ${finalFailed} 个`, finalFailed ? 'warn' : 'success');
             checkStatus();
         }
 
@@ -963,7 +1007,10 @@
         async function stopBatch() {
             if (isMultiBatchRunning) {
                 log('正在停止所有多线程查询任务...', 'warn');
-                await Promise.all(Object.values(multiBatchJobs).map(job => fetch('/api/crm/batch/stop', {
+                multiBatchJobs.stopRequested = true;
+                multiBatchJobs.pending = [];
+                persistMultiBatchJobs();
+                await Promise.all(multiSlotRows().filter(job => job.job_id).map(job => fetch('/api/crm/batch/stop', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({slot_id: job.slot_id, kind: 'query', job_id: job.job_id})
