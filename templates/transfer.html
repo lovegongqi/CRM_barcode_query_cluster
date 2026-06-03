@@ -94,7 +94,7 @@
                 <div class="card-head">
                     <h2>提交移库</h2>
                     <div class="crm-actions">
-                        <button class="btn btn-primary" id="loginBtn" onclick="openLoginModal()">登录 CRM</button>
+                        <button class="btn btn-primary" id="loginBtn" onclick="openLoginModal()">批量登录 CRM</button>
                         <button class="btn btn-danger" id="logoutBtn" onclick="doLogout()" style="display:none">退出登录</button>
                     </div>
                 </div>
@@ -140,7 +140,7 @@
 <div class="modal-overlay" id="loginModal" onclick="if(event.target.id==='loginModal')cancelLogin()">
     <div class="login-modal">
         <div class="login-modal-head">
-            <h3>登录 CRM</h3>
+            <h3>批量登录 CRM</h3>
             <button class="modal-close" onclick="cancelLogin()">×</button>
         </div>
         <div class="login-modal-body">
@@ -160,7 +160,7 @@
             </div>
             <div class="modal-actions">
                 <button class="btn btn-secondary" onclick="cancelLogin()">取消</button>
-                <button class="btn btn-primary" id="modalLoginBtn" onclick="doLogin()">登录</button>
+                <button class="btn btn-primary" id="modalLoginBtn" onclick="doLogin()">批量登录</button>
                 <button class="btn btn-primary" id="captchaSubmitBtn" onclick="doLoginStep2()" style="display:none">提交验证码</button>
                 <button class="btn btn-secondary" id="resetLoginBtn" onclick="restartLogin()" style="display:none">重新登录</button>
             </div>
@@ -179,10 +179,19 @@ let currentTransferSlot = localStorage.getItem('crm_transfer_slot') || 'transfer
 let currentSummaryJobId = sessionStorage.getItem(`crm_summary_job_id_${currentTransferSlot}`) || '';
 let currentTransferJobId = sessionStorage.getItem(`crm_transfer_job_id_${currentTransferSlot}`) || '';
 let transferSlots = [];
+let pendingLoginSlots = [];
 const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
 
 function transferPayload(extra={}) {
     return Object.assign({slot_id: currentTransferSlot, kind: 'transfer'}, extra);
+}
+
+function slotLoginPayload(slot, extra={}) {
+    return Object.assign({slot_id: slot.id, kind: slot.kind || 'transfer'}, extra);
+}
+
+function isLoggedInMessage(message) {
+    return ['已登录（会话有效）', '登录成功', '登录成功（页面已跳转）'].includes(message || '');
 }
 
 async function loadSlots() {
@@ -377,7 +386,7 @@ function renderSummary(summary) {
 async function ensureCrmLoggedIn(actionText) {
     const data = await fetch('/api/crm/status?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot)).then(r => r.json()).catch(() => ({}));
     if (data.logged_in) return true;
-    const message = `CRM 未登录，不能${actionText}。请先登录 CRM。`;
+    const message = `CRM 未登录，不能${actionText}。请先批量登录 CRM。`;
     appendLog(message, 'error');
     openLoginModal();
     return false;
@@ -390,6 +399,8 @@ function openLoginModal() {
     document.getElementById('captchaSubmitBtn').style.display = 'none';
     document.getElementById('resetLoginBtn').style.display = 'none';
     document.getElementById('modalLoginBtn').style.display = '';
+    document.getElementById('modalLoginBtn').disabled = false;
+    document.getElementById('modalLoginBtn').textContent = '批量登录';
     document.getElementById('captchaInput').value = '';
     const savedUsername = localStorage.getItem('crm_username');
     const savedPassword = localStorage.getItem('crm_password');
@@ -409,13 +420,15 @@ async function cancelLogin() {
     document.getElementById('resetLoginBtn').style.display = 'none';
     document.getElementById('modalLoginBtn').style.display = '';
     document.getElementById('modalLoginBtn').disabled = false;
-    document.getElementById('modalLoginBtn').textContent = '登录';
+    document.getElementById('modalLoginBtn').textContent = '批量登录';
     document.getElementById('captchaSubmitBtn').disabled = false;
     document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
     document.getElementById('captchaInput').value = '';
     try {
-        await fetch('/api/crm/login/cancel?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot), {method:'POST'});
+        const slots = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentTransferSlot}];
+        await Promise.all(slots.map(slot => fetch('/api/crm/login/cancel?kind=transfer&slot_id=' + encodeURIComponent(slot.id), {method:'POST'}).catch(() => {})));
     } catch (e) {}
+    pendingLoginSlots = [];
     refreshCrmStatus();
 }
 
@@ -429,37 +442,60 @@ async function doLogin() {
     const btn = document.getElementById('modalLoginBtn');
     btn.disabled = true;
     btn.textContent = '登录中...';
-    appendLog('开始登录 CRM...', 'info');
+    appendLog('开始批量登录移库通道...', 'info');
+    pendingLoginSlots = [];
     try {
-        const r = await fetch('/api/crm/login', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(transferPayload({username, password}))
-        });
-        const d = await r.json();
-        if (d.success) {
-            localStorage.setItem('crm_username', username);
-            localStorage.setItem('crm_password', password);
-            if (d.message === 'captcha_required') {
+        await loadSlots();
+        const targets = transferSlots.filter(slot => !slot.logged_in);
+        localStorage.setItem('crm_username', username);
+        localStorage.setItem('crm_password', password);
+        if (!targets.length) {
+            appendLog('所有移库通道都已登录', 'success');
+            closeLoginModal();
+        } else {
+            appendLog(`开始登录 ${targets.length} 个移库通道`, 'info');
+            for (const slot of targets) {
+                appendLog(`打开 ${slot.label} 登录页`, 'info');
+                try {
+                    const r = await fetch('/api/crm/login-step1', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(slotLoginPayload(slot, {username, password}))
+                    });
+                    const d = await r.json();
+                    const msg = d.message || d.error || '';
+                    if (!d.success) {
+                        appendLog(`${slot.label} 登录失败：${msg || '未知错误'}`, 'error');
+                        continue;
+                    }
+                    if (isLoggedInMessage(msg)) {
+                        appendLog(`${slot.label} 已登录`, 'success');
+                        continue;
+                    }
+                    pendingLoginSlots.push(slot);
+                    appendLog(`${slot.label} 已进入验证码步骤`, msg === 'captcha_not_found' ? 'warn' : 'success');
+                } catch(e) {
+                    appendLog(`${slot.label} 登录请求出错：${e}`, 'error');
+                }
+            }
+            if (pendingLoginSlots.length) {
                 document.getElementById('captchaRow').style.display = '';
                 document.getElementById('modalLoginBtn').style.display = 'none';
                 document.getElementById('captchaSubmitBtn').style.display = '';
                 document.getElementById('resetLoginBtn').style.display = '';
                 document.getElementById('loginPassword').value = '';
                 document.getElementById('captchaInput').focus();
-                appendLog('验证码已发送到手机，请在弹窗中输入', 'success');
+                appendLog(`请输入短信验证码，将同步提交到 ${pendingLoginSlots.length} 个移库通道`, 'success');
             } else {
-                appendLog('CRM 登录成功', 'success');
+                appendLog('批量登录完成', 'success');
                 closeLoginModal();
             }
-        } else {
-            appendLog('登录失败：' + (d.message || d.error || '未知错误'), 'error');
         }
     } catch (e) {
         appendLog('登录出错：' + e, 'error');
     }
     btn.disabled = false;
-    btn.textContent = '登录';
+    btn.textContent = '批量登录';
     refreshCrmStatus();
 }
 
@@ -472,25 +508,37 @@ async function doLoginStep2() {
     const btn = document.getElementById('captchaSubmitBtn');
     btn.disabled = true;
     btn.textContent = '提交中...';
-    appendLog('提交验证码...', 'info');
+    appendLog(`提交验证码到 ${pendingLoginSlots.length || 1} 个移库通道...`, 'info');
     try {
-        const r = await fetch('/api/crm/login-step2', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(transferPayload({captcha}))
-        });
-        const d = await r.json();
-        if (d.success) {
-            appendLog('CRM 登录成功', 'success');
+        const targets = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentTransferSlot, kind: 'transfer', label: '当前移库通道'}];
+        const stillPending = [];
+        for (const slot of targets) {
+            try {
+                const r = await fetch('/api/crm/login-step2', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(slotLoginPayload(slot, {captcha}))
+                });
+                const d = await r.json();
+                if (d.success) {
+                    appendLog(`${slot.label || slot.id} 登录成功`, 'success');
+                } else {
+                    stillPending.push(slot);
+                    appendLog(`${slot.label || slot.id} 验证码错误：${d.message || d.error || '请重试'}`, 'error');
+                }
+            } catch(e) {
+                stillPending.push(slot);
+                appendLog(`${slot.label || slot.id} 提交验证码出错：${e}`, 'error');
+            }
+        }
+        pendingLoginSlots = stillPending;
+        if (!pendingLoginSlots.length) {
+            appendLog('批量登录成功', 'success');
             closeLoginModal();
             document.getElementById('captchaInput').value = '';
         } else {
-            appendLog('验证码错误：' + (d.message || d.error || '请重试'), 'error');
+            appendLog(`仍有 ${pendingLoginSlots.length} 个移库通道未登录，可重新输入验证码再提交`, 'warn');
             document.getElementById('resetLoginBtn').style.display = '';
-            if ((d.message || '').includes('已重置')) {
-                document.getElementById('captchaSubmitBtn').style.display = 'none';
-                document.getElementById('modalLoginBtn').style.display = '';
-            }
         }
     } catch (e) {
         appendLog('提交验证码出错：' + e, 'error');
@@ -503,8 +551,10 @@ async function doLoginStep2() {
 async function restartLogin() {
     appendLog('重新打开 CRM 登录...', 'warn');
     try {
-        await fetch('/api/crm/login/cancel?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot), {method:'POST'});
+        const slots = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentTransferSlot}];
+        await Promise.all(slots.map(slot => fetch('/api/crm/login/cancel?kind=transfer&slot_id=' + encodeURIComponent(slot.id), {method:'POST'}).catch(() => {})));
     } catch (e) {}
+    pendingLoginSlots = [];
     document.getElementById('captchaRow').style.display = 'none';
     document.getElementById('captchaSubmitBtn').style.display = 'none';
     document.getElementById('resetLoginBtn').style.display = 'none';
@@ -514,10 +564,12 @@ async function restartLogin() {
 }
 
 async function doLogout() {
-    appendLog('正在退出 CRM...', 'warn');
+    appendLog('正在退出所有移库通道...', 'warn');
     try {
-        await fetch('/api/crm/logout?kind=transfer&slot_id=' + encodeURIComponent(currentTransferSlot), {method:'POST'});
-        appendLog('CRM 已退出登录', 'warn');
+        await loadSlots();
+        const slots = transferSlots.length ? transferSlots : [{id: currentTransferSlot}];
+        await Promise.all(slots.map(slot => fetch('/api/crm/logout?kind=transfer&slot_id=' + encodeURIComponent(slot.id), {method:'POST'}).catch(() => {})));
+        appendLog('所有移库通道已退出登录', 'warn');
     } catch (e) {
         appendLog('退出 CRM 出错：' + e, 'error');
     }
@@ -814,10 +866,12 @@ async function refreshCrmStatus() {
     const text = document.getElementById('loginStatus');
     const loginBtn = document.getElementById('loginBtn');
     const logoutBtn = document.getElementById('logoutBtn');
+    const totalSlots = transferSlots.length || 1;
+    const loggedSlots = transferSlots.filter(slot => slot.logged_in).length;
     dot.className = 'dot ' + (data.logged_in ? 'green' : 'red');
-    text.textContent = data.logged_in ? '已登录' : '未登录';
-    loginBtn.style.display = data.logged_in ? 'none' : '';
-    if (logoutBtn) logoutBtn.style.display = data.logged_in ? '' : 'none';
+    text.textContent = data.logged_in ? `已登录 ${loggedSlots}/${totalSlots}` : `未登录 ${loggedSlots}/${totalSlots}`;
+    loginBtn.style.display = loggedSlots < totalSlots ? '' : 'none';
+    if (logoutBtn) logoutBtn.style.display = loggedSlots > 0 ? '' : 'none';
     const appData = await fetch('/api/app-auth/status').then(r => r.json()).catch(() => ({}));
     document.getElementById('appAccountStatus').textContent = appData.account ? appData.account.username : '未登录';
 }
