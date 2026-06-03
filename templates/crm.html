@@ -88,8 +88,6 @@
         .login-modal-body { padding: 18px 20px 20px; }
         .login-modal-body .form-row { flex-direction: column; align-items: stretch; gap: 12px; }
         .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
-        .multi-query-row { display:block; margin-bottom:10px; }
-        .multi-query-row .btn { width:100%; }
         .slot-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
         .slot-tab { flex:0 0 auto; min-width:96px; min-height:34px; padding:7px 10px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:13px; line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .slot-tab.active { background:#2563eb; color:#fff; border-color:#2563eb; }
@@ -147,9 +145,6 @@
                     <button class="btn btn-danger" id="logoutBtn" onclick="doLogout()" style="display:none">退出登录</button>
                 </div>
             </div>
-            <div class="multi-query-row">
-                <button class="btn btn-success" id="multiBatchQueryBtn" onclick="doMultiBatchQuery()">多线程查询</button>
-            </div>
             <div class="slot-tabs" id="querySlotTabs"></div>
             <div class="form-group">
                 <label>条码查询（可一行一个，也可用逗号、空格分隔）</label>
@@ -160,6 +155,10 @@
             <div class="form-row query-actions">
                 <button class="btn btn-success" id="batchQueryBtn" onclick="doBatchQuery()">开始查询</button>
                 <button class="btn btn-danger" id="stopBatchBtn" onclick="stopBatch()" style="display:none">停止当前查询</button>
+                <div class="form-group retry-group">
+                    <label>查询线程</label>
+                    <select id="queryThreadCountSelect" onchange="saveQueryThreadCount()" style="height:38px;padding:8px 10px;border:1px solid #ccc;border-radius:5px;font-size:14px;background:#fff;"></select>
+                </div>
                 <div class="form-group retry-group">
                     <label>失败重试上限</label>
                     <input type="number" id="retryLimitInput" min="0" max="5" value="5">
@@ -243,6 +242,7 @@
             }
             if (currentQuerySlot !== previousSlot) restoreQueryInput();
             renderQuerySlots();
+            renderQueryThreadOptions();
         }
 
         function renderQuerySlots() {
@@ -276,6 +276,32 @@
 
         function saveQueryInput() {
             sessionStorage.setItem(queryInputStorageKey(), document.getElementById('batchInput').value);
+        }
+
+        function saveQueryThreadCount() {
+            const count = getSelectedQueryThreadCount();
+            localStorage.setItem('crm_query_thread_count', String(count));
+        }
+
+        function getSelectedQueryThreadCount() {
+            const select = document.getElementById('queryThreadCountSelect');
+            let value = Number.parseInt(select && select.value, 10);
+            if (Number.isNaN(value)) value = 1;
+            return Math.max(1, Math.min(value, Math.max(querySlots.length, 1)));
+        }
+
+        function renderQueryThreadOptions() {
+            const select = document.getElementById('queryThreadCountSelect');
+            if (!select) return;
+            const maxCount = Math.max(querySlots.length, 1);
+            let saved = Number.parseInt(localStorage.getItem('crm_query_thread_count') || '1', 10);
+            if (Number.isNaN(saved)) saved = 1;
+            saved = Math.max(1, Math.min(saved, maxCount));
+            select.innerHTML = Array.from({length: maxCount}, (_, idx) => {
+                const count = idx + 1;
+                return `<option value="${count}">${count} 线程</option>`;
+            }).join('');
+            select.value = String(saved);
         }
 
         function restoreQueryInput() {
@@ -320,8 +346,7 @@
         function setQueryButtonsRunning(runningText='查询中...', stopText='停止查询') {
             document.getElementById('batchQueryBtn').disabled = true;
             document.getElementById('batchQueryBtn').innerHTML = `<span class="spinner"></span> ${runningText}`;
-            document.getElementById('multiBatchQueryBtn').disabled = true;
-            document.getElementById('multiBatchQueryBtn').innerHTML = `<span class="spinner"></span> ${runningText}`;
+            document.getElementById('queryThreadCountSelect').disabled = true;
             document.getElementById('retryLimitInput').disabled = true;
             document.getElementById('stopBatchBtn').textContent = stopText;
             document.getElementById('stopBatchBtn').style.display = '';
@@ -331,8 +356,7 @@
         function resetQueryButtons() {
             document.getElementById('batchQueryBtn').disabled = false;
             document.getElementById('batchQueryBtn').textContent = '开始查询';
-            document.getElementById('multiBatchQueryBtn').disabled = false;
-            document.getElementById('multiBatchQueryBtn').textContent = '多线程查询';
+            document.getElementById('queryThreadCountSelect').disabled = false;
             document.getElementById('stopBatchBtn').style.display = 'none';
             document.getElementById('retryLimitInput').disabled = false;
             document.getElementById('queryProgress').classList.remove('show');
@@ -493,7 +517,7 @@
                     loginStatus.textContent = '未启动';
                     loginBtn.style.display = '';
                     logoutBtn.style.display = 'none';
-                    batchQueryBtn.disabled = isBatchRunning || batchStartPending;
+                    batchQueryBtn.disabled = isBatchRunning || batchStartPending || isMultiBatchRunning;
                 }
             } catch(e) {
                 console.error(e);
@@ -678,6 +702,11 @@
             if (uniqueBarcodes.length === 0) { showToast('没有有效条码'); return; }
 
             if (isBatchRunning || batchStartPending || isMultiBatchRunning) { showToast('批量查询进行中'); return; }
+            const threadCount = getSelectedQueryThreadCount();
+            if (threadCount > 1) {
+                doMultiBatchQuery(uniqueBarcodes, threadCount);
+                return;
+            }
             batchStartPending = true;
 
             // 保存条码到全局变量和 sessionStorage
@@ -754,21 +783,24 @@
             doBatchQueryCore(uniqueBarcodes);
         }
 
-        async function doMultiBatchQuery() {
+        async function doMultiBatchQuery(uniqueBarcodes, requestedThreadCount) {
             if (isBatchRunning || batchStartPending || isMultiBatchRunning) { showToast('批量查询进行中'); return; }
-            const uniqueBarcodes = getUniqueBarcodesFromInput();
             if (uniqueBarcodes.length === 0) { showToast('没有有效条码'); return; }
 
             batchStartPending = true;
             saveQueryInput();
             await loadSlots();
-            const loggedSlots = querySlots.filter(slot => slot.logged_in);
+            const requestedCount = Math.max(1, Number.parseInt(requestedThreadCount, 10) || 1);
+            const loggedSlots = querySlots.filter(slot => slot.logged_in).slice(0, requestedCount);
             const skippedSlots = querySlots.filter(slot => !slot.logged_in);
             if (!loggedSlots.length) {
                 batchStartPending = false;
                 log('没有已登录的查询通道，请先到账号管理批量登录 CRM 通道', 'warn');
                 showToast('没有已登录的查询通道');
                 return;
+            }
+            if (loggedSlots.length < requestedCount) {
+                log(`选择 ${requestedCount} 线程，但只有 ${loggedSlots.length} 个查询通道已登录，本次使用 ${loggedSlots.length} 线程`, 'warn');
             }
             if (skippedSlots.length) {
                 log(`跳过 ${skippedSlots.length} 个未登录查询通道：${skippedSlots.map(s => s.label).join('，')}`, 'warn');
