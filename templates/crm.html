@@ -211,6 +211,7 @@
         let isMultiBatchRunning = false;
         let multiBatchJobs = {};
         let multiBatchPollTimer = null;
+        let isMultiBatchPolling = false;
         let pendingLoginSlots = [];
 
         function slotPayload(extra={}) {
@@ -713,7 +714,8 @@
                     barcode: '',
                     lastLogSeq: 0,
                     running: false,
-                    current: 0
+                    current: 0,
+                    cooldownUntil: 0
                 };
             });
             lastBatchLogSeq = 0;
@@ -731,6 +733,7 @@
             if (!isMultiBatchRunning || !multiBatchJobs || multiBatchJobs.stopRequested) return false;
             const slot = multiBatchJobs.slots && multiBatchJobs.slots[slotId];
             if (!slot || slot.running || !multiBatchJobs.pending.length) return false;
+            if (slot.cooldownUntil && Date.now() < slot.cooldownUntil) return false;
             const barcode = multiBatchJobs.pending.shift();
             slot.barcode = barcode;
             slot.job_id = '';
@@ -751,15 +754,25 @@
                 });
                 const d = await r.json();
                 if (!d.success) {
+                    const errorText = d.error || '未知错误';
                     slot.running = false;
                     slot.job_id = '';
-                    multiBatchJobs.completed += 1;
-                    multiBatchJobs.failedCount += 1;
-                    log(`${slot.label} 领取 ${barcode} 失败：${d.error || '未知错误'}`, 'error');
+                    slot.barcode = '';
+                    slot.current = 0;
+                    if (errorText.includes('已有批量查询正在运行')) {
+                        slot.cooldownUntil = Date.now() + 5000;
+                        multiBatchJobs.pending.push(barcode);
+                        log(`${slot.label} 暂忙，${barcode} 已放回队列稍后重查：${errorText}`, 'warn');
+                    } else {
+                        multiBatchJobs.completed += 1;
+                        multiBatchJobs.failedCount += 1;
+                        log(`${slot.label} 领取 ${barcode} 失败：${errorText}`, 'error');
+                    }
                     persistMultiBatchJobs();
                     return false;
                 }
                 slot.job_id = d.job_id || '';
+                slot.cooldownUntil = 0;
                 log(`${slot.label} 领取条码：${barcode}`, 'info');
                 persistMultiBatchJobs();
                 return true;
@@ -775,81 +788,103 @@
         }
 
         async function pollMultiBatchStatus() {
+            if (isMultiBatchPolling) return;
             if (!multiBatchJobs || !multiBatchJobs.slots || !multiSlotRows().length) {
                 isMultiBatchRunning = false;
                 resetQueryButtons();
                 return;
             }
+            isMultiBatchPolling = true;
             let anyRunning = false;
             let activeCurrent = 0;
 
-            for (const job of multiSlotRows()) {
-                try {
-                    if (job.job_id) {
-                        const params = new URLSearchParams({
-                            since: String(job.lastLogSeq || 0),
-                            slot_id: job.slot_id,
-                            job_id: job.job_id || ''
-                        });
-                        const r = await fetch('/api/crm/batch/status?' + params.toString());
-                        const d = await r.json();
-                        if (!d.success) continue;
-                        (d.logs || []).forEach(entry => {
-                            appendMultiServerLog({label: job.label}, entry);
-                            job.lastLogSeq = Math.max(job.lastLogSeq || 0, Number(entry.id || 0));
-                        });
-                        job.current = d.current || 0;
-                        if (d.running) {
-                            anyRunning = true;
-                            activeCurrent += Math.min(job.current || 0, 1);
-                        } else if (job.running) {
-                            job.running = false;
-                            job.job_id = '';
-                            multiBatchJobs.completed += 1;
-                            multiBatchJobs.successCount += d.success_count || 0;
-                            multiBatchJobs.failedCount += d.failed_count || 0;
-                            log(`${job.label} 完成条码：${job.barcode}，继续领取下一个`, (d.failed_count || 0) ? 'warn' : 'success');
-                            job.barcode = '';
-                            job.current = 0;
+            try {
+                for (const job of multiSlotRows()) {
+                    try {
+                        if (job.job_id) {
+                            const requestedJobId = job.job_id;
+                            const requestedBarcode = job.barcode;
+                            const requestedLastLogSeq = job.lastLogSeq || 0;
+                            const params = new URLSearchParams({
+                                since: String(requestedLastLogSeq),
+                                slot_id: job.slot_id,
+                                job_id: requestedJobId
+                            });
+                            const r = await fetch('/api/crm/batch/status?' + params.toString());
+                            const d = await r.json();
+                            if (!d.success) {
+                                anyRunning = true;
+                                continue;
+                            }
+                            if (job.job_id !== requestedJobId) {
+                                log(`${job.label} 忽略旧查询状态：${requestedBarcode}`, 'warn');
+                                continue;
+                            }
+                            if ((d.job_id || '') !== requestedJobId) {
+                                log(`${job.label} 状态不匹配，等待下一轮：${requestedBarcode}`, 'warn');
+                                anyRunning = true;
+                                continue;
+                            }
+                            (d.logs || []).forEach(entry => {
+                                appendMultiServerLog({label: job.label}, entry);
+                                job.lastLogSeq = Math.max(job.lastLogSeq || 0, Number(entry.id || 0));
+                            });
+                            job.current = d.current || 0;
+                            if (d.running) {
+                                anyRunning = true;
+                                activeCurrent += Math.min(job.current || 0, 1);
+                            } else if (job.running) {
+                                job.running = false;
+                                job.job_id = '';
+                                multiBatchJobs.completed += 1;
+                                multiBatchJobs.successCount += d.success_count || 0;
+                                multiBatchJobs.failedCount += d.failed_count || 0;
+                                log(`${job.label} 完成条码：${job.barcode}，继续领取下一个`, (d.failed_count || 0) ? 'warn' : 'success');
+                                job.barcode = '';
+                                job.current = 0;
+                                const started = await startNextMultiBarcode(job.slot_id);
+                                if (started) anyRunning = true;
+                            }
+                        } else if (!multiBatchJobs.stopRequested && multiBatchJobs.pending.length) {
                             const started = await startNextMultiBarcode(job.slot_id);
                             if (started) anyRunning = true;
                         }
-                    } else if (!multiBatchJobs.stopRequested && multiBatchJobs.pending.length) {
-                        const started = await startNextMultiBarcode(job.slot_id);
-                        if (started) anyRunning = true;
+                    } catch(e) {
+                        log(`${job.label} 状态获取失败：${e}`, 'error');
+                        if (job.job_id) anyRunning = true;
                     }
-                } catch(e) {
-                    log(`${job.label} 状态获取失败：${e}`, 'error');
                 }
-            }
 
-            const total = multiBatchJobs.total || 0;
-            const pct = total ? Math.round(((multiBatchJobs.completed || 0) + activeCurrent) / total * 100) : 0;
-            setProgress('queryProgressBar', pct);
-            persistMultiBatchJobs();
+                const total = multiBatchJobs.total || 0;
+                const pct = total ? Math.round(((multiBatchJobs.completed || 0) + activeCurrent) / total * 100) : 0;
+                setProgress('queryProgressBar', pct);
+                persistMultiBatchJobs();
 
-            if (anyRunning || (!multiBatchJobs.stopRequested && multiBatchJobs.pending.length)) {
-                isMultiBatchRunning = true;
-                setQueryButtonsRunning('多线程查询中...', '停止多线程查询');
-                if (!multiBatchPollTimer) {
-                    multiBatchPollTimer = setInterval(pollMultiBatchStatus, 1000);
+                if (anyRunning || (!multiBatchJobs.stopRequested && multiBatchJobs.pending.length)) {
+                    isMultiBatchRunning = true;
+                    setQueryButtonsRunning('多线程查询中...', '停止多线程查询');
+                    if (!multiBatchPollTimer) {
+                        multiBatchPollTimer = setInterval(pollMultiBatchStatus, 1000);
+                    }
+                    return;
                 }
-                return;
-            }
 
-            isMultiBatchRunning = false;
-            if (multiBatchPollTimer) {
-                clearInterval(multiBatchPollTimer);
-                multiBatchPollTimer = null;
+                isMultiBatchRunning = false;
+                if (multiBatchPollTimer) {
+                    clearInterval(multiBatchPollTimer);
+                    multiBatchPollTimer = null;
+                }
+                const finalSuccess = multiBatchJobs.successCount || 0;
+                const finalFailed = multiBatchJobs.failedCount || 0;
+                const wasStopped = !!multiBatchJobs.stopRequested;
+                clearMultiBatchJobs();
+                resetQueryButtons();
+                const stoppedText = wasStopped ? '已停止，' : '';
+                log(`${stoppedText}多线程查询完成，成功 ${finalSuccess} 个，失败 ${finalFailed} 个`, finalFailed ? 'warn' : 'success');
+                checkStatus();
+            } finally {
+                isMultiBatchPolling = false;
             }
-            const finalSuccess = multiBatchJobs.successCount || 0;
-            const finalFailed = multiBatchJobs.failedCount || 0;
-            const wasStopped = !!multiBatchJobs.stopRequested;
-            clearMultiBatchJobs();
-            resetQueryButtons();
-            const stoppedText = wasStopped ? '已停止，' : '';
-            log(`${stoppedText}多线程查询完成，成功 ${finalSuccess} 个，失败 ${finalFailed} 个`, finalFailed ? 'warn' : 'success');
-            checkStatus();
         }
 
         async function stopBatch() {
