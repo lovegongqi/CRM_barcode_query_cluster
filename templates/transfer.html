@@ -253,6 +253,32 @@ function escapeHtml(text) {
     return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
+function formatDuration(seconds) {
+    seconds = Math.max(0, Math.floor(Number(seconds) || 0));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    if (hours) return `${hours}小时${minutes}分${secs}秒`;
+    if (minutes) return `${minutes}分${secs}秒`;
+    return `${secs}秒`;
+}
+
+function parseJobTime(value) {
+    if (!value) return 0;
+    const parsed = Date.parse(String(value).replace(' ', 'T'));
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function jobDurationLine(data, runningLabel='已耗时', doneLabel='总耗时') {
+    if (!data || !data.started_at) return '';
+    const startedMs = parseJobTime(data.started_at);
+    if (!startedMs) return '';
+    const finishedMs = data.finished_at ? parseJobTime(data.finished_at) : 0;
+    const label = data.done ? doneLabel : runningLabel;
+    const seconds = ((finishedMs || Date.now()) - startedMs) / 1000;
+    return `<div class="${data.done ? 'success' : 'dim'}">${label}：${escapeHtml(formatDuration(seconds))}</div>`;
+}
+
 function stopActivePolling() {
     if (previewTimer) {
         clearInterval(previewTimer);
@@ -673,7 +699,7 @@ async function pollSummaryStatus(slotId=currentTransferSlot, jobId=currentSummar
     if (data.job_id) sessionStorage.setItem(`crm_summary_job_id_${slotId}`, data.job_id);
     if (slotId !== currentTransferSlot) return;
     if (data.job_id) currentSummaryJobId = data.job_id;
-    renderLogs(data.logs || []);
+    renderLogs(data.logs || [], data, '汇总已耗时', '汇总总耗时');
     if (data.summary) renderSummary(data.summary);
     if (!data.done) return;
 
@@ -737,15 +763,16 @@ function appendLog(message, level='dim') {
     if (window.globalLogAppend) window.globalLogAppend(message, level);
 }
 
-function renderLogs(logs) {
+function renderLogs(logs, jobData=null, runningLabel='已耗时', doneLabel='总耗时') {
     const box = document.getElementById('transferLog');
-    if (!logs || !logs.length) return;
-    const key = JSON.stringify(logs);
+    if ((!logs || !logs.length) && !jobData) return;
+    const durationLine = jobDurationLine(jobData, runningLabel, doneLabel);
+    const key = JSON.stringify({logs: logs || [], durationLine});
     if (key === lastRenderedLogKey) return;
     lastRenderedLogKey = key;
-    box.innerHTML = logs.map(row => `<div class="${escapeHtml(row.level || 'dim')}">[${escapeHtml(row.time || '')}] ${escapeHtml(row.message || '')}</div>`).join('');
+    box.innerHTML = (logs || []).map(row => `<div class="${escapeHtml(row.level || 'dim')}">[${escapeHtml(row.time || '')}] ${escapeHtml(row.message || '')}</div>`).join('') + durationLine;
     box.scrollTop = box.scrollHeight;
-    if (window.globalLogReplaceRows) window.globalLogReplaceRows(logs);
+    if (logs && logs.length && window.globalLogReplaceRows) window.globalLogReplaceRows(logs);
 }
 
 function startTransferPolling(slotId=currentTransferSlot, jobId=currentTransferJobId) {
@@ -761,7 +788,7 @@ async function pollStatus(slotId=currentTransferSlot, jobId=currentTransferJobId
     if (data.job_id) sessionStorage.setItem(`crm_transfer_job_id_${slotId}`, data.job_id);
     if (slotId !== currentTransferSlot) return;
     if (data.job_id) currentTransferJobId = data.job_id;
-    renderLogs(data.logs || []);
+    renderLogs(data.logs || [], data, '移库已耗时', '移库总耗时');
     if (data.summary) renderSummary(data.summary);
     if (data.done) {
         clearInterval(pollTimer);
@@ -785,7 +812,7 @@ async function restoreTransferStatus() {
         sessionStorage.setItem(`crm_transfer_job_id_${slotId}`, data.job_id);
     }
 
-    renderLogs(data.logs || []);
+    renderLogs(data.logs || [], data, '移库已耗时', '移库总耗时');
     if (data.summary) {
         renderSummary(data.summary);
         lastSummary = data.summary;
@@ -827,7 +854,7 @@ async function restoreSummaryStatus() {
         sessionStorage.setItem(`crm_summary_job_id_${slotId}`, data.job_id);
     }
 
-    renderLogs(data.logs || []);
+    renderLogs(data.logs || [], data, '汇总已耗时', '汇总总耗时');
     if (data.summary) renderSummary(data.summary);
 
     const previewBtn = document.getElementById('previewBtn');
