@@ -1,0 +1,126 @@
+.global-log-button {
+    position: fixed;
+    top: 14px;
+    right: 14px;
+    z-index: 900;
+    min-height: 34px;
+    padding: 7px 12px;
+    border: 1px solid rgba(15, 23, 42, .18);
+    border-radius: 8px;
+    background: #0f172a;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 800;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, .18);
+    cursor: pointer;
+}
+
+.global-log-button:hover {
+    background: #1e293b;
+}
+
+.global-log-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 18px;
+    background: rgba(15, 23, 42, .52);
+}
+
+.global-log-overlay.show {
+    display: flex;
+}
+
+.global-log-modal {
+    width: min(920px, 100%);
+    max-height: min(78vh, 760px);
+    overflow: hidden;
+    border-radius: 8px;
+    background: #fff;
+    border: 1px solid #d9e1ec;
+    box-shadow: 0 28px 70px rgba(15, 23, 42, .3);
+}
+
+.global-log-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid #e5eaf2;
+    background: #f8fbff;
+}
+
+.global-log-head h3 {
+    margin: 0;
+    color: #202938;
+    font-size: 16px;
+}
+
+.global-log-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.global-log-small,
+.global-log-close {
+    min-height: 30px;
+    border: none;
+    border-radius: 6px;
+    background: #e5e7eb;
+    color: #334155;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.global-log-small {
+    padding: 5px 10px;
+}
+
+.global-log-close {
+    width: 32px;
+    font-size: 18px;
+    line-height: 1;
+}
+
+.global-log-body {
+    min-height: 360px;
+    max-height: calc(78vh - 58px);
+    overflow: auto;
+    padding: 12px;
+    background: #0f172a;
+    color: #d4d4d4;
+    font-family: "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.7;
+}
+
+.global-log-body .info { color: #4fc3f7; }
+.global-log-body .success { color: #81c784; }
+.global-log-body .error { color: #e57373; }
+.global-log-body .warn { color: #ffb74d; }
+.global-log-body .dim { color: #94a3b8; }
+
+@media (max-width: 720px) {
+    .global-log-button {
+        top: 8px;
+        right: 8px;
+        min-height: 30px;
+        padding: 5px 8px;
+        font-size: 11px;
+    }
+
+    .global-log-overlay {
+        padding: 10px;
+    }
+
+    .global-log-body {
+        min-height: 300px;
+        font-size: 11px;
+    }
+}

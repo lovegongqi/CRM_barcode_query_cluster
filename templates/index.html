@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>怡口 CRM 条码查询结果</title>
+    <link rel="stylesheet" href="/static/log_modal.css">
+    <script src="/static/log_modal.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -2170,6 +2172,7 @@ ${section(9, '移机单', 'moveid1', [
             line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
             area.appendChild(line);
             area.scrollTop = area.scrollHeight;
+            if (window.globalLogAppend) window.globalLogAppend(msg, type);
         }
 
         function appendBatchLogs(logs) {
@@ -2181,6 +2184,7 @@ ${section(9, '移机单', 'moveid1', [
                 line.className = row.level || 'dim';
                 line.textContent = `[${row.time || ''}] ${row.message || ''}`;
                 fragment.appendChild(line);
+                if (window.globalLogAppend) window.globalLogAppend(row.message || '', row.level || 'dim', row.time || '');
                 lastBatchLogSeq = Math.max(lastBatchLogSeq, Number(row.id || 0));
             }
             area.appendChild(fragment);
@@ -2470,6 +2474,7 @@ ${section(9, '移机单', 'moveid1', [
             document.getElementById('stopBtn').style.display = '';
             document.getElementById('queryProgress').classList.add('show');
             document.getElementById('queryLog').innerHTML = '';
+            if (window.globalLogClear) window.globalLogClear();
             lastBatchLogSeq = 0;
             qlog(`提交后台批量查询任务：${uniqueBarcodes.length} 个条码`, 'info');
 
