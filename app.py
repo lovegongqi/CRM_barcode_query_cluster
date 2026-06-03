@@ -1161,7 +1161,7 @@ class CRMSession:
             print(f"  [错误] 导航到报表失败: {e}")
             return False
 
-    def query_barcode(self, barcode, log=None):
+    def query_barcode(self, barcode, log=None, output_dir=None):
         def emit(message, level='info'):
             if log:
                 log(message, level)
@@ -1345,8 +1345,9 @@ class CRMSession:
                     pass
 
                 if html_content and len(html_content.strip()) > 1000:
-                    emit("保存条码查询结果")
-                    html_dir = BARCODE_DIR
+                    html_dir = output_dir or BARCODE_DIR
+                    is_temporary = bool(output_dir and os.path.abspath(output_dir) != os.path.abspath(BARCODE_DIR))
+                    emit("保存临时条码查询结果" if is_temporary else "保存条码查询结果")
                     os.makedirs(html_dir, exist_ok=True)
                     output_file = os.path.join(html_dir, f"{barcode}.html")
                     with open(output_file, "w", encoding="utf-8") as f:
@@ -2572,10 +2573,10 @@ class CRMWorker:
     def check_login_status(self):
         return self._call("check_login_status")
 
-    def query_barcode(self, barcode, log=None):
+    def query_barcode(self, barcode, log=None, output_dir=None):
         if log:
             log(f"CRM 查询任务已加入队列：{barcode}", "dim")
-        return self._call("query_barcode", barcode, log)
+        return self._call("query_barcode", barcode, log, output_dir)
 
     def create_transfer(self, summary, distributor, transfer_type="移出", remark="", log=None):
         return self._call("create_transfer", summary, distributor, transfer_type, remark, log)
@@ -2857,7 +2858,9 @@ def _run_library_query_job(barcode, worker=None):
     _library_query_log(f"开始查询条码：{barcode}", 'info')
     try:
         actual_worker = worker or crm_pool.get(kind="query")
-        success, result = actual_worker.query_barcode(barcode, _library_query_log)
+        existing_paths = existing_barcode_result_paths(barcode)
+        had_metadata = barcode_metadata_exists(barcode)
+        success, result = actual_worker.query_barcode(barcode, _library_query_log, TEMP_QUERY_DIR)
         with library_query_lock:
             library_query_job['running'] = False
             library_query_job['done'] = True
@@ -2868,8 +2871,14 @@ def _run_library_query_job(barcode, worker=None):
             else:
                 library_query_job['error'] = _brief_batch_error(result, 800)
         if success:
-            if (actual_worker.slot_id or '').startswith('query-'):
-                update_barcode_query_slot(barcode, actual_worker.slot_id)
+            removed = delete_temporary_query_result(
+                barcode,
+                _library_query_log,
+                keep_paths=existing_paths,
+                keep_metadata=had_metadata,
+            )
+            if not removed and (existing_paths or had_metadata):
+                _library_query_log("该条码原本已在结果管理中，保留原查询文件", 'dim')
             _library_query_log(f"条码查询完成：{barcode}", 'success')
         else:
             _library_query_log(f"条码查询失败：{result}", 'error')
@@ -3192,6 +3201,7 @@ PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")
 ACCOUNTS_FILE = os.path.join(BARCODE_DIR, "accounts.json")
 DISTRIBUTOR_HISTORY_FILE = os.path.join(BARCODE_DIR, "distributor_history.json")
 RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
+TEMP_QUERY_DIR = os.path.join(DATA_BASE_DIR, "temp_queries")
 RUNTIME_CONFIG_FILE = _runtime_config_path()
 OWN_DEALER_NAME = "江西省天麓工贸有限公司"
 FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
@@ -3837,7 +3847,16 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None, worker=None
     for index, (prefix, barcode) in enumerate(representatives.items(), 1):
         emit(f"自动补充 {index}/{total}：前缀 {prefix}，代表条码 {barcode}", "info")
         emit(f"准备查询代表条码 {barcode}，用于补充前缀 {prefix}", "dim")
-        success, message = (worker or crm_pool.get(kind="query")).query_barcode(barcode, log)
+        existing_paths = existing_barcode_result_paths(barcode)
+        had_metadata = barcode_metadata_exists(barcode)
+        success, message = (worker or crm_pool.get(kind="query")).query_barcode(barcode, log, TEMP_QUERY_DIR)
+        if success:
+            delete_temporary_query_result(
+                barcode,
+                emit,
+                keep_paths=existing_paths,
+                keep_metadata=had_metadata,
+            )
         emit(f"代表条码 {barcode} 查询返回：{'成功' if success else '失败'}", "success" if success else "warn")
         if success and match_product_library(barcode):
             result['queried'].append({'prefix': prefix, 'barcode': barcode})
@@ -4118,8 +4137,60 @@ def load_data():
     return {}
 
 def save_data(data):
+    os.makedirs(BARCODE_DIR, exist_ok=True)
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _barcode_result_paths(barcode):
+    barcode = _clean_export_value(barcode)
+    if not barcode:
+        return []
+    filename = barcode + '.html'
+    return [
+        os.path.join(BARCODE_DIR, filename),
+        os.path.join(ARCHIVE_DIR, filename),
+    ]
+
+def _barcode_temp_paths(barcode):
+    barcode = _clean_export_value(barcode)
+    if not barcode:
+        return []
+    return [os.path.join(TEMP_QUERY_DIR, barcode + '.html')]
+
+def existing_barcode_result_paths(barcode):
+    return {
+        os.path.abspath(path)
+        for path in _barcode_result_paths(barcode)
+        if os.path.exists(path)
+    }
+
+def barcode_metadata_exists(barcode):
+    barcode = _clean_export_value(barcode)
+    return bool(barcode and barcode in load_data())
+
+def delete_temporary_query_result(barcode, log=None, keep_paths=None, keep_metadata=False):
+    barcode = _clean_export_value(barcode)
+    if not barcode:
+        return False
+    keep_paths = {os.path.abspath(path) for path in (keep_paths or set())}
+    removed_file = False
+    paths = _barcode_temp_paths(barcode) + _barcode_result_paths(barcode)
+    for path in paths:
+        try:
+            if os.path.exists(path) and os.path.abspath(path) not in keep_paths:
+                os.remove(path)
+                removed_file = True
+        except Exception as e:
+            if log:
+                log(f"临时查询文件删除失败：{os.path.basename(path)}，{e}", "warn")
+    data = load_data()
+    removed_meta = bool(not keep_metadata and barcode in data)
+    if removed_meta:
+        data.pop(barcode, None)
+        save_data(data)
+    if log and (removed_file or removed_meta):
+        log(f"已删除临时查询结果：{barcode}，不加入结果管理", "dim")
+    return removed_file or removed_meta
 
 def get_archived_set():
     data = load_data()
