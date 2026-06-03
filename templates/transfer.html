@@ -106,7 +106,7 @@
                 <div class="fields">
                     <div>
                         <label>移库类型</label>
-                        <select id="transferType">
+                        <select id="transferType" onchange="saveTransferInput()">
                             <option value="移出">移出</option>
                             <option value="移入">移入</option>
                         </select>
@@ -114,13 +114,13 @@
                     <div>
                         <label>目标分销商</label>
                         <div class="distributor-picker">
-                            <input id="transferDistributor" placeholder="输入分销商名称" autocomplete="off" onfocus="showDistributorDropdown()" oninput="showDistributorDropdown()" onkeydown="handleDistributorKeydown(event)" onblur="hideDistributorDropdownSoon()">
+                            <input id="transferDistributor" placeholder="输入分销商名称" autocomplete="off" onfocus="showDistributorDropdown()" oninput="saveTransferInput();showDistributorDropdown()" onkeydown="handleDistributorKeydown(event)" onblur="hideDistributorDropdownSoon()">
                             <div id="distributorHistoryDropdown" class="distributor-dropdown"></div>
                         </div>
                     </div>
                     <div>
                         <label>备注</label>
-                        <input id="transferRemark" placeholder="可选">
+                        <input id="transferRemark" placeholder="可选" oninput="saveTransferInput()">
                     </div>
                 </div>
                 <div class="actions">
@@ -238,10 +238,16 @@ function switchTransferSlot(slotId) {
 
 function saveTransferInput() {
     sessionStorage.setItem(`transfer_page_input_${currentTransferSlot}`, document.getElementById('barcodeInput').value);
+    sessionStorage.setItem(`transfer_page_distributor_${currentTransferSlot}`, document.getElementById('transferDistributor').value);
+    sessionStorage.setItem(`transfer_page_type_${currentTransferSlot}`, document.getElementById('transferType').value);
+    sessionStorage.setItem(`transfer_page_remark_${currentTransferSlot}`, document.getElementById('transferRemark').value);
 }
 
 function restoreTransferInput() {
     document.getElementById('barcodeInput').value = sessionStorage.getItem(`transfer_page_input_${currentTransferSlot}`) || '';
+    document.getElementById('transferDistributor').value = sessionStorage.getItem(`transfer_page_distributor_${currentTransferSlot}`) || '';
+    document.getElementById('transferType').value = sessionStorage.getItem(`transfer_page_type_${currentTransferSlot}`) || '移出';
+    document.getElementById('transferRemark').value = sessionStorage.getItem(`transfer_page_remark_${currentTransferSlot}`) || '';
 }
 
 function escapeHtml(text) {
@@ -342,6 +348,7 @@ function hideDistributorDropdownSoon() {
 
 function selectDistributorHistory(name) {
     document.getElementById('transferDistributor').value = name;
+    saveTransferInput();
     saveDistributorHistory(name);
     const dropdown = document.getElementById('distributorHistoryDropdown');
     if (dropdown) dropdown.classList.remove('open');
@@ -371,7 +378,13 @@ function clearForm() {
         previewTimer = null;
     }
     document.getElementById('barcodeInput').value = '';
+    document.getElementById('transferDistributor').value = '';
+    document.getElementById('transferType').value = '移出';
+    document.getElementById('transferRemark').value = '';
     sessionStorage.removeItem(`transfer_page_input_${currentTransferSlot}`);
+    sessionStorage.removeItem(`transfer_page_distributor_${currentTransferSlot}`);
+    sessionStorage.removeItem(`transfer_page_type_${currentTransferSlot}`);
+    sessionStorage.removeItem(`transfer_page_remark_${currentTransferSlot}`);
     sessionStorage.removeItem(`crm_summary_job_id_${currentTransferSlot}`);
     currentSummaryJobId = '';
     resetTransferActionUi();
@@ -912,12 +925,14 @@ function loadIncomingBarcodes() {
     if (distributor) {
         document.getElementById('transferDistributor').value = distributor;
         sessionStorage.removeItem('transferDistributor');
+        saveTransferInput();
         appendLog(`已自动填入目标分销商：${distributor}`, 'info');
     }
     const transferType = sessionStorage.getItem('transferType') || '';
     if (transferType) {
         document.getElementById('transferType').value = transferType;
         sessionStorage.removeItem('transferType');
+        saveTransferInput();
         appendLog(`已自动选择移库类型：${transferType}`, 'info');
     }
 }
