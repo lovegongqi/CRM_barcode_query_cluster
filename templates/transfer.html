@@ -184,8 +184,8 @@ let transferSlots = [];
 let pendingLoginSlots = [];
 const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
 
-function transferPayload(extra={}) {
-    return Object.assign({slot_id: currentTransferSlot, kind: 'transfer'}, extra);
+function transferPayloadForSlot(slotId, extra={}) {
+    return Object.assign({slot_id: slotId, kind: 'transfer'}, extra);
 }
 
 function slotLoginPayload(slot, extra={}) {
@@ -221,11 +221,13 @@ function renderTransferSlots() {
 function switchTransferSlot(slotId) {
     if (slotId === currentTransferSlot) return;
     saveTransferInput();
+    stopActivePolling();
     currentTransferSlot = slotId;
     localStorage.setItem('crm_transfer_slot', currentTransferSlot);
     currentSummaryJobId = sessionStorage.getItem(`crm_summary_job_id_${currentTransferSlot}`) || '';
     currentTransferJobId = sessionStorage.getItem(`crm_transfer_job_id_${currentTransferSlot}`) || '';
     lastRenderedLogKey = '';
+    resetTransferActionUi();
     document.getElementById('transferLog').innerHTML = '<div class="dim">等待操作...</div>';
     if (window.globalLogClear) window.globalLogClear();
     restoreTransferInput();
@@ -244,6 +246,26 @@ function restoreTransferInput() {
 
 function escapeHtml(text) {
     return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+function stopActivePolling() {
+    if (previewTimer) {
+        clearInterval(previewTimer);
+        previewTimer = null;
+    }
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+}
+
+function resetTransferActionUi() {
+    document.getElementById('summaryBox').style.display = 'none';
+    document.getElementById('summaryBox').innerHTML = '';
+    document.getElementById('submitBtn').disabled = true;
+    document.getElementById('previewBtn').disabled = false;
+    document.getElementById('previewBtn').textContent = '汇总预览';
+    lastSummary = null;
 }
 
 function parseBarcodes() {
@@ -350,12 +372,9 @@ function clearForm() {
     }
     document.getElementById('barcodeInput').value = '';
     sessionStorage.removeItem(`transfer_page_input_${currentTransferSlot}`);
-    document.getElementById('summaryBox').style.display = 'none';
-    document.getElementById('summaryBox').innerHTML = '';
-    document.getElementById('submitBtn').disabled = true;
-    document.getElementById('previewBtn').disabled = false;
-    document.getElementById('previewBtn').textContent = '汇总预览';
-    lastSummary = null;
+    sessionStorage.removeItem(`crm_summary_job_id_${currentTransferSlot}`);
+    currentSummaryJobId = '';
+    resetTransferActionUi();
     lastRenderedLogKey = '';
 }
 
@@ -581,9 +600,11 @@ async function doLogout() {
 }
 
 async function previewTransfer() {
+    const slotId = currentTransferSlot;
     const barcodes = parseBarcodes();
     if (!barcodes.length) return alert('请输入条码');
     if (!await ensureCrmLoggedIn('汇总预览')) return;
+    if (slotId !== currentTransferSlot) return;
     const previewBtn = document.getElementById('previewBtn');
     const submitBtn = document.getElementById('submitBtn');
     previewBtn.disabled = true;
@@ -594,7 +615,7 @@ async function previewTransfer() {
     appendLog('开始汇总预览，缺少条码匹配前缀时会自动查询代表条码...', 'info');
     let data = null;
     try {
-        const payload = JSON.stringify(transferPayload({
+        const payload = JSON.stringify(transferPayloadForSlot(slotId, {
             barcodes,
             transfer_type: document.getElementById('transferType').value,
             distributor: document.getElementById('transferDistributor').value.trim()
@@ -607,26 +628,39 @@ async function previewTransfer() {
         });
         data = await res.json();
     } catch (e) {
-        appendLog('启动汇总请求被中断，正在检查后台任务状态...', 'warn');
-        previewTimer = setInterval(pollSummaryStatus, 1000);
-        pollSummaryStatus();
+        if (slotId === currentTransferSlot) {
+            appendLog('启动汇总请求被中断，正在检查后台任务状态...', 'warn');
+            startSummaryPolling(slotId, sessionStorage.getItem(`crm_summary_job_id_${slotId}`) || '');
+        }
         return;
     }
     if (!data.success) {
-        appendLog(data.error || '预览失败', 'error');
-        previewBtn.disabled = false;
-        previewBtn.textContent = '汇总预览';
+        if (slotId === currentTransferSlot) {
+            appendLog(data.error || '预览失败', 'error');
+            previewBtn.disabled = false;
+            previewBtn.textContent = '汇总预览';
+        }
         return;
     }
-    currentSummaryJobId = data.job_id || '';
-    if (currentSummaryJobId) sessionStorage.setItem(`crm_summary_job_id_${currentTransferSlot}`, currentSummaryJobId);
-    previewTimer = setInterval(pollSummaryStatus, 1000);
-    pollSummaryStatus();
+    const jobId = data.job_id || '';
+    if (jobId) sessionStorage.setItem(`crm_summary_job_id_${slotId}`, jobId);
+    if (slotId !== currentTransferSlot) return;
+    currentSummaryJobId = jobId;
+    startSummaryPolling(slotId, jobId);
 }
 
-async function pollSummaryStatus() {
-    const params = new URLSearchParams({slot_id: currentTransferSlot, job_id: currentSummaryJobId || ''});
+function startSummaryPolling(slotId=currentTransferSlot, jobId=currentSummaryJobId) {
+    if (previewTimer) clearInterval(previewTimer);
+    previewTimer = setInterval(() => pollSummaryStatus(slotId, jobId), 1000);
+    pollSummaryStatus(slotId, jobId);
+}
+
+async function pollSummaryStatus(slotId=currentTransferSlot, jobId=currentSummaryJobId) {
+    const params = new URLSearchParams({slot_id: slotId, job_id: jobId || ''});
     const data = await fetch('/api/transfer/summary/status?' + params.toString()).then(res => res.json());
+    if (data.job_id) sessionStorage.setItem(`crm_summary_job_id_${slotId}`, data.job_id);
+    if (slotId !== currentTransferSlot) return;
+    if (data.job_id) currentSummaryJobId = data.job_id;
     renderLogs(data.logs || []);
     if (data.summary) renderSummary(data.summary);
     if (!data.done) return;
@@ -645,16 +679,18 @@ async function pollSummaryStatus() {
 }
 
 async function submitTransfer() {
+    const slotId = currentTransferSlot;
     if (!lastSummary) return alert('请先汇总预览');
     const distributor = document.getElementById('transferDistributor').value.trim();
     if (!distributor) return alert('请输入目标分销商');
     if (!await ensureCrmLoggedIn('提交移库')) return;
+    if (slotId !== currentTransferSlot) return;
     document.getElementById('submitBtn').disabled = true;
     appendLog('提交移库任务...', 'info');
     const res = await fetch('/api/crm/transfer', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(transferPayload({
+        body: JSON.stringify(transferPayloadForSlot(slotId, {
             barcodes: parseBarcodes(),
             distributor,
             transfer_type: document.getElementById('transferType').value,
@@ -663,16 +699,18 @@ async function submitTransfer() {
     });
     const data = await res.json();
     if (!data.success) {
-        appendLog(data.error || '提交失败', 'error');
-        document.getElementById('submitBtn').disabled = false;
+        if (slotId === currentTransferSlot) {
+            appendLog(data.error || '提交失败', 'error');
+            document.getElementById('submitBtn').disabled = false;
+        }
         return;
     }
-    currentTransferJobId = data.job_id || '';
-    if (currentTransferJobId) sessionStorage.setItem(`crm_transfer_job_id_${currentTransferSlot}`, currentTransferJobId);
+    const jobId = data.job_id || '';
+    if (jobId) sessionStorage.setItem(`crm_transfer_job_id_${slotId}`, jobId);
     submittedTransferDistributor = distributor;
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(pollStatus, 1200);
-    pollStatus();
+    if (slotId !== currentTransferSlot) return;
+    currentTransferJobId = jobId;
+    startTransferPolling(slotId, jobId);
 }
 
 function appendLog(message, level='dim') {
@@ -698,10 +736,19 @@ function renderLogs(logs) {
     if (window.globalLogReplaceRows) window.globalLogReplaceRows(logs);
 }
 
-async function pollStatus() {
-    const params = new URLSearchParams({slot_id: currentTransferSlot, job_id: currentTransferJobId || ''});
+function startTransferPolling(slotId=currentTransferSlot, jobId=currentTransferJobId) {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => pollStatus(slotId, jobId), 1200);
+    pollStatus(slotId, jobId);
+}
+
+async function pollStatus(slotId=currentTransferSlot, jobId=currentTransferJobId) {
+    const params = new URLSearchParams({slot_id: slotId, job_id: jobId || ''});
     const res = await fetch('/api/crm/transfer/status?' + params.toString());
     const data = await res.json();
+    if (data.job_id) sessionStorage.setItem(`crm_transfer_job_id_${slotId}`, data.job_id);
+    if (slotId !== currentTransferSlot) return;
+    if (data.job_id) currentTransferJobId = data.job_id;
     renderLogs(data.logs || []);
     if (data.summary) renderSummary(data.summary);
     if (data.done) {
@@ -716,9 +763,15 @@ async function pollStatus() {
 }
 
 async function restoreTransferStatus() {
-    const params = new URLSearchParams({slot_id: currentTransferSlot, job_id: currentTransferJobId || ''});
+    const slotId = currentTransferSlot;
+    const params = new URLSearchParams({slot_id: slotId, job_id: currentTransferJobId || ''});
     const data = await fetch('/api/crm/transfer/status?' + params.toString()).then(res => res.json()).catch(() => null);
     if (!data || (!data.running && !data.done && !(data.logs || []).length && !data.summary)) return false;
+    if (slotId !== currentTransferSlot) return false;
+    if (data.job_id) {
+        currentTransferJobId = data.job_id;
+        sessionStorage.setItem(`crm_transfer_job_id_${slotId}`, data.job_id);
+    }
 
     renderLogs(data.logs || []);
     if (data.summary) {
@@ -730,7 +783,7 @@ async function restoreTransferStatus() {
     if (data.running) {
         submitBtn.disabled = true;
         if (!pollTimer) {
-            pollTimer = setInterval(pollStatus, 1200);
+            startTransferPolling(slotId, currentTransferJobId);
         }
         return true;
     }
@@ -752,9 +805,15 @@ async function restoreTransferStatus() {
 }
 
 async function restoreSummaryStatus() {
-    const params = new URLSearchParams({slot_id: currentTransferSlot, job_id: currentSummaryJobId || ''});
+    const slotId = currentTransferSlot;
+    const params = new URLSearchParams({slot_id: slotId, job_id: currentSummaryJobId || ''});
     const data = await fetch('/api/transfer/summary/status?' + params.toString()).then(res => res.json()).catch(() => null);
     if (!data || (!data.running && !data.done && !(data.logs || []).length)) return false;
+    if (slotId !== currentTransferSlot) return false;
+    if (data.job_id) {
+        currentSummaryJobId = data.job_id;
+        sessionStorage.setItem(`crm_summary_job_id_${slotId}`, data.job_id);
+    }
 
     renderLogs(data.logs || []);
     if (data.summary) renderSummary(data.summary);
@@ -766,8 +825,7 @@ async function restoreSummaryStatus() {
         previewBtn.disabled = true;
         previewBtn.textContent = '汇总中...';
         submitBtn.disabled = true;
-        if (previewTimer) clearInterval(previewTimer);
-        previewTimer = setInterval(pollSummaryStatus, 1000);
+        startSummaryPolling(slotId, currentSummaryJobId);
         return true;
     }
 
