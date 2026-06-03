@@ -88,10 +88,6 @@
         .login-modal-body { padding: 18px 20px 20px; }
         .login-modal-body .form-row { flex-direction: column; align-items: stretch; gap: 12px; }
         .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
-        .slot-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
-        .slot-tab { flex:0 0 auto; min-width:96px; min-height:34px; padding:7px 10px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:13px; line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .slot-tab.active { background:#2563eb; color:#fff; border-color:#2563eb; }
-        .slot-tab.busy { border-color:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.12); }
         @keyframes spin { to { transform: rotate(360deg); } }
         @media (max-width: 760px) {
             .container { padding: 14px; }
@@ -100,8 +96,6 @@
             .status-bar { align-items: center; flex-direction: row; flex-wrap: wrap; }
             .status-actions { margin-left:auto; justify-content:flex-end; }
             .card-head { align-items:center; }
-            .slot-tabs { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); }
-            .slot-tab { width:100%; min-width:0; padding:7px 6px; font-size:clamp(10px, 2.6vw, 13px); }
         }
     </style>
 </head>
@@ -145,7 +139,6 @@
                     <button class="btn btn-danger" id="logoutBtn" onclick="doLogout()" style="display:none">退出登录</button>
                 </div>
             </div>
-            <div class="slot-tabs" id="querySlotTabs"></div>
             <div class="form-group">
                 <label>条码查询（可一行一个，也可用逗号、空格分隔）</label>
                 <textarea id="batchInput" oninput="saveQueryInput()" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" placeholder="6923445601003
@@ -155,10 +148,6 @@
             <div class="form-row query-actions">
                 <button class="btn btn-success" id="batchQueryBtn" onclick="doBatchQuery()">开始查询</button>
                 <button class="btn btn-danger" id="stopBatchBtn" onclick="stopBatch()" style="display:none">停止当前查询</button>
-                <div class="form-group retry-group">
-                    <label>查询线程</label>
-                    <select id="queryThreadCountSelect" onchange="saveQueryThreadCount()" style="height:38px;padding:8px 10px;border:1px solid #ccc;border-radius:5px;font-size:14px;background:#fff;"></select>
-                </div>
                 <div class="form-group retry-group">
                     <label>失败重试上限</label>
                     <input type="number" id="retryLimitInput" min="0" max="5" value="5">
@@ -216,12 +205,8 @@
         let isBatchRunning = false;
         let batchStartPending = false;
         let queryCount = 0;
-        let pendingBatch = false; // 标记是否有待处理的批量查询
-        let pendingBarcodes = []; // 待处理的条码列表
-        let batchPollTimer = null;
         let lastBatchLogSeq = 0;
         let currentQuerySlot = localStorage.getItem('crm_query_slot') || 'query-1';
-        let currentBatchJobId = sessionStorage.getItem(`crm_batch_job_id_${currentQuerySlot}`) || '';
         let querySlots = [];
         let isMultiBatchRunning = false;
         let multiBatchJobs = {};
@@ -241,33 +226,6 @@
                 localStorage.setItem('crm_query_slot', currentQuerySlot);
             }
             if (currentQuerySlot !== previousSlot) restoreQueryInput();
-            renderQuerySlots();
-            renderQueryThreadOptions();
-        }
-
-        function renderQuerySlots() {
-            const box = document.getElementById('querySlotTabs');
-            if (!box) return;
-            box.innerHTML = querySlots.map(slot => {
-                const active = slot.id === currentQuerySlot ? ' active' : '';
-                const busy = slot.browser_running && !slot.logged_in ? ' busy' : '';
-                const status = slot.logged_in ? '已登录' : (slot.browser_running ? '未登录' : '未启动');
-                return `<button class="slot-tab${active}${busy}" onclick="switchQuerySlot('${slot.id}')">${slot.label} · ${status}</button>`;
-            }).join('');
-        }
-
-        function switchQuerySlot(slotId) {
-            if (slotId === currentQuerySlot) return;
-            saveQueryInput();
-            currentQuerySlot = slotId;
-            localStorage.setItem('crm_query_slot', currentQuerySlot);
-            currentBatchJobId = sessionStorage.getItem(`crm_batch_job_id_${currentQuerySlot}`) || '';
-            lastBatchLogSeq = 0;
-            document.getElementById('logArea').innerHTML = '<div class="dim">等待操作...</div>';
-            restoreQueryInput();
-            renderQuerySlots();
-            checkStatus();
-            pollBatchStatus();
         }
 
         function queryInputStorageKey(slotId=currentQuerySlot) {
@@ -276,32 +234,6 @@
 
         function saveQueryInput() {
             sessionStorage.setItem(queryInputStorageKey(), document.getElementById('batchInput').value);
-        }
-
-        function saveQueryThreadCount() {
-            const count = getSelectedQueryThreadCount();
-            localStorage.setItem('crm_query_thread_count', String(count));
-        }
-
-        function getSelectedQueryThreadCount() {
-            const select = document.getElementById('queryThreadCountSelect');
-            let value = Number.parseInt(select && select.value, 10);
-            if (Number.isNaN(value)) value = 1;
-            return Math.max(1, Math.min(value, Math.max(querySlots.length, 1)));
-        }
-
-        function renderQueryThreadOptions() {
-            const select = document.getElementById('queryThreadCountSelect');
-            if (!select) return;
-            const maxCount = Math.max(querySlots.length, 1);
-            let saved = Number.parseInt(localStorage.getItem('crm_query_thread_count') || '1', 10);
-            if (Number.isNaN(saved)) saved = 1;
-            saved = Math.max(1, Math.min(saved, maxCount));
-            select.innerHTML = Array.from({length: maxCount}, (_, idx) => {
-                const count = idx + 1;
-                return `<option value="${count}">${count} 线程</option>`;
-            }).join('');
-            select.value = String(saved);
         }
 
         function restoreQueryInput() {
@@ -346,7 +278,6 @@
         function setQueryButtonsRunning(runningText='查询中...', stopText='停止查询') {
             document.getElementById('batchQueryBtn').disabled = true;
             document.getElementById('batchQueryBtn').innerHTML = `<span class="spinner"></span> ${runningText}`;
-            document.getElementById('queryThreadCountSelect').disabled = true;
             document.getElementById('retryLimitInput').disabled = true;
             document.getElementById('stopBatchBtn').textContent = stopText;
             document.getElementById('stopBatchBtn').style.display = '';
@@ -356,7 +287,6 @@
         function resetQueryButtons() {
             document.getElementById('batchQueryBtn').disabled = false;
             document.getElementById('batchQueryBtn').textContent = '开始查询';
-            document.getElementById('queryThreadCountSelect').disabled = false;
             document.getElementById('stopBatchBtn').style.display = 'none';
             document.getElementById('retryLimitInput').disabled = false;
             document.getElementById('queryProgress').classList.remove('show');
@@ -478,32 +408,24 @@
             try {
                 refreshAppAccountStatus();
                 await loadSlots();
-                const r = await fetch('/api/crm/status?kind=query&slot_id=' + encodeURIComponent(currentQuerySlot));
-                const d = await r.json();
                 const browserDot = document.getElementById('browserDot');
                 const loginDot = document.getElementById('loginDot');
                 const loginStatus = document.getElementById('loginStatus');
                 const loginBtn = document.getElementById('loginBtn');
                 const logoutBtn = document.getElementById('logoutBtn');
                 const batchQueryBtn = document.getElementById('batchQueryBtn');
+                const totalSlots = querySlots.length || 1;
+                const loggedSlots = querySlots.filter(slot => slot.logged_in).length;
+                const browserRunning = querySlots.some(slot => slot.browser_running);
 
-                if (d.browser_running) {
+                if (browserRunning) {
                     browserDot.className = 'status-dot green';
-                    if (d.logged_in) {
+                    if (loggedSlots > 0) {
                         loginDot.className = 'status-dot green';
-                        loginStatus.textContent = '已登录';
+                        loginStatus.textContent = `已登录 ${loggedSlots}/${totalSlots}`;
                         loginBtn.style.display = 'none';
                         logoutBtn.style.display = '';
                         batchQueryBtn.disabled = isBatchRunning || batchStartPending || isMultiBatchRunning;
-
-                        // 登录成功后，如果有待处理的批量查询，自动继续
-                        if (pendingBatch && pendingBarcodes.length > 0) {
-                            log('登录成功，自动继续批量查询...', 'info');
-                            const barcodesToQuery = [...pendingBarcodes];
-                            pendingBarcodes = [];
-                            pendingBatch = false;
-                            doBatchQueryCore(barcodesToQuery);
-                        }
                     } else {
                         loginDot.className = 'status-dot red';
                         loginStatus.textContent = '未登录';
@@ -702,105 +624,23 @@
             if (uniqueBarcodes.length === 0) { showToast('没有有效条码'); return; }
 
             if (isBatchRunning || batchStartPending || isMultiBatchRunning) { showToast('批量查询进行中'); return; }
-            const threadCount = getSelectedQueryThreadCount();
-            if (threadCount > 1) {
-                doMultiBatchQuery(uniqueBarcodes, threadCount);
-                return;
-            }
-            batchStartPending = true;
-
-            // 保存条码到全局变量和 sessionStorage
-            pendingBarcodes = [...uniqueBarcodes];
-            saveQueryInput();
-
-            // 检查登录状态，未登录则自动登录
-            let statusData;
-            try {
-                const statusRes = await fetch('/api/crm/status?kind=query&slot_id=' + encodeURIComponent(currentQuerySlot));
-                statusData = await statusRes.json();
-            } catch(e) {
-                batchStartPending = false;
-                log('检查登录状态出错: ' + e, 'error');
-                showToast('检查登录状态失败');
-                return;
-            }
-            if (!statusData.logged_in) {
-                const savedUsername = localStorage.getItem('crm_username');
-                const savedPassword = localStorage.getItem('crm_password');
-                if (savedUsername && savedPassword) {
-                    log('会话已过期，自动登录中...', 'warn');
-                    let loginData;
-                    try {
-                        const loginRes = await fetch('/api/crm/login', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify(slotPayload({username: savedUsername, password: savedPassword}))
-                        });
-                        loginData = await loginRes.json();
-                    } catch(e) {
-                        batchStartPending = false;
-                        log('自动登录出错: ' + e, 'error');
-                        showToast('自动登录失败，请手动登录');
-                        openLoginModal();
-                        pendingBatch = true;
-                        return;
-                    }
-                    if (loginData.success && loginData.message === 'captcha_required') {
-                        log('自动登录需要验证码，请在弹窗中输入', 'warn');
-                        showToast('请输入短信验证码');
-                        openLoginModal();
-                        document.getElementById('captchaRow').style.display = '';
-                        document.getElementById('modalLoginBtn').style.display = 'none';
-                        document.getElementById('captchaSubmitBtn').style.display = '';
-                        document.getElementById('resetLoginBtn').style.display = '';
-                        document.getElementById('captchaInput').focus();
-                        pendingBatch = true;
-                        batchStartPending = false;
-                        return;
-                    }
-                    if (!loginData.success) {
-                        log('自动登录失败: ' + loginData.message + '，请在弹窗中完成登录', 'warn');
-                        showToast('请登录，登录成功后自动继续');
-                        openLoginModal();
-                        // 设置待处理标志，登录成功后 checkStatus 会自动继续
-                        pendingBatch = true;
-                        batchStartPending = false;
-                        return;
-                    }
-                    log('自动登录成功', 'success');
-                } else {
-                    log('未登录且无保存的账号，请先登录', 'warn');
-                    showToast('请先登录，登录成功后自动继续');
-                    openLoginModal();
-                    // 设置待处理标志，登录成功后 checkStatus 会自动继续
-                    pendingBatch = true;
-                    batchStartPending = false;
-                    return;
-                }
-            }
-
-            // 已登录，直接执行批量查询
-            doBatchQueryCore(uniqueBarcodes);
+            doMultiBatchQuery(uniqueBarcodes);
         }
 
-        async function doMultiBatchQuery(uniqueBarcodes, requestedThreadCount) {
+        async function doMultiBatchQuery(uniqueBarcodes) {
             if (isBatchRunning || batchStartPending || isMultiBatchRunning) { showToast('批量查询进行中'); return; }
             if (uniqueBarcodes.length === 0) { showToast('没有有效条码'); return; }
 
             batchStartPending = true;
             saveQueryInput();
             await loadSlots();
-            const requestedCount = Math.max(1, Number.parseInt(requestedThreadCount, 10) || 1);
-            const loggedSlots = querySlots.filter(slot => slot.logged_in).slice(0, requestedCount);
+            const loggedSlots = querySlots.filter(slot => slot.logged_in);
             const skippedSlots = querySlots.filter(slot => !slot.logged_in);
             if (!loggedSlots.length) {
                 batchStartPending = false;
                 log('没有已登录的查询通道，请先到账号管理批量登录 CRM 通道', 'warn');
                 showToast('没有已登录的查询通道');
                 return;
-            }
-            if (loggedSlots.length < requestedCount) {
-                log(`选择 ${requestedCount} 线程，但只有 ${loggedSlots.length} 个查询通道已登录，本次使用 ${loggedSlots.length} 线程`, 'warn');
             }
             if (skippedSlots.length) {
                 log(`跳过 ${skippedSlots.length} 个未登录查询通道：${skippedSlots.map(s => s.label).join('，')}`, 'warn');
@@ -965,77 +805,6 @@
             checkStatus();
         }
 
-        async function doBatchQueryCore(uniqueBarcodes) {
-            // 清除待处理状态
-            pendingBatch = false;
-            pendingBarcodes = [];
-            lastBatchLogSeq = 0;
-            const retryLimit = getRetryLimit();
-
-            let d;
-            try {
-                const r = await fetch('/api/crm/batch/start', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(slotPayload({barcodes: uniqueBarcodes, retry_limit: retryLimit}))
-                });
-                d = await r.json();
-            } catch(e) {
-                batchStartPending = false;
-                showToast('启动批量查询出错');
-                log('启动批量查询出错: ' + e, 'error');
-                return;
-            }
-            batchStartPending = false;
-            if (!d.success) {
-                showToast(d.error || '启动批量查询失败');
-                log('启动批量查询失败: ' + (d.error || ''), 'error');
-                return;
-            }
-            currentBatchJobId = d.job_id || '';
-            sessionStorage.setItem('crm_batch_job_id', currentBatchJobId);
-            sessionStorage.setItem(`crm_batch_job_id_${currentQuerySlot}`, currentBatchJobId);
-            isBatchRunning = true;
-            setQueryButtonsRunning('查询中...', '停止当前查询');
-            pollBatchStatus();
-        }
-
-        async function pollBatchStatus() {
-            if (isMultiBatchRunning) return;
-            try {
-                const params = new URLSearchParams({
-                    since: String(lastBatchLogSeq),
-                    slot_id: currentQuerySlot,
-                    job_id: currentBatchJobId || ''
-                });
-                const r = await fetch('/api/crm/batch/status?' + params.toString());
-                const d = await r.json();
-                if (!d.success) return;
-
-                isBatchRunning = d.running;
-                const pct = d.total ? Math.round((d.current / d.total) * 100) : 0;
-                setProgress('queryProgressBar', pct);
-
-                (d.logs || []).forEach(appendServerLog);
-
-                if (d.running) {
-                    setQueryButtonsRunning('查询中...', '停止当前查询');
-                    if (!batchPollTimer) {
-                        batchPollTimer = setInterval(pollBatchStatus, 1000);
-                    }
-                } else {
-                    resetQueryButtons();
-                    checkStatus();
-                    if (batchPollTimer) {
-                        clearInterval(batchPollTimer);
-                        batchPollTimer = null;
-                    }
-                }
-            } catch(e) {
-                console.error(e);
-            }
-        }
-
         async function stopBatch() {
             if (isMultiBatchRunning) {
                 log('正在停止所有多线程查询任务...', 'warn');
@@ -1050,13 +819,7 @@
                 pollMultiBatchStatus();
                 return;
             }
-            log('正在停止当前查询通道任务...', 'warn');
-            await fetch('/api/crm/batch/stop', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(slotPayload({job_id: currentBatchJobId}))
-            }).catch(() => {});
-            pollBatchStatus();
+            showToast('当前没有正在查询的任务');
         }
 
         restoreMultiBatchJobs();
@@ -1064,8 +827,6 @@
         setInterval(checkStatus, 5000);
         if (isMultiBatchRunning) {
             pollMultiBatchStatus();
-        } else {
-            pollBatchStatus();
         }
 
         // 页面加载时自动填入保存的用户名

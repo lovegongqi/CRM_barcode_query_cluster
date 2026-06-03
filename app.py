@@ -3359,7 +3359,6 @@ FILTER_FIELDS = {
     'myproductdealer1_sr5': '归属经销商',
     'newdealername1_sr2': '服务经销商',
     'newisclosed1_sr2': '是否结单',
-    'querySlotLabel': '查询通道',
 }
 
 SUBREPORT_NAMES = {
@@ -3618,8 +3617,6 @@ def _suggest_column_width(label, values):
     return min(max(max_width + 2, 12), 28)
 
 def _get_filter_value(item, field_id):
-    if field_id == 'querySlotLabel':
-        return _clean_export_value(item.get('querySlotLabel'))
     return _get_field(item.get('fields') or {}, field_id)
 
 def get_filter_options(barcodes):
