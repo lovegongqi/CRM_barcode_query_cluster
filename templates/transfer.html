@@ -182,6 +182,9 @@ let currentSummaryJobId = sessionStorage.getItem(`crm_summary_job_id_${currentTr
 let currentTransferJobId = sessionStorage.getItem(`crm_transfer_job_id_${currentTransferSlot}`) || '';
 let transferSlots = [];
 let pendingLoginSlots = [];
+let currentLoginJobId = sessionStorage.getItem('crm_bulk_login_job_transfer') || '';
+let loginPollTimer = null;
+let lastLoginLogSeq = 0;
 const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
 
 function transferPayloadForSlot(slotId, extra={}) {
@@ -485,11 +488,87 @@ async function cancelLogin() {
     document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
     document.getElementById('captchaInput').value = '';
     try {
-        const slots = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentTransferSlot}];
-        await Promise.all(slots.map(slot => fetch('/api/crm/login/cancel?kind=transfer&slot_id=' + encodeURIComponent(slot.id), {method:'POST'}).catch(() => {})));
+        if (currentLoginJobId) {
+            await fetch('/api/crm/bulk-login/cancel', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({scope: 'transfer', job_id: currentLoginJobId})
+            }).catch(() => {});
+        }
     } catch (e) {}
     pendingLoginSlots = [];
+    currentLoginJobId = '';
+    sessionStorage.removeItem('crm_bulk_login_job_transfer');
+    if (loginPollTimer) clearInterval(loginPollTimer);
+    loginPollTimer = null;
     refreshCrmStatus();
+}
+
+function appendLoginServerLog(entry) {
+    if (!entry || Number(entry.id || 0) <= lastLoginLogSeq) return;
+    appendLog(entry.message || '', entry.level || 'dim');
+    lastLoginLogSeq = Math.max(lastLoginLogSeq, Number(entry.id || 0));
+}
+
+function renderBulkLoginStatus(data) {
+    if (!data || !data.success) return;
+    currentLoginJobId = data.job_id || currentLoginJobId;
+    if (currentLoginJobId) sessionStorage.setItem('crm_bulk_login_job_transfer', currentLoginJobId);
+    (data.logs || []).forEach(appendLoginServerLog);
+    pendingLoginSlots = data.pending_slots || [];
+    const loginBtn = document.getElementById('modalLoginBtn');
+    if (data.running || data.waiting_captcha) {
+        document.getElementById('loginModal').classList.add('show');
+        loginBtn.disabled = true;
+        loginBtn.textContent = data.waiting_captcha ? '等待验证码' : '登录中...';
+    }
+    if (data.waiting_captcha) {
+        document.getElementById('captchaRow').style.display = '';
+        loginBtn.style.display = 'none';
+        document.getElementById('captchaSubmitBtn').style.display = '';
+        document.getElementById('resetLoginBtn').style.display = '';
+        document.getElementById('loginPassword').value = '';
+        const captchaInput = document.getElementById('captchaInput');
+        if (!captchaInput.value) captchaInput.focus();
+    }
+    if (data.captcha_received && data.running) {
+        document.getElementById('captchaSubmitBtn').disabled = true;
+        document.getElementById('captchaSubmitBtn').textContent = '验证码已提交';
+    }
+    if (data.done) {
+        if (loginPollTimer) clearInterval(loginPollTimer);
+        loginPollTimer = null;
+        loginBtn.disabled = false;
+        loginBtn.textContent = '批量登录';
+        document.getElementById('captchaSubmitBtn').disabled = false;
+        document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
+        if (data.login_success) {
+            appendLog('批量登录成功', 'success');
+            closeLoginModal();
+            document.getElementById('captchaRow').style.display = 'none';
+            document.getElementById('resetLoginBtn').style.display = 'none';
+            document.getElementById('captchaInput').value = '';
+            currentLoginJobId = '';
+            sessionStorage.removeItem('crm_bulk_login_job_transfer');
+        } else if (!data.waiting_captcha) {
+            appendLog(data.error || '部分移库通道未登录', 'warn');
+            document.getElementById('resetLoginBtn').style.display = '';
+        }
+        refreshCrmStatus();
+    }
+}
+
+async function pollBulkLoginStatus() {
+    if (!currentLoginJobId) return;
+    const params = new URLSearchParams({scope: 'transfer', job_id: currentLoginJobId});
+    const data = await fetch('/api/crm/bulk-login/status?' + params.toString()).then(r => r.json()).catch(() => null);
+    if (data && data.success) renderBulkLoginStatus(data);
+}
+
+function startBulkLoginPolling() {
+    if (loginPollTimer) clearInterval(loginPollTimer);
+    loginPollTimer = setInterval(pollBulkLoginStatus, 1000);
+    pollBulkLoginStatus();
 }
 
 async function doLogin() {
@@ -504,58 +583,29 @@ async function doLogin() {
     btn.textContent = '登录中...';
     appendLog('开始批量登录移库通道...', 'info');
     pendingLoginSlots = [];
+    lastLoginLogSeq = 0;
     try {
-        await loadSlots();
-        const targets = transferSlots.filter(slot => !slot.logged_in);
         localStorage.setItem('crm_username', username);
         localStorage.setItem('crm_password', password);
-        if (!targets.length) {
-            appendLog('所有移库通道都已登录', 'success');
-            closeLoginModal();
-        } else {
-            appendLog(`开始登录 ${targets.length} 个移库通道`, 'info');
-            for (const slot of targets) {
-                appendLog(`打开 ${slot.label} 登录页`, 'info');
-                try {
-                    const r = await fetch('/api/crm/login-step1', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify(slotLoginPayload(slot, {username, password}))
-                    });
-                    const d = await r.json();
-                    const msg = d.message || d.error || '';
-                    if (!d.success) {
-                        appendLog(`${slot.label} 登录失败：${msg || '未知错误'}`, 'error');
-                        continue;
-                    }
-                    if (isLoggedInMessage(msg)) {
-                        appendLog(`${slot.label} 已登录`, 'success');
-                        continue;
-                    }
-                    pendingLoginSlots.push(slot);
-                    appendLog(`${slot.label} 已进入验证码步骤`, msg === 'captcha_not_found' ? 'warn' : 'success');
-                } catch(e) {
-                    appendLog(`${slot.label} 登录请求出错：${e}`, 'error');
-                }
-            }
-            if (pendingLoginSlots.length) {
-                document.getElementById('captchaRow').style.display = '';
-                document.getElementById('modalLoginBtn').style.display = 'none';
-                document.getElementById('captchaSubmitBtn').style.display = '';
-                document.getElementById('resetLoginBtn').style.display = '';
-                document.getElementById('loginPassword').value = '';
-                document.getElementById('captchaInput').focus();
-                appendLog(`请输入短信验证码，将同步提交到 ${pendingLoginSlots.length} 个移库通道`, 'success');
-            } else {
-                appendLog('批量登录完成', 'success');
-                closeLoginModal();
-            }
+        const r = await fetch('/api/crm/bulk-login/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({scope: 'transfer', username, password})
+        });
+        const data = await r.json();
+        if (!data.success) {
+            appendLog(data.error || '批量登录启动失败', 'error');
+            btn.disabled = false;
+            btn.textContent = '批量登录';
+            return;
         }
+        renderBulkLoginStatus(data);
+        startBulkLoginPolling();
     } catch (e) {
         appendLog('登录出错：' + e, 'error');
+        btn.disabled = false;
+        btn.textContent = '批量登录';
     }
-    btn.disabled = false;
-    btn.textContent = '批量登录';
     refreshCrmStatus();
 }
 
@@ -568,37 +618,19 @@ async function doLoginStep2() {
     const btn = document.getElementById('captchaSubmitBtn');
     btn.disabled = true;
     btn.textContent = '提交中...';
-    appendLog(`提交验证码到 ${pendingLoginSlots.length || 1} 个移库通道...`, 'info');
+    appendLog('提交验证码到等待中的移库通道...', 'info');
     try {
-        const targets = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentTransferSlot, kind: 'transfer', label: '当前移库通道'}];
-        const stillPending = [];
-        for (const slot of targets) {
-            try {
-                const r = await fetch('/api/crm/login-step2', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(slotLoginPayload(slot, {captcha}))
-                });
-                const d = await r.json();
-                if (d.success) {
-                    appendLog(`${slot.label || slot.id} 登录成功`, 'success');
-                } else {
-                    stillPending.push(slot);
-                    appendLog(`${slot.label || slot.id} 验证码错误：${d.message || d.error || '请重试'}`, 'error');
-                }
-            } catch(e) {
-                stillPending.push(slot);
-                appendLog(`${slot.label || slot.id} 提交验证码出错：${e}`, 'error');
-            }
-        }
-        pendingLoginSlots = stillPending;
-        if (!pendingLoginSlots.length) {
-            appendLog('批量登录成功', 'success');
-            closeLoginModal();
-            document.getElementById('captchaInput').value = '';
+        const r = await fetch('/api/crm/bulk-login/captcha', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({scope: 'transfer', job_id: currentLoginJobId, captcha})
+        });
+        const data = await r.json();
+        if (!data.success) {
+            appendLog(data.error || '提交验证码失败', 'error');
         } else {
-            appendLog(`仍有 ${pendingLoginSlots.length} 个移库通道未登录，可重新输入验证码再提交`, 'warn');
-            document.getElementById('resetLoginBtn').style.display = '';
+            renderBulkLoginStatus(data);
+            startBulkLoginPolling();
         }
     } catch (e) {
         appendLog('提交验证码出错：' + e, 'error');
@@ -611,10 +643,17 @@ async function doLoginStep2() {
 async function restartLogin() {
     appendLog('重新打开 CRM 登录...', 'warn');
     try {
-        const slots = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentTransferSlot}];
-        await Promise.all(slots.map(slot => fetch('/api/crm/login/cancel?kind=transfer&slot_id=' + encodeURIComponent(slot.id), {method:'POST'}).catch(() => {})));
+        if (currentLoginJobId) {
+            await fetch('/api/crm/bulk-login/cancel', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({scope: 'transfer', job_id: currentLoginJobId})
+            }).catch(() => {});
+        }
     } catch (e) {}
     pendingLoginSlots = [];
+    currentLoginJobId = '';
+    sessionStorage.removeItem('crm_bulk_login_job_transfer');
     document.getElementById('captchaRow').style.display = 'none';
     document.getElementById('captchaSubmitBtn').style.display = 'none';
     document.getElementById('resetLoginBtn').style.display = 'none';
@@ -1004,6 +1043,9 @@ async function loadQueriedDealerHistory() {
     loadQueriedDealerHistory();
     refreshCrmStatus();
     resumeBackgroundJobs();
+    if (currentLoginJobId) {
+        startBulkLoginPolling();
+    }
 })();
 
 document.addEventListener('visibilitychange', () => {

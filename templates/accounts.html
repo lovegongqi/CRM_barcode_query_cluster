@@ -171,6 +171,9 @@ function resetForm() {
 
 let bulkCrmSlots = [];
 let pendingBulkCrmSlots = [];
+let currentBulkCrmLoginJobId = sessionStorage.getItem('crm_bulk_login_job_all') || '';
+let bulkLoginPollTimer = null;
+let lastBulkLoginLogSeq = 0;
 
 function bulkLog(message, level='dim') {
     const box = document.getElementById('bulkCrmLoginLog');
@@ -229,47 +232,26 @@ async function startBulkCrmLogin() {
     document.getElementById('bulkCaptchaRow').style.display = 'none';
     document.getElementById('bulkCrmLoginLog').innerHTML = '';
     localStorage.setItem('crm_username', username);
+    lastBulkLoginLogSeq = 0;
     try {
-        await loadBulkCrmSlots();
-        const targets = bulkCrmSlots.filter(slot => !slot.logged_in);
-        if (!targets.length) {
-            bulkLog('所有 CRM 通道都已登录', 'success');
+        const data = await fetch('/api/crm/bulk-login/start', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({scope: 'all', username, password})
+        }).then(res => res.json());
+        if (!data.success) {
+            bulkLog(data.error || '批量登录启动失败', 'error');
+            btn.disabled = false;
+            btn.textContent = '批量登录';
             return;
         }
-        bulkLog(`开始批量登录 ${targets.length} 个 CRM 通道`, 'info');
-        for (const slot of targets) {
-            bulkLog(`打开 ${slot.label} 登录页`, 'info');
-            try {
-                const data = await fetch('/api/crm/login-step1', {
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify(slotLoginPayload(slot, {username, password}))
-                }).then(res => res.json());
-                const msg = data.message || data.error || '';
-                if (!data.success) {
-                    bulkLog(`${slot.label} 登录失败：${msg || '未知错误'}`, 'error');
-                    continue;
-                }
-                if (isLoggedInMessage(msg)) {
-                    bulkLog(`${slot.label} 已登录`, 'success');
-                    continue;
-                }
-                pendingBulkCrmSlots.push(slot);
-                bulkLog(`${slot.label} 已进入验证码步骤`, msg === 'captcha_not_found' ? 'warn' : 'success');
-            } catch (e) {
-                bulkLog(`${slot.label} 登录请求出错：${e}`, 'error');
-            }
-        }
-        if (pendingBulkCrmSlots.length) {
-            document.getElementById('bulkCaptchaRow').style.display = '';
-            document.getElementById('bulkCrmCaptcha').focus();
-            bulkLog(`请输入短信验证码，将同步提交到 ${pendingBulkCrmSlots.length} 个通道`, 'warn');
-        } else {
-            bulkLog('批量登录完成，没有需要提交验证码的通道', 'success');
-        }
-    } finally {
+        renderBulkLoginJob(data);
+        startBulkLoginPolling();
+    } catch (e) {
+        bulkLog('批量登录启动出错：' + e, 'error');
         btn.disabled = false;
         btn.textContent = '批量登录';
+    } finally {
         await loadBulkCrmSlots();
     }
 }
@@ -277,44 +259,75 @@ async function startBulkCrmLogin() {
 async function submitBulkCrmCaptcha() {
     const captcha = document.getElementById('bulkCrmCaptcha').value.trim();
     if (!captcha) return alert('请输入验证码');
-    if (!pendingBulkCrmSlots.length) return alert('没有等待验证码的通道');
+    if (!currentBulkCrmLoginJobId && !pendingBulkCrmSlots.length) return alert('没有等待验证码的通道');
     const btn = document.getElementById('bulkCaptchaBtn');
     btn.disabled = true;
     btn.textContent = '提交中...';
-    const stillPending = [];
     try {
-        bulkLog(`开始同步提交验证码到 ${pendingBulkCrmSlots.length} 个通道`, 'info');
-        for (const slot of pendingBulkCrmSlots) {
-            try {
-                const data = await fetch('/api/crm/login-step2', {
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify(slotLoginPayload(slot, {captcha}))
-                }).then(res => res.json());
-                if (data.success) {
-                    bulkLog(`${slot.label} 登录成功`, 'success');
-                } else {
-                    stillPending.push(slot);
-                    bulkLog(`${slot.label} 验证码提交失败：${data.message || data.error || '未知错误'}`, 'error');
-                }
-            } catch (e) {
-                stillPending.push(slot);
-                bulkLog(`${slot.label} 验证码提交出错：${e}`, 'error');
-            }
-        }
-        pendingBulkCrmSlots = stillPending;
-        if (!pendingBulkCrmSlots.length) {
-            document.getElementById('bulkCaptchaRow').style.display = 'none';
-            document.getElementById('bulkCrmCaptcha').value = '';
-            bulkLog('所有等待验证码的通道已处理完成', 'success');
+        bulkLog('开始同步提交验证码到等待中的通道', 'info');
+        const data = await fetch('/api/crm/bulk-login/captcha', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({scope: 'all', job_id: currentBulkCrmLoginJobId, captcha})
+        }).then(res => res.json());
+        if (!data.success) {
+            bulkLog(data.error || '提交验证码失败', 'error');
         } else {
-            bulkLog(`仍有 ${pendingBulkCrmSlots.length} 个通道未登录，可重新输入验证码再提交`, 'warn');
+            renderBulkLoginJob(data);
+            startBulkLoginPolling();
         }
     } finally {
         btn.disabled = false;
         btn.textContent = '提交验证码';
         await loadBulkCrmSlots();
     }
+}
+
+function appendBulkLoginServerLog(entry) {
+    if (!entry || Number(entry.id || 0) <= lastBulkLoginLogSeq) return;
+    bulkLog(entry.message || '', entry.level || 'dim');
+    lastBulkLoginLogSeq = Math.max(lastBulkLoginLogSeq, Number(entry.id || 0));
+}
+
+function renderBulkLoginJob(data) {
+    if (!data || !data.success) return;
+    currentBulkCrmLoginJobId = data.job_id || currentBulkCrmLoginJobId;
+    if (currentBulkCrmLoginJobId) sessionStorage.setItem('crm_bulk_login_job_all', currentBulkCrmLoginJobId);
+    (data.logs || []).forEach(appendBulkLoginServerLog);
+    pendingBulkCrmSlots = data.pending_slots || [];
+    document.getElementById('bulkCrmLoginBtn').disabled = !!data.running;
+    document.getElementById('bulkCrmLoginBtn').textContent = data.running ? '登录中...' : '批量登录';
+    if (data.waiting_captcha) {
+        document.getElementById('bulkCaptchaRow').style.display = '';
+        const input = document.getElementById('bulkCrmCaptcha');
+        if (!input.value) input.focus();
+    }
+    if (data.done) {
+        if (bulkLoginPollTimer) clearInterval(bulkLoginPollTimer);
+        bulkLoginPollTimer = null;
+        document.getElementById('bulkCrmLoginBtn').disabled = false;
+        document.getElementById('bulkCrmLoginBtn').textContent = '批量登录';
+        if (data.login_success) {
+            document.getElementById('bulkCaptchaRow').style.display = 'none';
+            document.getElementById('bulkCrmCaptcha').value = '';
+            currentBulkCrmLoginJobId = '';
+            sessionStorage.removeItem('crm_bulk_login_job_all');
+        }
+        loadBulkCrmSlots();
+    }
+}
+
+async function pollBulkLoginJob() {
+    if (!currentBulkCrmLoginJobId) return;
+    const params = new URLSearchParams({scope: 'all', job_id: currentBulkCrmLoginJobId});
+    const data = await fetch('/api/crm/bulk-login/status?' + params.toString()).then(res => res.json()).catch(() => null);
+    if (data && data.success) renderBulkLoginJob(data);
+}
+
+function startBulkLoginPolling() {
+    if (bulkLoginPollTimer) clearInterval(bulkLoginPollTimer);
+    bulkLoginPollTimer = setInterval(pollBulkLoginJob, 1000);
+    pollBulkLoginJob();
 }
 
 function changeWorkerCount(inputId, delta) {
@@ -366,6 +379,7 @@ async function loadAccounts() {
         loadRuntimeConfig();
         loadBulkCrmSlots();
         document.getElementById('bulkCrmUsername').value = localStorage.getItem('crm_username') || '';
+        if (currentBulkCrmLoginJobId) startBulkLoginPolling();
     }
     if (!data.success) {
         document.getElementById('accountsBox').innerHTML = `<div class="status-text">${escapeHtml(data.error || '请先以管理员登录')}</div>`;

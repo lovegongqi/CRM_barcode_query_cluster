@@ -2831,6 +2831,10 @@ summary_job_lock = threading.Lock()
 summary_jobs = {}
 latest_summary_job_by_slot = {}
 
+bulk_login_job_lock = threading.Lock()
+bulk_login_jobs = {}
+latest_bulk_login_job_by_scope = {}
+
 def _empty_batch_job(slot_id=None, barcodes=None, retry_limit=DEFAULT_BATCH_RETRY_LIMIT):
     return {
         'job_id': uuid.uuid4().hex,
@@ -2884,6 +2888,33 @@ def _empty_summary_job(slot_id=None):
         'finished_at': '',
     }
 
+def _empty_bulk_login_job(scope, slots=None):
+    return {
+        'job_id': uuid.uuid4().hex,
+        'scope': scope,
+        'running': False,
+        'done': False,
+        'success': False,
+        'error': '',
+        'stop_requested': False,
+        'captcha': '',
+        'step1_done': False,
+        'log_seq': 0,
+        'logs': [],
+        'slots': [
+            {
+                'id': slot['id'],
+                'kind': slot['kind'],
+                'label': slot['label'],
+                'status': 'pending',
+                'message': '',
+            }
+            for slot in (slots or [])
+        ],
+        'started_at': '',
+        'finished_at': '',
+    }
+
 batch_job = _empty_batch_job()
 transfer_job = _empty_transfer_job()
 summary_job = _empty_summary_job()
@@ -2932,6 +2963,157 @@ def _summary_job_log(job_id, message, level='dim'):
 
 def _transfer_job_log(job_id, message, level='dim'):
     _job_log(transfer_job_lock, transfer_jobs, job_id, message, level, 500)
+
+def _bulk_login_job_log(job_id, message, level='dim'):
+    _job_log(bulk_login_job_lock, bulk_login_jobs, job_id, message, level, 1000)
+
+def _slot_logged_in_message(message):
+    return message in {'已登录（会话有效）', '登录成功', '登录成功（页面已跳转）'}
+
+def _bulk_login_slots_for_scope(scope):
+    payload = crm_pool.slots_payload()
+    if scope == "query":
+        slots = payload.get("query", [])
+    elif scope == "transfer":
+        slots = payload.get("transfer", [])
+    else:
+        scope = "all"
+        slots = [*(payload.get("query", [])), *(payload.get("transfer", []))]
+    return scope, [slot for slot in slots if not slot.get("logged_in")]
+
+def _bulk_login_slot_snapshot(job):
+    slots = list(job.get('slots') or [])
+    waiting = [slot for slot in slots if slot.get('status') == 'waiting_captcha']
+    active = [slot for slot in slots if slot.get('status') in {'pending', 'opening', 'submitting_captcha'}]
+    success_count = sum(1 for slot in slots if slot.get('status') == 'logged_in')
+    failed_count = sum(1 for slot in slots if slot.get('status') == 'failed')
+    return slots, waiting, active, success_count, failed_count
+
+def _finalize_bulk_login_job_if_ready(job_id):
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        if not job:
+            return
+        if job.get('done'):
+            return
+        slots, waiting, active, success_count, failed_count = _bulk_login_slot_snapshot(job)
+        if job.get('step1_done') and not waiting and not active:
+            job['running'] = False
+            job['done'] = True
+            job['success'] = failed_count == 0
+            job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            if failed_count:
+                job['error'] = f'仍有 {failed_count} 个通道未登录'
+            _append_job_log_unlocked(
+                job,
+                f"批量登录完成，成功 {success_count} 个，失败 {failed_count} 个",
+                'success' if failed_count == 0 else 'warn',
+                1000,
+            )
+
+def _update_bulk_login_slot(job_id, slot_id, status, message=''):
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        if not job:
+            return None
+        for slot in job.get('slots') or []:
+            if slot.get('id') == slot_id:
+                slot['status'] = status
+                slot['message'] = message
+                return dict(slot)
+    return None
+
+def _submit_bulk_login_slot(job_id, slot, captcha):
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        if not job:
+            return False
+        target = next((row for row in job.get('slots') or [] if row.get('id') == slot['id']), None)
+        if not target or target.get('status') != 'waiting_captcha':
+            return False
+        target['status'] = 'submitting_captcha'
+        target['message'] = '正在提交验证码'
+    _bulk_login_job_log(job_id, f"{slot['label']} 提交验证码", 'info')
+    try:
+        worker = crm_pool.get(slot['id'], slot.get('kind') or 'query')
+        success, message = worker.login_step2(captcha)
+    except Exception as e:
+        success, message = False, str(e)
+    if success:
+        _update_bulk_login_slot(job_id, slot['id'], 'logged_in', message or '登录成功')
+        _bulk_login_job_log(job_id, f"{slot['label']} 登录成功", 'success')
+        return True
+    _update_bulk_login_slot(job_id, slot['id'], 'waiting_captcha', message or '验证码提交失败')
+    _bulk_login_job_log(job_id, f"{slot['label']} 验证码提交失败：{message or '未知错误'}", 'error')
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        if job:
+            job['captcha'] = ''
+    return False
+
+def _submit_bulk_login_pending(job_id):
+    while True:
+        with bulk_login_job_lock:
+            job = bulk_login_jobs.get(job_id)
+            if not job or not job.get('captcha'):
+                return
+            captcha = job['captcha']
+            pending = [dict(slot) for slot in job.get('slots') or [] if slot.get('status') == 'waiting_captcha']
+        if not pending:
+            _finalize_bulk_login_job_if_ready(job_id)
+            return
+        for slot in pending:
+            _submit_bulk_login_slot(job_id, slot, captcha)
+        _finalize_bulk_login_job_if_ready(job_id)
+
+def _run_bulk_login_job(job_id, username, password):
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        slots = [dict(slot) for slot in (job or {}).get('slots') or []]
+    _bulk_login_job_log(job_id, f"开始批量登录 {len(slots)} 个 CRM 通道", 'info')
+    for slot in slots:
+        with bulk_login_job_lock:
+            job = bulk_login_jobs.get(job_id)
+            if not job or job.get('stop_requested'):
+                break
+        _update_bulk_login_slot(job_id, slot['id'], 'opening', '正在打开登录页')
+        _bulk_login_job_log(job_id, f"打开 {slot['label']} 登录页", 'info')
+        try:
+            worker = crm_pool.get(slot['id'], slot.get('kind') or 'query')
+            success, message = worker.login_step1(username, password)
+        except Exception as e:
+            success, message = False, str(e)
+
+        if not success:
+            _update_bulk_login_slot(job_id, slot['id'], 'failed', message or '登录失败')
+            _bulk_login_job_log(job_id, f"{slot['label']} 登录失败：{message or '未知错误'}", 'error')
+            continue
+
+        if _slot_logged_in_message(message):
+            _update_bulk_login_slot(job_id, slot['id'], 'logged_in', message or '已登录')
+            _bulk_login_job_log(job_id, f"{slot['label']} 已登录", 'success')
+            continue
+
+        _update_bulk_login_slot(job_id, slot['id'], 'waiting_captcha', message or '等待验证码')
+        _bulk_login_job_log(job_id, f"{slot['label']} 已进入验证码步骤", 'success' if message != 'captcha_not_found' else 'warn')
+        with bulk_login_job_lock:
+            job = bulk_login_jobs.get(job_id)
+            captcha = (job or {}).get('captcha') or ''
+        if captcha:
+            _submit_bulk_login_slot(job_id, slot, captcha)
+
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        if job:
+            job['step1_done'] = True
+            if job.get('stop_requested'):
+                job['running'] = False
+                job['done'] = True
+                job['error'] = '批量登录已取消'
+                job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                _append_job_log_unlocked(job, '批量登录已取消', 'warn', 1000)
+    _submit_bulk_login_pending(job_id)
+    _finalize_bulk_login_job_if_ready(job_id)
 
 def _library_query_log(message, level='dim'):
     with library_query_lock:
@@ -5340,6 +5522,106 @@ def api_crm_login_step2():
     captcha = data.get('captcha', '').strip()
     success, msg = worker.login_step2(captcha)
     return jsonify({'success': success, 'message': msg, 'slot_id': worker.slot_id})
+
+def _bulk_login_status_payload(job):
+    slots, waiting, active, success_count, failed_count = _bulk_login_slot_snapshot(job)
+    return {
+        'success': True,
+        'job_id': job.get('job_id') or '',
+        'scope': job.get('scope') or '',
+        'running': bool(job.get('running')),
+        'done': bool(job.get('done')),
+        'login_success': bool(job.get('success')),
+        'error': job.get('error') or '',
+        'waiting_captcha': bool(waiting),
+        'captcha_received': bool(job.get('captcha')),
+        'pending_slots': waiting,
+        'active_slots': active,
+        'slots': slots,
+        'total': len(slots),
+        'success_count': success_count,
+        'failed_count': failed_count,
+        'logs': list(job.get('logs') or []),
+        'log_seq': job.get('log_seq') or 0,
+        'started_at': job.get('started_at') or '',
+        'finished_at': job.get('finished_at') or '',
+    }
+
+@app.route("/api/crm/bulk-login/start", methods=["POST"])
+def api_crm_bulk_login_start():
+    data = request.get_json() or {}
+    scope = str(data.get('scope') or data.get('kind') or 'query').strip() or 'query'
+    username = str(data.get('username') or '').strip()
+    password = str(data.get('password') or '')
+    if not username or not password:
+        return jsonify({'success': False, 'error': '请输入 CRM 账号和密码'})
+    scope, slots = _bulk_login_slots_for_scope(scope)
+    with bulk_login_job_lock:
+        running_id = latest_bulk_login_job_by_scope.get(scope)
+        running_job = bulk_login_jobs.get(running_id)
+        if running_job and running_job.get('running'):
+            return jsonify(_bulk_login_status_payload(running_job))
+        job = _empty_bulk_login_job(scope, slots)
+        job.update({
+            'running': bool(slots),
+            'done': not bool(slots),
+            'success': not bool(slots),
+            'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'finished_at': '' if slots else datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        })
+        if not slots:
+            _append_job_log_unlocked(job, '所有 CRM 通道都已登录', 'success', 1000)
+        bulk_login_jobs[job['job_id']] = job
+        latest_bulk_login_job_by_scope[scope] = job['job_id']
+        payload = _bulk_login_status_payload(job)
+    if slots:
+        threading.Thread(target=_run_bulk_login_job, args=(job['job_id'], username, password), daemon=True).start()
+    return jsonify(payload)
+
+@app.route("/api/crm/bulk-login/status")
+def api_crm_bulk_login_status():
+    scope = str(request.args.get('scope') or 'query').strip() or 'query'
+    job_id = request.args.get('job_id') or latest_bulk_login_job_by_scope.get(scope)
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        if not job:
+            return jsonify({'success': False, 'error': '没有批量登录任务'})
+        return jsonify(_bulk_login_status_payload(job))
+
+@app.route("/api/crm/bulk-login/captcha", methods=["POST"])
+def api_crm_bulk_login_captcha():
+    data = request.get_json() or {}
+    scope = str(data.get('scope') or 'query').strip() or 'query'
+    job_id = data.get('job_id') or latest_bulk_login_job_by_scope.get(scope)
+    captcha = str(data.get('captcha') or '').strip()
+    if not captcha:
+        return jsonify({'success': False, 'error': '请输入验证码'})
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        if not job:
+            return jsonify({'success': False, 'error': '没有批量登录任务'})
+        job['captcha'] = captcha
+        _append_job_log_unlocked(job, '已收到验证码，正在同步提交到等待中的通道', 'info', 1000)
+        payload = _bulk_login_status_payload(job)
+    threading.Thread(target=_submit_bulk_login_pending, args=(job_id,), daemon=True).start()
+    return jsonify(payload)
+
+@app.route("/api/crm/bulk-login/cancel", methods=["POST"])
+def api_crm_bulk_login_cancel():
+    data = request.get_json() or {}
+    scope = str(data.get('scope') or 'query').strip() or 'query'
+    job_id = data.get('job_id') or latest_bulk_login_job_by_scope.get(scope)
+    with bulk_login_job_lock:
+        job = bulk_login_jobs.get(job_id)
+        if not job:
+            return jsonify({'success': True})
+        job['stop_requested'] = True
+        job['running'] = False
+        job['done'] = True
+        job['error'] = '批量登录已取消'
+        job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        _append_job_log_unlocked(job, '批量登录已取消', 'warn', 1000)
+        return jsonify(_bulk_login_status_payload(job))
 
 @app.route("/api/crm/logout", methods=["POST"])
 def api_crm_logout():

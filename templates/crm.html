@@ -216,6 +216,9 @@
         let multiBatchPollTimer = null;
         let isMultiBatchPolling = false;
         let pendingLoginSlots = [];
+        let currentLoginJobId = sessionStorage.getItem('crm_bulk_login_job_query') || '';
+        let loginPollTimer = null;
+        let lastLoginLogSeq = 0;
 
         function slotPayload(extra={}) {
             return Object.assign({slot_id: currentQuerySlot, kind: 'query'}, extra);
@@ -344,7 +347,7 @@
             const elapsedLabel = ['查询完成', '查询已停止'].includes(statusText) ? '总耗时' : '已耗时';
             const runningText = runningBarcodes.length
                 ? `正在查询 ${runningBarcodes.length} 个：${runningBarcodes.map(escapeHtml).join('，')}`
-                : (pending ? '等待空闲通道领取条码' : '没有正在查询的条码');
+                : (pending ? (rows.length ? '等待空闲通道领取条码' : '等待查询通道登录后领取条码') : '没有正在查询的条码');
             area.innerHTML = `
                 <div class="info">[${new Date().toLocaleTimeString()}] ${escapeHtml(statusText)}</div>
                 <div>总条码数：${total}</div>
@@ -410,6 +413,44 @@
 
         function multiSlotRows() {
             return Object.values((multiBatchJobs && multiBatchJobs.slots) || {});
+        }
+
+        function makeMultiSlotState(slot) {
+            return {
+                slot_id: slot.id,
+                label: slot.label || slot.id,
+                job_id: '',
+                barcode: '',
+                lastLogSeq: 0,
+                running: false,
+                current: 0,
+                startedAt: 0,
+                cooldownUntil: 0
+            };
+        }
+
+        function addMultiBatchSlot(slot) {
+            if (!multiBatchJobs || !multiBatchJobs.slots || !slot || !slot.id || multiBatchJobs.slots[slot.id]) return false;
+            multiBatchJobs.slots[slot.id] = makeMultiSlotState(slot);
+            return true;
+        }
+
+        async function expandLoggedQuerySlots(autoStart=false) {
+            if (!isMultiBatchRunning || !multiBatchJobs || !multiBatchJobs.slots || multiBatchJobs.stopRequested) return 0;
+            await loadSlots();
+            const addedSlots = [];
+            querySlots.filter(slot => slot.logged_in).forEach(slot => {
+                if (addMultiBatchSlot(slot)) addedSlots.push(slot);
+            });
+            if (!addedSlots.length) return 0;
+            const labels = addedSlots.map(slot => slot.label || slot.id).join('，');
+            rememberQueryNotice(`新增已登录查询通道：${labels}，已自动加入当前查询`);
+            if (window.globalLogAppend) window.globalLogAppend(`新增已登录查询通道：${labels}，自动扩容查询线程`, 'success');
+            persistMultiBatchJobs();
+            if (autoStart && multiBatchJobs.pending && multiBatchJobs.pending.length) {
+                await Promise.all(addedSlots.map(slot => startNextMultiBarcode(slot.id)));
+            }
+            return addedSlots.length;
         }
 
         function getUniqueBarcodesFromInput() {
@@ -496,12 +537,21 @@
             document.getElementById('captchaInput').value = '';
             document.getElementById('loginProgress').classList.remove('show');
             try {
-                const slots = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentQuerySlot}];
-                await Promise.all(slots.map(slot => fetch('/api/crm/login/cancel?kind=query&slot_id=' + encodeURIComponent(slot.id), {method:'POST'}).catch(() => {})));
+                if (currentLoginJobId) {
+                    await fetch('/api/crm/bulk-login/cancel', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({scope: 'query', job_id: currentLoginJobId})
+                    }).catch(() => {});
+                }
             } catch(e) {
                 console.error(e);
             }
             pendingLoginSlots = [];
+            currentLoginJobId = '';
+            sessionStorage.removeItem('crm_bulk_login_job_query');
+            if (loginPollTimer) clearInterval(loginPollTimer);
+            loginPollTimer = null;
             checkStatus();
         }
 
@@ -553,6 +603,91 @@
             if (el) el.textContent = data.account ? data.account.username : '未登录';
         }
 
+        function appendLoginServerLog(entry) {
+            if (!entry || Number(entry.id || 0) <= lastLoginLogSeq) return;
+            const area = document.getElementById('logArea');
+            const line = document.createElement('div');
+            line.className = entry.level || '';
+            line.textContent = `[${entry.time || new Date().toLocaleTimeString()}] ${entry.message || ''}`;
+            area.appendChild(line);
+            area.scrollTop = area.scrollHeight;
+            if (window.globalLogAppend) {
+                window.globalLogAppend(entry.message || '', entry.level || 'dim', entry.time || '', `bulk-login-query:${currentLoginJobId}:${entry.id}`);
+            }
+            lastLoginLogSeq = Math.max(lastLoginLogSeq, Number(entry.id || 0));
+        }
+
+        function renderBulkLoginStatus(data) {
+            if (!data || !data.success) return;
+            currentLoginJobId = data.job_id || currentLoginJobId;
+            if (currentLoginJobId) sessionStorage.setItem('crm_bulk_login_job_query', currentLoginJobId);
+            (data.logs || []).forEach(appendLoginServerLog);
+            pendingLoginSlots = data.pending_slots || [];
+
+            const total = Number(data.total || 0);
+            const doneCount = Number(data.success_count || 0) + Number(data.failed_count || 0);
+            if (total) setProgress('loginProgressBar', Math.min(100, Math.round((doneCount / total) * 100)));
+
+            const modalLoginBtn = document.getElementById('modalLoginBtn');
+            if (data.running || data.waiting_captcha) {
+                document.getElementById('loginModal').classList.add('show');
+                document.getElementById('loginProgress').classList.add('show');
+                modalLoginBtn.disabled = true;
+                modalLoginBtn.textContent = data.waiting_captcha ? '等待验证码' : '登录中...';
+            }
+
+            if (data.waiting_captcha) {
+                document.getElementById('captchaRow').style.display = '';
+                modalLoginBtn.style.display = 'none';
+                document.getElementById('captchaSubmitBtn').style.display = '';
+                document.getElementById('resetLoginBtn').style.display = '';
+                document.getElementById('loginPassword').value = '';
+                const captchaInput = document.getElementById('captchaInput');
+                if (!captchaInput.value) captchaInput.focus();
+            }
+
+            if (data.captcha_received && data.running) {
+                document.getElementById('captchaSubmitBtn').disabled = true;
+                document.getElementById('captchaSubmitBtn').textContent = '验证码已提交';
+            }
+
+            if (data.done) {
+                if (loginPollTimer) clearInterval(loginPollTimer);
+                loginPollTimer = null;
+                document.getElementById('loginProgress').classList.remove('show');
+                modalLoginBtn.disabled = false;
+                modalLoginBtn.textContent = '批量登录';
+                document.getElementById('captchaSubmitBtn').disabled = false;
+                document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
+                if (data.login_success) {
+                    closeLoginModal();
+                    document.getElementById('captchaRow').style.display = 'none';
+                    document.getElementById('resetLoginBtn').style.display = 'none';
+                    document.getElementById('captchaInput').value = '';
+                    sessionStorage.removeItem('crm_bulk_login_job_query');
+                    currentLoginJobId = '';
+                    showToast('批量登录成功');
+                } else if (!data.waiting_captcha) {
+                    document.getElementById('resetLoginBtn').style.display = '';
+                    showToast(data.error || '部分通道未登录');
+                }
+                checkStatus();
+            }
+        }
+
+        async function pollBulkLoginStatus() {
+            if (!currentLoginJobId) return;
+            const params = new URLSearchParams({scope: 'query', job_id: currentLoginJobId});
+            const data = await fetch('/api/crm/bulk-login/status?' + params.toString()).then(r => r.json()).catch(() => null);
+            if (data && data.success) renderBulkLoginStatus(data);
+        }
+
+        function startBulkLoginPolling() {
+            if (loginPollTimer) clearInterval(loginPollTimer);
+            loginPollTimer = setInterval(pollBulkLoginStatus, 1000);
+            pollBulkLoginStatus();
+        }
+
         async function doLogin() {
             const username = document.getElementById('loginUsername').value.trim();
             const password = document.getElementById('loginPassword').value;
@@ -566,70 +701,32 @@
             setProgress('loginProgressBar', 20);
             log('开始批量登录查询通道...', 'info');
             pendingLoginSlots = [];
+            lastLoginLogSeq = 0;
 
             try {
-                await loadSlots();
-                const targets = querySlots.filter(slot => !slot.logged_in);
                 localStorage.setItem('crm_username', username);
                 localStorage.setItem('crm_password', password);
-                if (!targets.length) {
-                    setProgress('loginProgressBar', 100);
+                const r = await fetch('/api/crm/bulk-login/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({scope: 'query', username, password})
+                });
+                const data = await r.json();
+                if (!data.success) {
+                    log(data.error || '批量登录启动失败', 'error');
                     document.getElementById('loginProgress').classList.remove('show');
-                    log('所有查询通道都已登录', 'success');
-                    showToast('所有查询通道都已登录');
-                    closeLoginModal();
-                } else {
-                    log(`开始登录 ${targets.length} 个查询通道`, 'info');
-                    for (let index = 0; index < targets.length; index += 1) {
-                        const slot = targets[index];
-                        setProgress('loginProgressBar', Math.round((index / targets.length) * 80) + 10);
-                        log(`打开 ${slot.label} 登录页`, 'info');
-                        try {
-                            const r = await fetch('/api/crm/login-step1', {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify(slotLoginPayload(slot, {username, password}))
-                            });
-                            const d = await r.json();
-                            const msg = d.message || d.error || '';
-                            if (!d.success) {
-                                log(`${slot.label} 登录失败: ${msg || '未知错误'}`, 'error');
-                                continue;
-                            }
-                            if (isLoggedInMessage(msg)) {
-                                log(`${slot.label} 已登录`, 'success');
-                                continue;
-                            }
-                            pendingLoginSlots.push(slot);
-                            log(`${slot.label} 已进入验证码步骤`, msg === 'captcha_not_found' ? 'warn' : 'success');
-                        } catch(e) {
-                            log(`${slot.label} 登录请求出错: ${e}`, 'error');
-                        }
-                    }
-                    setProgress('loginProgressBar', 100);
-                    document.getElementById('loginProgress').classList.remove('show');
-
-                    if (pendingLoginSlots.length) {
-                        document.getElementById('captchaRow').style.display = '';
-                        document.getElementById('modalLoginBtn').style.display = 'none';
-                        document.getElementById('captchaSubmitBtn').style.display = '';
-                        document.getElementById('resetLoginBtn').style.display = '';
-                        document.getElementById('loginPassword').value = '';
-                        document.getElementById('captchaInput').focus();
-                        log(`请输入短信验证码，将同步提交到 ${pendingLoginSlots.length} 个查询通道`, 'success');
-                        showToast('验证码已发送，请输入短信验证码');
-                    } else {
-                        log('批量登录完成', 'success');
-                        showToast('批量登录完成');
-                        closeLoginModal();
-                    }
+                    btn.disabled = false;
+                    btn.textContent = '批量登录';
+                    return;
                 }
+                renderBulkLoginStatus(data);
+                startBulkLoginPolling();
             } catch(e) {
                 log('登录出错: ' + e, 'error');
                 document.getElementById('loginProgress').classList.remove('show');
+                btn.disabled = false;
+                btn.textContent = '批量登录';
             }
-            btn.disabled = false;
-            btn.textContent = '批量登录';
             checkStatus();
         }
 
@@ -640,44 +737,20 @@
             const btn = document.getElementById('captchaSubmitBtn');
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner"></span> 提交中...';
-            log(`提交验证码到 ${pendingLoginSlots.length || 1} 个查询通道...`, 'info');
+            log(`提交验证码到等待中的查询通道...`, 'info');
 
             try {
-                const targets = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentQuerySlot, kind: 'query', label: '当前查询通道'}];
-                const stillPending = [];
-                for (const slot of targets) {
-                    try {
-                        const r = await fetch('/api/crm/login-step2', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify(slotLoginPayload(slot, {captcha}))
-                        });
-                        const d = await r.json();
-                        if (d.success) {
-                            log(`${slot.label || slot.id} 登录成功`, 'success');
-                        } else {
-                            stillPending.push(slot);
-                            log(`${slot.label || slot.id} 验证码错误: ${d.message || d.error || '未知错误'}`, 'error');
-                        }
-                    } catch(e) {
-                        stillPending.push(slot);
-                        log(`${slot.label || slot.id} 提交验证码出错: ${e}`, 'error');
-                    }
-                }
-                pendingLoginSlots = stillPending;
-                if (!pendingLoginSlots.length) {
-                    log('批量登录成功！', 'success');
-                    showToast('批量登录成功');
-                    closeLoginModal();
-                    document.getElementById('captchaRow').style.display = 'none';
-                    document.getElementById('resetLoginBtn').style.display = 'none';
-                    document.getElementById('loginBtn').style.display = 'none';
-                    document.getElementById('logoutBtn').style.display = '';
-                    document.getElementById('batchQueryBtn').disabled = false;
-                    document.getElementById('captchaInput').value = '';
+                const r = await fetch('/api/crm/bulk-login/captcha', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({scope: 'query', job_id: currentLoginJobId, captcha})
+                });
+                const data = await r.json();
+                if (!data.success) {
+                    log(data.error || '提交验证码失败', 'error');
                 } else {
-                    showToast(`${pendingLoginSlots.length} 个查询通道仍未登录`);
-                    document.getElementById('resetLoginBtn').style.display = '';
+                    renderBulkLoginStatus(data);
+                    startBulkLoginPolling();
                 }
             } catch(e) {
                 log('提交验证码出错: ' + e, 'error');
@@ -692,12 +765,19 @@
             btn.disabled = true;
             log('正在重置登录状态并重新打开登录页...', 'warn');
             try {
-                const slots = pendingLoginSlots.length ? pendingLoginSlots : [{id: currentQuerySlot}];
-                await Promise.all(slots.map(slot => fetch('/api/crm/login/cancel?kind=query&slot_id=' + encodeURIComponent(slot.id), {method:'POST'}).catch(() => {})));
+                if (currentLoginJobId) {
+                    await fetch('/api/crm/bulk-login/cancel', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({scope: 'query', job_id: currentLoginJobId})
+                    }).catch(() => {});
+                }
             } catch(e) {
                 console.error(e);
             }
             pendingLoginSlots = [];
+            currentLoginJobId = '';
+            sessionStorage.removeItem('crm_bulk_login_job_query');
 
             document.getElementById('captchaRow').style.display = 'none';
             document.getElementById('captchaSubmitBtn').style.display = 'none';
@@ -771,14 +851,8 @@
             await loadSlots();
             const loggedSlots = querySlots.filter(slot => slot.logged_in);
             const skippedSlots = querySlots.filter(slot => !slot.logged_in);
-            if (!loggedSlots.length) {
-                batchStartPending = false;
-                log('没有已登录的查询通道，请先点击批量登录 CRM', 'warn');
-                showToast('没有已登录的查询通道');
-                return;
-            }
             if (skippedSlots.length) {
-                log(`跳过 ${skippedSlots.length} 个未登录查询通道：${skippedSlots.map(s => s.label).join('，')}`, 'warn');
+                log(`${skippedSlots.length} 个查询通道尚未登录，登录成功后会自动加入当前查询：${skippedSlots.map(s => s.label).join('，')}`, 'warn');
             }
 
             const retryLimit = getRetryLimit();
@@ -796,19 +870,7 @@
                 startedAtMs: Date.now(),
                 started_at: new Date().toISOString()
             };
-            loggedSlots.forEach(slot => {
-                multiBatchJobs.slots[slot.id] = {
-                    slot_id: slot.id,
-                    label: slot.label,
-                    job_id: '',
-                    barcode: '',
-                    lastLogSeq: 0,
-                    running: false,
-                    current: 0,
-                    startedAt: 0,
-                    cooldownUntil: 0
-                };
-            });
+            loggedSlots.forEach(addMultiBatchSlot);
             lastBatchLogSeq = 0;
             if (window.globalLogAppend) window.globalLogAppend(`开始多线程查询，共 ${uniqueBarcodes.length} 个条码`, 'info');
             setProgress('queryProgressBar', 0);
@@ -816,7 +878,11 @@
             isMultiBatchRunning = true;
             persistMultiBatchJobs();
             if (skippedSlots.length) {
-                rememberQueryNotice(`有 ${skippedSlots.length} 个查询通道未登录，本次只使用已登录通道`);
+                rememberQueryNotice(`有 ${skippedSlots.length} 个查询通道未登录，后续登录成功会自动加入`);
+            }
+            if (!loggedSlots.length) {
+                rememberQueryNotice('当前没有已登录查询通道，正在等待通道登录');
+                showToast('等待查询通道登录后自动开始');
             }
             renderQuerySummary(`开始查询，共 ${uniqueBarcodes.length} 个条码`);
             await Promise.all(loggedSlots.map(slot => startNextMultiBarcode(slot.id)));
@@ -892,7 +958,7 @@
 
         async function pollMultiBatchStatus() {
             if (isMultiBatchPolling) return;
-            if (!multiBatchJobs || !multiBatchJobs.slots || !multiSlotRows().length) {
+            if (!multiBatchJobs || !multiBatchJobs.slots) {
                 isMultiBatchRunning = false;
                 resetQueryButtons();
                 return;
@@ -902,6 +968,16 @@
             let activeCurrent = 0;
 
             try {
+                await expandLoggedQuerySlots(false);
+                if (!multiSlotRows().length && !multiBatchJobs.stopRequested && multiBatchJobs.pending && multiBatchJobs.pending.length) {
+                    renderQuerySummary('等待查询通道登录');
+                    persistMultiBatchJobs();
+                    if (!multiBatchPollTimer) {
+                        multiBatchPollTimer = setInterval(pollMultiBatchStatus, 1000);
+                    }
+                    return;
+                }
+
                 for (const job of multiSlotRows()) {
                     try {
                         if (job.job_id) {
@@ -1013,6 +1089,9 @@
         restoreMultiBatchJobs();
         checkStatus();
         setInterval(checkStatus, 5000);
+        if (currentLoginJobId) {
+            startBulkLoginPolling();
+        }
         if (isMultiBatchRunning) {
             pollMultiBatchStatus();
         }
