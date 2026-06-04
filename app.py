@@ -31,6 +31,15 @@ try:
 except ImportError:
     HAS_PLAYWRIGHT = False
 
+try:
+    REPORT_IDLE_TIMEOUT_SECONDS = max(60, int(os.environ.get("CRM_REPORT_IDLE_SECONDS", "3600")))
+except (TypeError, ValueError):
+    REPORT_IDLE_TIMEOUT_SECONDS = 3600
+try:
+    REPORT_IDLE_CLEANUP_INTERVAL_SECONDS = max(60, int(os.environ.get("CRM_REPORT_IDLE_CHECK_SECONDS", "300")))
+except (TypeError, ValueError):
+    REPORT_IDLE_CLEANUP_INTERVAL_SECONDS = 300
+
 RUNTIME_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
 RESOURCE_BASE_DIR = getattr(sys, "_MEIPASS", RUNTIME_BASE_DIR)
 CRM_CONFIG_PATH = os.path.join(RUNTIME_BASE_DIR, "config.json")
@@ -59,6 +68,7 @@ class CRMSession:
         self.logged_in = False
         self.needs_navigation = True  # 标记是否需要导航到报表页面
         self.last_report_error = ""
+        self.report_last_used_at = 0
 
     def _browser_crash_message(self):
         return "CRM 浏览器页面已崩溃，已自动关闭当前会话，请重新登录 CRM 后再操作"
@@ -766,6 +776,65 @@ class CRMSession:
         except Exception as e:
             print(f"  [错误] close_report_tab失败: {e}")
 
+    def _close_query_report_pages_locked(self):
+        """只关闭条码查询报表页，保留 CRM 系统页面。"""
+        if not self.context:
+            return 0
+        closed_count = 0
+        for p in list(self.context.pages):
+            try:
+                if "/EcoCrystalReports/EcoCrystalRp" not in p.url:
+                    continue
+                print(f"  [空闲清理] 关闭条码报表页: {p.url}")
+                p.close()
+                closed_count += 1
+            except Exception:
+                pass
+
+        crm_page = None
+        for p in self.context.pages:
+            try:
+                url = p.url
+                if "crmportal.ecowaterchina" in url and "/report/reportlist" in url:
+                    crm_page = p
+                    break
+                if not crm_page and "crmportal.ecowaterchina" in url:
+                    crm_page = p
+            except Exception:
+                pass
+
+        if crm_page:
+            self.page = crm_page
+            try:
+                self.page.bring_to_front()
+            except Exception:
+                pass
+        elif closed_count and self.context:
+            try:
+                self.page = self.context.new_page()
+                cfg = load_crm_config()
+                self._goto(cfg["website"]["url"], timeout=60000)
+            except Exception:
+                pass
+
+        if closed_count:
+            self.needs_navigation = True
+            self.last_report_error = ""
+        return closed_count
+
+    def close_idle_report_tabs(self, idle_seconds=REPORT_IDLE_TIMEOUT_SECONDS):
+        """查询报表页空闲超过指定时间后关闭，保留 CRM 系统页。"""
+        with self.lock:
+            if not self.is_alive() or not self.report_last_used_at:
+                return False, "没有需要清理的查询报表页"
+            idle_for = time.time() - self.report_last_used_at
+            if idle_for < idle_seconds:
+                return False, f"查询报表空闲 {int(idle_for)} 秒，未达到清理时间"
+            closed_count = self._close_query_report_pages_locked()
+            if not closed_count:
+                return False, "未发现打开的查询报表页"
+            return True, f"已关闭 {closed_count} 个空闲查询报表页"
+
     def _find_barcode_input(self, page=None):
         try:
             target_page = page or self.page
@@ -1169,6 +1238,11 @@ class CRMSession:
         with self.lock:
             if not self.is_alive():
                 return False, "浏览器未启动"
+            closed_count = self._close_query_report_pages_locked() if (
+                self.report_last_used_at and time.time() - self.report_last_used_at >= REPORT_IDLE_TIMEOUT_SECONDS
+            ) else 0
+            if closed_count:
+                emit(f"条码报表已超过 {REPORT_IDLE_TIMEOUT_SECONDS // 60} 分钟未使用，已关闭旧报表页", "warn")
             try:
                 # 导航到报表页面（只在第一次查询时）
                 if self.needs_navigation:
@@ -1369,6 +1443,8 @@ class CRMSession:
                     return False, crash_message
                 self.needs_navigation = True
                 return False, str(e)
+            finally:
+                self.report_last_used_at = time.time()
 
     def _move_create_url(self):
         cfg = load_crm_config()
@@ -2578,6 +2654,9 @@ class CRMWorker:
             log(f"CRM 查询任务已加入队列：{barcode}", "dim")
         return self._call("query_barcode", barcode, log, output_dir)
 
+    def close_idle_report_tabs(self, idle_seconds=REPORT_IDLE_TIMEOUT_SECONDS):
+        return self._call("close_idle_report_tabs", idle_seconds)
+
     def create_transfer(self, summary, distributor, transfer_type="移出", remark="", log=None):
         return self._call("create_transfer", summary, distributor, transfer_type, remark, log)
 
@@ -2701,6 +2780,24 @@ class CRMWorkerPool:
         return self.slots_payload()
 
 crm_pool = CRMWorkerPool()
+
+def _idle_report_cleanup_loop():
+    while True:
+        time.sleep(REPORT_IDLE_CLEANUP_INTERVAL_SECONDS)
+        try:
+            with crm_pool.pool_lock:
+                query_slots = list(crm_pool.query_slots)
+            for slot_id in query_slots:
+                worker = crm_pool.get(slot_id, "query")
+                if not worker.is_alive():
+                    continue
+                closed, message = worker.close_idle_report_tabs(REPORT_IDLE_TIMEOUT_SECONDS)
+                if closed:
+                    print(f"  [空闲清理] {slot_id}: {message}")
+        except Exception as e:
+            print(f"  [空闲清理] 检查查询报表页失败: {e}")
+
+threading.Thread(target=_idle_report_cleanup_loop, daemon=True).start()
 crm_session = crm_pool.get(kind="query")
 
 DEFAULT_BATCH_RETRY_LIMIT = 5
