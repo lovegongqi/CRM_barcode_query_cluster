@@ -3470,7 +3470,12 @@ try:
 except ImportError:
     HAS_OPENPYXL = False
 
-app = Flask(__name__, template_folder=os.path.join(RESOURCE_BASE_DIR, "templates"))
+app = Flask(
+    __name__,
+    template_folder=os.path.join(RESOURCE_BASE_DIR, "templates"),
+    static_folder=os.path.join(RESOURCE_BASE_DIR, "static"),
+    static_url_path="/static",
+)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crm-barcode-query-local-secret")
 
 DATA_BASE_DIR = _runtime_data_base_dir()

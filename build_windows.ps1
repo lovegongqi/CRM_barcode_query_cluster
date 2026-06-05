@@ -35,6 +35,7 @@ if (Test-Path "dist\CRM条码查询") { Remove-Item -Recurse -Force "dist\CRM条
     --console `
     --name "CRM条码查询" `
     --add-data "templates;templates" `
+    --add-data "static;static" `
     --add-data "config.example.json;." `
     --add-data "config.docker.example.json;." `
     --collect-all playwright `

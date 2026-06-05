@@ -76,10 +76,12 @@ jobs:
           Page directory
           Page instfiles
           Section "Install"
+            SetShellVarContext current
             SetOutPath "$INSTDIR"
             File /r "windows-package\*"
             CreateShortCut "$DESKTOP\CRM条码查询.lnk" "$INSTDIR\CRM条码查询.exe"
-            Exec "$INSTDIR\CRM条码查询.exe"
+            CreateDirectory "$SMPROGRAMS\CRM Barcode Query"
+            CreateShortCut "$SMPROGRAMS\CRM Barcode Query\CRM条码查询.lnk" "$INSTDIR\CRM条码查询.exe"
           SectionEnd
           '@.Replace("__ARCH__", "${{ matrix.arch }}")
 

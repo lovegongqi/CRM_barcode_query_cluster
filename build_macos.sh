@@ -26,6 +26,7 @@ rm -rf build "$DIST_DIR"
   --console \
   --name "$PACKAGE_NAME" \
   --add-data "templates:templates" \
+  --add-data "static:static" \
   --add-data "config.example.json:." \
   --add-data "config.docker.example.json:." \
   --collect-all playwright \
