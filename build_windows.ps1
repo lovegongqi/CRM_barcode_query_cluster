@@ -27,32 +27,44 @@ Write-Host "==> Installing Python dependencies"
 
 Write-Host "==> Building exe"
 if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
-if (Test-Path "dist\CRM条码查询") { Remove-Item -Recurse -Force "dist\CRM条码查询" }
+if (Test-Path "dist\CRMBarcodeQuery") { Remove-Item -Recurse -Force "dist\CRMBarcodeQuery" }
 
 & .\.venv-win\Scripts\pyinstaller.exe `
     --noconfirm `
     --onedir `
-    --console `
-    --name "CRM条码查询" `
+    --windowed `
+    --name "CRMBarcodeQuery" `
     --add-data "templates;templates" `
     --add-data "static;static" `
     --add-data "config.example.json;." `
     --add-data "config.docker.example.json;." `
     --collect-all playwright `
+    --collect-all webview `
     --hidden-import openpyxl.cell._writer `
     app_launcher.py
 
 Write-Host "==> Installing Chromium into the exe folder"
-$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $ProjectRoot "dist\CRM条码查询\ms-playwright"
-& .\.venv-win\Scripts\python.exe -m playwright install chromium
+$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $ProjectRoot "dist\CRMBarcodeQuery\ms-playwright"
+for ($Attempt = 1; $Attempt -le 5; $Attempt++) {
+    & .\.venv-win\Scripts\python.exe -m playwright install chromium
+    if ($LASTEXITCODE -eq 0) {
+        break
+    }
+    if ($Attempt -eq 5) {
+        throw "Playwright browser download failed after 5 attempts"
+    }
+    $Delay = $Attempt * 10
+    Write-Host "Playwright browser download failed, retrying in $Delay seconds..."
+    Start-Sleep -Seconds $Delay
+}
 
 Write-Host "==> Creating writable data folders"
-New-Item -ItemType Directory -Force "dist\CRM条码查询\barcode" | Out-Null
-New-Item -ItemType Directory -Force "dist\CRM条码查询\results" | Out-Null
-New-Item -ItemType Directory -Force "dist\CRM条码查询\session" | Out-Null
+New-Item -ItemType Directory -Force "dist\CRMBarcodeQuery\barcode" | Out-Null
+New-Item -ItemType Directory -Force "dist\CRMBarcodeQuery\results" | Out-Null
+New-Item -ItemType Directory -Force "dist\CRMBarcodeQuery\session" | Out-Null
 
 Write-Host ""
 Write-Host "Build complete:"
-Write-Host "  dist\CRM条码查询\CRM条码查询.exe"
+Write-Host "  dist\CRMBarcodeQuery\CRMBarcodeQuery.exe"
 Write-Host ""
-Write-Host "Copy the whole dist\CRM条码查询 folder to the Windows computer, then double-click CRM条码查询.exe."
+Write-Host "Copy the whole dist\CRMBarcodeQuery folder to the Windows computer, then double-click CRMBarcodeQuery.exe."

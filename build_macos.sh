@@ -5,8 +5,11 @@ PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_ROOT"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-PACKAGE_NAME="CRM条码查询"
-DIST_DIR="dist/${PACKAGE_NAME}"
+APP_DISPLAY_NAME="CRM条码查询"
+RUNTIME_NAME="CRMBarcodeQuery"
+RUNTIME_DIST_DIR="dist/runtime"
+RUNTIME_DIR="${RUNTIME_DIST_DIR}/${RUNTIME_NAME}"
+APP_BUNDLE="dist/${APP_DISPLAY_NAME}.app"
 
 echo "==> Creating virtual environment"
 if [ ! -d ".venv-macos" ]; then
@@ -18,30 +21,84 @@ echo "==> Installing Python dependencies"
 ./.venv-macos/bin/pip install -r requirements.txt pyinstaller
 
 echo "==> Building executable"
-rm -rf build "$DIST_DIR"
+rm -rf build "$RUNTIME_DIST_DIR" "$APP_BUNDLE"
 
 ./.venv-macos/bin/pyinstaller \
   --noconfirm \
   --onedir \
   --console \
-  --name "$PACKAGE_NAME" \
+  --distpath "$RUNTIME_DIST_DIR" \
+  --name "$RUNTIME_NAME" \
   --add-data "templates:templates" \
   --add-data "static:static" \
   --add-data "config.example.json:." \
   --add-data "config.docker.example.json:." \
   --collect-all playwright \
+  --collect-all webview \
   --hidden-import openpyxl.cell._writer \
   app_launcher.py
 
 echo "==> Installing Chromium into the package folder"
-export PLAYWRIGHT_BROWSERS_PATH="$PROJECT_ROOT/$DIST_DIR/ms-playwright"
-./.venv-macos/bin/python -m playwright install chromium
+export PLAYWRIGHT_BROWSERS_PATH="$PROJECT_ROOT/$RUNTIME_DIR/ms-playwright"
+for attempt in 1 2 3 4 5; do
+  if ./.venv-macos/bin/python -m playwright install chromium; then
+    break
+  fi
+  if [ "$attempt" = "5" ]; then
+    exit 1
+  fi
+  echo "Playwright browser download failed, retrying in $((attempt * 10)) seconds..."
+  sleep $((attempt * 10))
+done
 
 echo "==> Creating writable data folders"
-mkdir -p "$DIST_DIR/barcode" "$DIST_DIR/results" "$DIST_DIR/session"
+mkdir -p "$RUNTIME_DIR/barcode" "$RUNTIME_DIR/results" "$RUNTIME_DIR/session"
+
+echo "==> Wrapping package as macOS app"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+cp -R "$RUNTIME_DIR" "$APP_BUNDLE/Contents/Resources/$RUNTIME_NAME"
+
+cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+  <key>CFBundleDisplayName</key>
+  <string>CRM条码查询</string>
+  <key>CFBundleExecutable</key>
+  <string>CRMBarcodeQuery</string>
+  <key>CFBundleIdentifier</key>
+  <string>cn.ecowater.crmbarcodequery</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>CRM条码查询</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+</dict>
+</plist>
+PLIST
+
+cat > "$APP_BUNDLE/Contents/MacOS/CRMBarcodeQuery" <<'SH'
+#!/bin/sh
+APP_ROOT="$(cd "$(dirname "$0")/../Resources/CRMBarcodeQuery" && pwd)"
+LOG_DIR="$HOME/Library/Application Support/CRMBarcodeQuery"
+mkdir -p "$LOG_DIR"
+cd "$APP_ROOT" || exit 1
+exec "$APP_ROOT/CRMBarcodeQuery" >> "$LOG_DIR/launcher.log" 2>&1
+SH
+chmod +x "$APP_BUNDLE/Contents/MacOS/CRMBarcodeQuery"
 
 echo ""
 echo "Build complete:"
-echo "  $DIST_DIR/$PACKAGE_NAME"
+echo "  $APP_BUNDLE"
 echo ""
-echo "Copy the whole $DIST_DIR folder to the Mac, then run $PACKAGE_NAME."
+echo "Open the app bundle on the Mac, or put it in a DMG for distribution."

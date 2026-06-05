@@ -65,7 +65,7 @@ jobs:
             Remove-Item -Recurse -Force "windows-package"
           }
           New-Item -ItemType Directory -Force "windows-package" | Out-Null
-          Copy-Item -Recurse "dist\CRM条码查询\*" "windows-package"
+          Copy-Item -Recurse "dist\CRMBarcodeQuery\*" "windows-package"
 
           $script = @'
           Unicode true
@@ -79,9 +79,9 @@ jobs:
             SetShellVarContext current
             SetOutPath "$INSTDIR"
             File /r "windows-package\*"
-            CreateShortCut "$DESKTOP\CRM条码查询.lnk" "$INSTDIR\CRM条码查询.exe"
+            CreateShortCut "$DESKTOP\CRM Barcode Query.lnk" "$INSTDIR\CRMBarcodeQuery.exe"
             CreateDirectory "$SMPROGRAMS\CRM Barcode Query"
-            CreateShortCut "$SMPROGRAMS\CRM Barcode Query\CRM条码查询.lnk" "$INSTDIR\CRM条码查询.exe"
+            CreateShortCut "$SMPROGRAMS\CRM Barcode Query\CRM Barcode Query.lnk" "$INSTDIR\CRMBarcodeQuery.exe"
           SectionEnd
           '@.Replace("__ARCH__", "${{ matrix.arch }}")
 
@@ -124,9 +124,13 @@ jobs:
 
       - name: Build macOS dmg
         run: |
+          rm -rf dmg-root
+          mkdir -p dmg-root
+          cp -R "dist/CRM条码查询.app" "dmg-root/"
+          ln -s /Applications "dmg-root/Applications"
           hdiutil create \
             -volname "CRM Barcode Query" \
-            -srcfolder "dist/CRM条码查询" \
+            -srcfolder "dmg-root" \
             -ov \
             -format UDZO \
             "CRM-barcode-query-macOS-${{ matrix.arch }}.dmg"
@@ -171,7 +175,7 @@ jobs:
           - macOS x64：适合 Intel Mac
           - macOS ARM64：适合 Apple Silicon / M 系列 Mac
 
-          Windows 下载 exe 安装包，macOS 下载 dmg 镜像文件。
+          Windows 下载 exe 安装包。macOS 下载 dmg 镜像文件，打开后把 CRM条码查询.app 拖到 Applications 后双击启动。
           EOF
 
           args=()
