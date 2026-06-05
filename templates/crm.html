@@ -470,17 +470,21 @@
             return true;
         }
 
+        function slotCanAutoRun(slot) {
+            return !!(slot && (slot.logged_in || slot.remembered_logged_in));
+        }
+
         async function expandLoggedQuerySlots(autoStart=false) {
             if (!isMultiBatchRunning || !multiBatchJobs || !multiBatchJobs.slots || multiBatchJobs.stopRequested) return 0;
             await loadSlots();
             const addedSlots = [];
-            querySlots.filter(slot => slot.logged_in).forEach(slot => {
+            querySlots.filter(slotCanAutoRun).forEach(slot => {
                 if (addMultiBatchSlot(slot)) addedSlots.push(slot);
             });
             if (!addedSlots.length) return 0;
             const labels = addedSlots.map(slot => slot.label || slot.id).join('，');
-            rememberQueryNotice(`新增已登录查询通道：${labels}，已自动加入当前查询`);
-            if (window.globalLogAppend) window.globalLogAppend(`新增已登录查询通道：${labels}，自动扩容查询线程`, 'success');
+            rememberQueryNotice(`新增可用查询通道：${labels}，已自动加入当前查询`);
+            if (window.globalLogAppend) window.globalLogAppend(`新增可用查询通道：${labels}，自动扩容查询线程`, 'success');
             persistMultiBatchJobs();
             if (autoStart && multiBatchJobs.pending && multiBatchJobs.pending.length) {
                 await Promise.all(addedSlots.map(slot => startNextMultiBarcode(slot.id)));
@@ -880,8 +884,12 @@
             batchStartPending = true;
             saveQueryInput();
             await loadSlots();
-            const loggedSlots = querySlots.filter(slot => slot.logged_in);
-            const skippedSlots = querySlots.filter(slot => !slot.logged_in);
+            const loggedSlots = querySlots.filter(slotCanAutoRun);
+            const skippedSlots = querySlots.filter(slot => !slotCanAutoRun(slot));
+            const restoringSlots = loggedSlots.filter(slot => !slot.logged_in && slot.remembered_logged_in);
+            if (restoringSlots.length) {
+                log(`${restoringSlots.length} 个查询通道会先验证上次 CRM 登录状态：${restoringSlots.map(s => s.label).join('，')}`, 'info');
+            }
             if (skippedSlots.length) {
                 log(`${skippedSlots.length} 个查询通道尚未登录，登录成功后会自动加入当前查询：${skippedSlots.map(s => s.label).join('，')}`, 'warn');
             }

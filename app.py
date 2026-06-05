@@ -44,6 +44,15 @@ RUNTIME_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", Fal
 RESOURCE_BASE_DIR = getattr(sys, "_MEIPASS", RUNTIME_BASE_DIR)
 CRM_CONFIG_PATH = os.path.join(RUNTIME_BASE_DIR, "config.json")
 IS_DESKTOP_APP = os.environ.get("CRM_DESKTOP_APP") == "1"
+STARTUP_LOGIN_AUTO_CHECK = os.environ.get("CRM_STARTUP_LOGIN_AUTO_CHECK", "1") != "0"
+try:
+    STARTUP_LOGIN_CHECK_DELAY_SECONDS = max(0, int(os.environ.get("CRM_STARTUP_LOGIN_CHECK_DELAY_SECONDS", "2")))
+except (TypeError, ValueError):
+    STARTUP_LOGIN_CHECK_DELAY_SECONDS = 2
+try:
+    STARTUP_LOGIN_CHECK_STAGGER_SECONDS = max(0, int(os.environ.get("CRM_STARTUP_LOGIN_CHECK_STAGGER_SECONDS", "3")))
+except (TypeError, ValueError):
+    STARTUP_LOGIN_CHECK_STAGGER_SECONDS = 3
 
 def load_crm_config():
     config_paths = [
@@ -678,8 +687,7 @@ class CRMSession:
                     self.logged_in = False
                     return False, "仍在登录页，未登录"
                 time.sleep(1)
-                body_text = self.page.inner_text("body")
-                if "退出" in body_text or "注销" in body_text:
+                if self._is_current_page_logged_in():
                     self.logged_in = True
                     return True, "已登录"
                 else:
@@ -2611,7 +2619,8 @@ class CRMWorker:
         self.tasks = queue.Queue()
         self.state_lock = threading.Lock()
         self.browser_running = False
-        self.logged_in_cache = _slot_remembered_logged_in(slot_id)
+        self.remembered_logged_in_cache = _slot_remembered_logged_in(slot_id)
+        self.logged_in_cache = False
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -2622,9 +2631,11 @@ class CRMWorker:
         except Exception:
             browser_running = False
             logged_in = False
+        current_logged_in = bool(browser_running and logged_in)
         with self.state_lock:
             self.browser_running = browser_running
-            self.logged_in_cache = logged_in
+            self.logged_in_cache = current_logged_in
+            self.remembered_logged_in_cache = bool(logged_in)
         _save_slot_logged_in(self.slot_id, logged_in)
 
     def _run(self):
@@ -2662,6 +2673,11 @@ class CRMWorker:
         with self.state_lock:
             return self.logged_in_cache
 
+    @property
+    def remembered_logged_in(self):
+        with self.state_lock:
+            return self.remembered_logged_in_cache
+
     def login(self, username, password, captcha=None):
         return self._call("login", username, password, captcha)
 
@@ -2676,6 +2692,7 @@ class CRMWorker:
         with self.state_lock:
             self.browser_running = False
             self.logged_in_cache = False
+            self.remembered_logged_in_cache = False
         _save_slot_logged_in(self.slot_id, False)
         return result
 
@@ -2707,6 +2724,7 @@ class CRMWorker:
             result = False
         with self.state_lock:
             self.browser_running = False
+            self.logged_in_cache = False
         return result
 
 def _positive_int_env(name, default):
@@ -2848,6 +2866,7 @@ class CRMWorkerPool:
                 "kind": kind,
                 "browser_running": self.workers[slot_id].is_alive(),
                 "logged_in": self.workers[slot_id].logged_in,
+                "remembered_logged_in": self.workers[slot_id].remembered_logged_in,
             } for index, slot_id in enumerate(slot_ids, 1)]
         return {
             "query": rows(query_slots, "query"),
@@ -2879,6 +2898,37 @@ class CRMWorkerPool:
 
 crm_pool = CRMWorkerPool()
 
+def _desktop_startup_login_check_loop():
+    """桌面应用启动后验证上次记住的 CRM 登录，避免显示假登录状态。"""
+    if not IS_DESKTOP_APP or not STARTUP_LOGIN_AUTO_CHECK or not HAS_PLAYWRIGHT:
+        return
+    if STARTUP_LOGIN_CHECK_DELAY_SECONDS:
+        time.sleep(STARTUP_LOGIN_CHECK_DELAY_SECONDS)
+
+    try:
+        with crm_pool.pool_lock:
+            slots = (
+                [("query", slot_id) for slot_id in crm_pool.query_slots] +
+                [("transfer", slot_id) for slot_id in crm_pool.transfer_slots]
+            )
+        for kind, slot_id in slots:
+            worker = crm_pool.get(slot_id, kind)
+            if worker.logged_in or not worker.remembered_logged_in:
+                continue
+            try:
+                print(f"  [启动检测] 正在验证 {slot_id} 上次 CRM 登录状态")
+                success, message = worker.check_login_status()
+                if success:
+                    print(f"  [启动检测] {slot_id} CRM 会话有效")
+                else:
+                    print(f"  [启动检测] {slot_id} CRM 会话无效: {message}")
+            except Exception as e:
+                print(f"  [启动检测] {slot_id} CRM 会话检测失败: {e}")
+            if STARTUP_LOGIN_CHECK_STAGGER_SECONDS:
+                time.sleep(STARTUP_LOGIN_CHECK_STAGGER_SECONDS)
+    except Exception as e:
+        print(f"  [启动检测] CRM 启动检测失败: {e}")
+
 def _idle_report_cleanup_loop():
     while True:
         time.sleep(REPORT_IDLE_CLEANUP_INTERVAL_SECONDS)
@@ -2896,6 +2946,7 @@ def _idle_report_cleanup_loop():
             print(f"  [空闲清理] 检查查询报表页失败: {e}")
 
 threading.Thread(target=_idle_report_cleanup_loop, daemon=True).start()
+threading.Thread(target=_desktop_startup_login_check_loop, daemon=True).start()
 crm_session = crm_pool.get(kind="query")
 
 DEFAULT_BATCH_RETRY_LIMIT = 5
@@ -3496,6 +3547,46 @@ def _run_batch_job(job_id, worker, barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIM
         _batch_job_log(job_id, "输入的条码都是拆机条码，无需查询", 'warn')
         return
     _batch_job_log(job_id, f"开始批量查询 {len(barcodes)} 个条码{retry_text}...", 'info')
+    if not worker.logged_in:
+        if worker.remembered_logged_in:
+            _batch_job_log(job_id, "正在验证上次 CRM 登录状态...", 'info')
+            success, message = worker.check_login_status()
+            if success and worker.logged_in:
+                _batch_job_log(job_id, "上次 CRM 登录状态有效，继续查询", 'success')
+            else:
+                error = f"CRM 当前未登录，请先登录 CRM（{message or '会话未恢复'}）"
+                with batch_job_lock:
+                    job = batch_jobs.get(job_id)
+                    if job:
+                        job['failed'] = len(barcodes)
+                        job['running'] = False
+                        job['stop_requested'] = False
+                        job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        job['results'].extend({
+                            'barcode': barcode,
+                            'success': False,
+                            'attempts': 0,
+                            'error': error,
+                        } for barcode in barcodes)
+                _batch_job_log(job_id, error, 'error')
+                return
+        else:
+            error = "CRM 当前未登录，请先登录 CRM"
+            with batch_job_lock:
+                job = batch_jobs.get(job_id)
+                if job:
+                    job['failed'] = len(barcodes)
+                    job['running'] = False
+                    job['stop_requested'] = False
+                    job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    job['results'].extend({
+                        'barcode': barcode,
+                        'success': False,
+                        'attempts': 0,
+                        'error': error,
+                    } for barcode in barcodes)
+            _batch_job_log(job_id, error, 'error')
+            return
     for idx, barcode in enumerate(barcodes, start=1):
         with batch_job_lock:
             job = batch_jobs.get(job_id)
@@ -4349,9 +4440,12 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None, worker=None
 
 def _crm_ready_for_auto_query(worker=None):
     worker = worker or crm_pool.get(kind="query")
-    if not worker.logged_in:
-        return False, "CRM 当前未登录，请先登录 CRM"
-    return True, ""
+    if worker.logged_in:
+        return True, ""
+    success, message = worker.check_login_status()
+    if success and worker.logged_in:
+        return True, ""
+    return False, f"CRM 当前未登录，请先登录 CRM（{message or '会话未恢复'}）"
 
 def _query_slot_label(slot_id):
     with crm_pool.pool_lock:
@@ -4373,7 +4467,11 @@ def _select_idle_query_worker_desc():
     for slot_id in reversed(slots):
         worker = crm_pool.get(slot_id, "query")
         if not worker.logged_in:
-            continue
+            if not worker.remembered_logged_in:
+                continue
+            success, _message = worker.check_login_status()
+            if not success or not worker.logged_in:
+                continue
         logged_in_count += 1
         if _query_slot_has_running_batch(slot_id):
             continue
@@ -5685,7 +5783,8 @@ def api_crm_status():
     return jsonify({
         'slot_id': worker.slot_id,
         'browser_running': worker.is_alive(),
-        'logged_in': worker.logged_in
+        'logged_in': worker.logged_in,
+        'remembered_logged_in': worker.remembered_logged_in,
     })
 
 @app.route("/api/crm/slots")
