@@ -20,8 +20,8 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 from datetime import datetime
 
 try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 except Exception:
     pass
 
@@ -3083,12 +3083,15 @@ def _brief_batch_error(error, limit=240):
         return text
     return text[:limit].rstrip() + "..."
 
+def _safe_log_text(message):
+    return str(message or '').replace('\xa0', ' ')
+
 def _append_job_log_unlocked(job, message, level='dim', limit=300):
     job['log_seq'] = int(job.get('log_seq') or 0) + 1
     job['logs'].append({
         'id': job['log_seq'],
         'time': datetime.now().strftime('%H:%M:%S'),
-        'message': message,
+        'message': _safe_log_text(message),
         'level': level,
     })
     job['logs'] = job['logs'][-limit:]
