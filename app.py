@@ -2537,8 +2537,9 @@ class CRMSession:
                         return fail(f"添加条码明细失败：{msg}")
                     added_barcodes.append(detail["barcode"])
 
-                if distributor == FROZEN_WAREHOUSE_NAME:
-                    emit("目标为江西天麓冻结仓库，移库单只保存不确认，等待审批", "success")
+                frozen_name = frozen_warehouse_name()
+                if frozen_warehouse_save_only() and distributor == frozen_name:
+                    emit(f"目标为{frozen_name}，移库单只保存不确认，等待审批", "success")
                     self._return_to_move_list()
                     return True, {
                         "order_no": order_no,
@@ -2546,7 +2547,7 @@ class CRMSession:
                         "barcodes": added_barcodes,
                         "confirmed": False,
                         "pending_approval": True,
-                        "message": "移库单已保存，江西天麓冻结仓库需审批，未点击确认",
+                        "message": f"移库单已保存，{frozen_name}需审批，未点击确认",
                     }
 
                 emit("点击确认移库，等待 CRM 提示...")
@@ -3482,8 +3483,10 @@ DISTRIBUTOR_HISTORY_FILE = os.path.join(BARCODE_DIR, "distributor_history.json")
 RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
 TEMP_QUERY_DIR = os.path.join(DATA_BASE_DIR, "temp_queries")
 RUNTIME_CONFIG_FILE = _runtime_config_path()
-OWN_DEALER_NAME = "江西省天麓工贸有限公司"
-FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
+DEFAULT_OWN_DEALER_NAME = "江西省天麓工贸有限公司"
+DEFAULT_FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
+OWN_DEALER_NAME = DEFAULT_OWN_DEALER_NAME
+FROZEN_WAREHOUSE_NAME = DEFAULT_FROZEN_WAREHOUSE_NAME
 
 def _directory_has_files(path):
     if not os.path.isdir(path):
@@ -3544,10 +3547,30 @@ def _migrate_legacy_runtime_data():
 
 _migrate_legacy_runtime_data()
 
+def _runtime_text_value(value, default):
+    value = str(value or "").replace("\xa0", " ").strip()
+    return value or default
+
+def _runtime_bool_value(value, default=True):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on", "是", "开启"):
+            return True
+        if text in ("0", "false", "no", "off", "否", "关闭"):
+            return False
+    return default
+
 def load_runtime_config():
     defaults = {
         "query_workers": _normalize_worker_count(os.environ.get("CRM_QUERY_WORKERS"), 2),
         "transfer_workers": _normalize_worker_count(os.environ.get("CRM_TRANSFER_WORKERS"), 2),
+        "own_dealer_name": _runtime_text_value(os.environ.get("CRM_OWN_DEALER_NAME"), DEFAULT_OWN_DEALER_NAME),
+        "frozen_warehouse_name": _runtime_text_value(os.environ.get("CRM_FROZEN_WAREHOUSE_NAME"), DEFAULT_FROZEN_WAREHOUSE_NAME),
+        "frozen_warehouse_save_only": _runtime_bool_value(os.environ.get("CRM_FROZEN_WAREHOUSE_SAVE_ONLY"), True),
     }
     if os.path.exists(RUNTIME_CONFIG_FILE):
         try:
@@ -3556,20 +3579,39 @@ def load_runtime_config():
             if isinstance(data, dict):
                 defaults["query_workers"] = _normalize_worker_count(data.get("query_workers"), defaults["query_workers"])
                 defaults["transfer_workers"] = _normalize_worker_count(data.get("transfer_workers"), defaults["transfer_workers"])
+                defaults["own_dealer_name"] = _runtime_text_value(data.get("own_dealer_name"), defaults["own_dealer_name"])
+                defaults["frozen_warehouse_name"] = _runtime_text_value(data.get("frozen_warehouse_name"), defaults["frozen_warehouse_name"])
+                defaults["frozen_warehouse_save_only"] = _runtime_bool_value(data.get("frozen_warehouse_save_only"), defaults["frozen_warehouse_save_only"])
         except Exception:
             pass
     return defaults
 
 def save_runtime_config(config):
     os.makedirs(DATA_BASE_DIR, exist_ok=True)
+    current = load_runtime_config()
     payload = {
-        "query_workers": _normalize_worker_count(config.get("query_workers"), 2),
-        "transfer_workers": _normalize_worker_count(config.get("transfer_workers"), 2),
+        "query_workers": _normalize_worker_count(config.get("query_workers"), current.get("query_workers", 2)),
+        "transfer_workers": _normalize_worker_count(config.get("transfer_workers"), current.get("transfer_workers", 2)),
+        "own_dealer_name": _runtime_text_value(config.get("own_dealer_name"), current.get("own_dealer_name", DEFAULT_OWN_DEALER_NAME)),
+        "frozen_warehouse_name": _runtime_text_value(config.get("frozen_warehouse_name"), current.get("frozen_warehouse_name", DEFAULT_FROZEN_WAREHOUSE_NAME)),
+        "frozen_warehouse_save_only": _runtime_bool_value(config.get("frozen_warehouse_save_only"), current.get("frozen_warehouse_save_only", True)),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     with open(RUNTIME_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return payload
+
+def business_config():
+    return load_runtime_config()
+
+def own_dealer_name():
+    return business_config().get("own_dealer_name") or DEFAULT_OWN_DEALER_NAME
+
+def frozen_warehouse_name():
+    return business_config().get("frozen_warehouse_name") or DEFAULT_FROZEN_WAREHOUSE_NAME
+
+def frozen_warehouse_save_only():
+    return bool(business_config().get("frozen_warehouse_save_only", True))
 
 FIELD_IDS = {
     'newisclosed1': '结单状态',
@@ -4289,7 +4331,7 @@ def _sync_barcode_html_dealer(barcode, dealer):
         return False
 
 def _apply_transfer_local_dealer(summary, transfer_type, distributor):
-    new_dealer = OWN_DEALER_NAME if transfer_type == "移入" else distributor
+    new_dealer = own_dealer_name() if transfer_type == "移入" else distributor
     if not new_dealer:
         return
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -4308,6 +4350,7 @@ def _apply_transfer_local_dealer(summary, transfer_type, distributor):
     save_data(data)
 
 def build_transfer_summary(selected_barcodes, transfer_type="移出", distributor=""):
+    own_dealer = own_dealer_name()
     wanted = OrderedDict()
     excluded = []
     for barcode in selected_barcodes:
@@ -4341,10 +4384,10 @@ def build_transfer_summary(selected_barcodes, transfer_type="移出", distributo
         if not info['product_code'] or not info['product_name']:
             incomplete.append(barcode)
             continue
-        if transfer_type == "移出" and info.get('current_dealer') and info['current_dealer'] != OWN_DEALER_NAME:
+        if transfer_type == "移出" and info.get('current_dealer') and info['current_dealer'] != own_dealer:
             blocked.append({
                 'barcode': barcode,
-                'reason': f"当前所属为 {info['current_dealer']}，不是 {OWN_DEALER_NAME}，请确认后再移出",
+                'reason': f"当前所属为 {info['current_dealer']}，不是 {own_dealer}，请确认后再移出",
             })
         if transfer_type == "移入" and distributor and info.get('current_dealer') and info['current_dealer'] != distributor:
             blocked.append({
@@ -4374,16 +4417,18 @@ def build_transfer_summary(selected_barcodes, transfer_type="移出", distributo
     }
 
 def queried_dealer_history():
+    own_dealer = own_dealer_name()
     dealers = OrderedDict()
     for item in scan_barcodes():
         info = _barcode_product_info(item)
         for key in ("current_dealer", "service_dealer"):
             dealer = _clean_export_value(info.get(key))
-            if dealer and dealer != OWN_DEALER_NAME:
+            if dealer and dealer != own_dealer:
                 dealers[dealer] = True
     return list(dealers.keys())
 
 def load_distributor_history():
+    own_dealer = own_dealer_name()
     if os.path.exists(DISTRIBUTOR_HISTORY_FILE):
         try:
             with open(DISTRIBUTOR_HISTORY_FILE, 'r', encoding='utf-8') as f:
@@ -4391,15 +4436,16 @@ def load_distributor_history():
             return [
                 _clean_export_value(row)
                 for row in (data if isinstance(data, list) else [])
-                if _clean_export_value(row) and _clean_export_value(row) != OWN_DEALER_NAME
+                if _clean_export_value(row) and _clean_export_value(row) != own_dealer
             ]
         except Exception:
             pass
     return []
 
 def save_distributor_history(distributor):
+    own_dealer = own_dealer_name()
     distributor = _clean_export_value(distributor)
-    if not distributor or distributor == OWN_DEALER_NAME:
+    if not distributor or distributor == own_dealer:
         return
     rows = [distributor] + [row for row in load_distributor_history() if row != distributor]
     os.makedirs(BARCODE_DIR, exist_ok=True)
@@ -4407,24 +4453,26 @@ def save_distributor_history(distributor):
         json.dump(rows[:100], f, ensure_ascii=False, indent=2)
 
 def save_distributor_history_many(distributors):
+    own_dealer = own_dealer_name()
     rows = OrderedDict()
     for distributor in distributors:
         distributor = _clean_export_value(distributor)
-        if distributor and distributor != OWN_DEALER_NAME:
+        if distributor and distributor != own_dealer:
             rows[distributor] = True
     for distributor in load_distributor_history():
-        if distributor and distributor != OWN_DEALER_NAME:
+        if distributor and distributor != own_dealer:
             rows[distributor] = True
     os.makedirs(BARCODE_DIR, exist_ok=True)
     with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(list(rows.keys())[:100], f, ensure_ascii=False, indent=2)
 
 def combined_distributor_history():
+    own_dealer = own_dealer_name()
     save_distributor_history_many(queried_dealer_history())
     dealers = OrderedDict()
     for dealer in load_distributor_history():
         dealer = _clean_export_value(dealer)
-        if dealer and dealer != OWN_DEALER_NAME:
+        if dealer and dealer != own_dealer:
             dealers[dealer] = True
     return list(dealers.keys())
 
@@ -4754,7 +4802,7 @@ def scan_archived():
 
 @app.route("/")
 def index():
-    return render_template("index.html", nav_links=visible_page_links())
+    return render_template("index.html", nav_links=visible_page_links(), business_config=business_config())
 
 @app.route("/api/barcodes", methods=["GET"])
 def api_get_barcodes():
@@ -5095,7 +5143,7 @@ def api_crm_transfer():
         'message': '移库任务已开始，请查看日志',
         'summary': summary,
         'transfer': {
-            'dealer': '江西省天麓工贸有限公司',
+            'dealer': own_dealer_name(),
             'distributor': distributor,
             'transfer_type': transfer_type,
             'remark': remark,
@@ -5128,7 +5176,7 @@ def api_crm_transfer_status():
             'result': job['result'],
             'summary': job['summary'],
             'transfer': {
-                'dealer': '江西省天麓工贸有限公司',
+                'dealer': own_dealer_name(),
                 'distributor': job.get('distributor', ''),
                 'transfer_type': job.get('transfer_type', ''),
                 'remark': job.get('remark', ''),
@@ -5217,7 +5265,7 @@ def crm_page():
 
 @app.route("/transfer")
 def transfer_page():
-    return render_template("transfer.html", nav_links=visible_page_links())
+    return render_template("transfer.html", nav_links=visible_page_links(), business_config=business_config())
 
 @app.route("/product-library")
 def product_library_page():
@@ -5407,7 +5455,7 @@ def api_runtime_config():
 @app.route("/api/runtime-config", methods=["POST"])
 def api_runtime_config_save():
     if not is_admin_account():
-        return jsonify({'success': False, 'error': '只有管理员可以修改通道数量'})
+        return jsonify({'success': False, 'error': '只有管理员可以修改系统配置'})
     data = request.get_json() or {}
     current = load_runtime_config()
     query_workers = data.get('query_workers', current.get('query_workers', 2))
@@ -5415,6 +5463,9 @@ def api_runtime_config_save():
     config = save_runtime_config({
         'query_workers': query_workers,
         'transfer_workers': transfer_workers,
+        'own_dealer_name': data.get('own_dealer_name', current.get('own_dealer_name', DEFAULT_OWN_DEALER_NAME)),
+        'frozen_warehouse_name': data.get('frozen_warehouse_name', current.get('frozen_warehouse_name', DEFAULT_FROZEN_WAREHOUSE_NAME)),
+        'frozen_warehouse_save_only': data.get('frozen_warehouse_save_only', current.get('frozen_warehouse_save_only', True)),
     })
     slots = crm_pool.resize(config['query_workers'], config['transfer_workers'])
     return jsonify({

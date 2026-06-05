@@ -185,7 +185,8 @@ let pendingLoginSlots = [];
 let currentLoginJobId = sessionStorage.getItem('crm_bulk_login_job_transfer') || '';
 let loginPollTimer = null;
 let lastLoginLogSeq = 0;
-const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
+const BUSINESS_CONFIG = {{ business_config|tojson }};
+const OWN_DEALER_NAME = BUSINESS_CONFIG.own_dealer_name || '江西省天麓工贸有限公司';
 
 function transferPayloadForSlot(slotId, extra={}) {
     return Object.assign({slot_id: slotId, kind: 'transfer'}, extra);

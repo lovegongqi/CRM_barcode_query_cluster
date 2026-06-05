@@ -1305,7 +1305,8 @@
 
     <script>
         const BARCODE_DIR = '/barcode/';
-        const OWN_DEALER_NAME = '江西省天麓工贸有限公司';
+        const BUSINESS_CONFIG = {{ business_config|tojson }};
+        const OWN_DEALER_NAME = BUSINESS_CONFIG.own_dealer_name || '江西省天麓工贸有限公司';
         let pendingTransferPayload = null;
         let allBarcodes = [];
         var selectedBarcodes = new Set();

@@ -84,7 +84,7 @@
     </div>
 
     <div class="card" id="runtimeConfigCard" style="display:none">
-        <h2>通道数量</h2>
+        <h2>系统配置</h2>
         <div class="channel-grid">
             <div>
                 <label>查询通道数量</label>
@@ -102,7 +102,12 @@
                     <button type="button" onclick="changeWorkerCount('transferWorkerCount', 1)">+</button>
                 </div>
             </div>
-            <button class="btn btn-primary" onclick="saveRuntimeConfig()">保存通道数量</button>
+            <button class="btn btn-primary" onclick="saveRuntimeConfig()">保存配置</button>
+        </div>
+        <div class="form-grid" style="margin-top:12px;">
+            <div><label>本公司经销商名称</label><input id="ownDealerName" placeholder="例如：江西省天麓工贸有限公司"></div>
+            <div><label>冻结仓库名称</label><input id="frozenWarehouseName" placeholder="例如：江西天麓冻结仓库"></div>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:24px;"><input id="frozenWarehouseSaveOnly" type="checkbox"> 冻结仓库只保存不确认</label>
         </div>
     </div>
 
@@ -347,22 +352,37 @@ async function loadRuntimeConfig() {
     document.getElementById('runtimeConfigCard').style.display = '';
     document.getElementById('queryWorkerCount').value = config.query_workers || 2;
     document.getElementById('transferWorkerCount').value = config.transfer_workers || 2;
+    document.getElementById('ownDealerName').value = config.own_dealer_name || '';
+    document.getElementById('frozenWarehouseName').value = config.frozen_warehouse_name || '';
+    document.getElementById('frozenWarehouseSaveOnly').checked = config.frozen_warehouse_save_only !== false;
 }
 
 async function saveRuntimeConfig() {
     const queryWorkers = Number.parseInt(document.getElementById('queryWorkerCount').value, 10);
     const transferWorkers = Number.parseInt(document.getElementById('transferWorkerCount').value, 10);
+    const ownDealerName = document.getElementById('ownDealerName').value.trim();
+    const frozenWarehouseName = document.getElementById('frozenWarehouseName').value.trim();
+    const frozenWarehouseSaveOnly = document.getElementById('frozenWarehouseSaveOnly').checked;
     const data = await fetch('/api/runtime-config', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({query_workers: queryWorkers, transfer_workers: transferWorkers})
+        body: JSON.stringify({
+            query_workers: queryWorkers,
+            transfer_workers: transferWorkers,
+            own_dealer_name: ownDealerName,
+            frozen_warehouse_name: frozenWarehouseName,
+            frozen_warehouse_save_only: frozenWarehouseSaveOnly,
+        })
     }).then(res => res.json()).catch(() => null);
     if (!data || !data.success) return alert((data && data.error) || '保存失败');
     const config = data.config || {};
     document.getElementById('queryWorkerCount').value = config.query_workers || queryWorkers;
     document.getElementById('transferWorkerCount').value = config.transfer_workers || transferWorkers;
+    document.getElementById('ownDealerName').value = config.own_dealer_name || ownDealerName;
+    document.getElementById('frozenWarehouseName').value = config.frozen_warehouse_name || frozenWarehouseName;
+    document.getElementById('frozenWarehouseSaveOnly').checked = config.frozen_warehouse_save_only !== false;
     loadBulkCrmSlots();
-    alert('通道数量已更新');
+    alert('系统配置已更新');
 }
 
 async function loadAccounts() {
