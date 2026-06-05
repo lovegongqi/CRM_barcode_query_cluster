@@ -1150,7 +1150,9 @@
                 <div class="status-pills">
                     <span class="status-pill"><span class="dot gray" id="browserDot"></span>浏览器</span>
                     <span class="status-pill"><span class="dot gray" id="loginDot"></span>CRM：<span id="loginStatus">未启动</span></span>
+                    {% if not is_desktop_app %}
                     <span class="status-pill">工具账号：<span id="appAccountStatus">检测中</span> <a href="/logout">退出</a></span>
+                    {% endif %}
                 </div>
             </div>
             <div class="workspace-grid">

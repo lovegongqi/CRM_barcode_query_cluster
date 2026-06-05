@@ -87,7 +87,9 @@
 
     <div class="status-bar">
         <div class="status-text"><span class="dot" id="loginDot"></span>CRM 登录状态：<span id="loginStatus">检测中</span></div>
+        {% if not is_desktop_app %}
         <div class="status-text">工具账号：<span id="appAccountStatus">检测中</span> <a href="/logout">退出</a></div>
+        {% endif %}
     </div>
 
     <div class="grid">
@@ -1049,8 +1051,11 @@ async function refreshCrmStatus() {
     text.textContent = data.logged_in ? `已登录 ${loggedSlots}/${totalSlots}` : `未登录 ${loggedSlots}/${totalSlots}`;
     loginBtn.style.display = loggedSlots < totalSlots ? '' : 'none';
     if (logoutBtn) logoutBtn.style.display = loggedSlots > 0 ? '' : 'none';
-    const appData = await fetch('/api/app-auth/status').then(r => r.json()).catch(() => ({}));
-    document.getElementById('appAccountStatus').textContent = appData.account ? appData.account.username : '未登录';
+    const appAccountStatus = document.getElementById('appAccountStatus');
+    if (appAccountStatus) {
+        const appData = await fetch('/api/app-auth/status').then(r => r.json()).catch(() => ({}));
+        appAccountStatus.textContent = appData.account ? appData.account.username : '未登录';
+    }
 }
 
 async function loadQueriedDealerHistory() {

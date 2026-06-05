@@ -4761,7 +4761,14 @@ PAGE_LINKS = [
     {'permission': 'product-library', 'label': '条码匹配', 'href': '/product-library'},
 ]
 
+DESKTOP_PAGE_LINKS = [
+    {**link, 'label': '设置'} if link['permission'] == 'accounts' else dict(link)
+    for link in PAGE_LINKS
+]
+
 def visible_page_links():
+    if IS_DESKTOP_APP:
+        return DESKTOP_PAGE_LINKS
     row = current_account()
     if not row:
         return []
@@ -4841,6 +4848,10 @@ def require_app_login():
             return jsonify({'success': False, 'error': '当前账号无权访问该功能'}), 403
         return render_template("no_permission.html", account=current_account_public(), links=visible_page_links()), 403
     return None
+
+@app.context_processor
+def inject_app_flags():
+    return {'is_desktop_app': IS_DESKTOP_APP}
 
 def archive_barcode(barcode):
     src = os.path.join(BARCODE_DIR, barcode + '.html')
@@ -5419,6 +5430,8 @@ def accounts_page():
 
 @app.route("/login")
 def login_page():
+    if IS_DESKTOP_APP:
+        return redirect("/product-library")
     return render_template("login.html")
 
 @app.route("/api/product-library", methods=["GET"])
@@ -5639,6 +5652,8 @@ def api_app_auth_logout():
 @app.route("/logout")
 def app_logout_page():
     session.pop('account_username', None)
+    if IS_DESKTOP_APP:
+        return redirect("/product-library")
     return redirect("/login")
 
 @app.route("/api/app-auth/password", methods=["POST"])

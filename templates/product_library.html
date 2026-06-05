@@ -58,14 +58,14 @@
             <a href="{{ link.href }}" class="{{ 'active' if link.href == '/product-library' else '' }}">{{ link.label }}</a>
             {% endfor %}
         </div>
-        {% else %}
+        {% elif not is_desktop_app %}
         <div class="header-actions">
             <a class="btn btn-primary" href="/login?next=/product-library">登录</a>
         </div>
         {% endif %}
     </div>
 
-    {% if account %}
+    {% if account and not is_desktop_app %}
     <div class="status-bar wrap">
         <div class="status-text">工具账号：<span id="accountStatus">检测中</span></div>
         <a class="btn btn-secondary" href="/logout" style="text-decoration:none;display:inline-flex;align-items:center;">退出登录</a>

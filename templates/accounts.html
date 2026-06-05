@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>账号管理</title>
+    <title>{{ '应用设置' if is_desktop_app else '账号管理' }}</title>
     <link rel="stylesheet" href="/static/log_modal.css">
     <script src="/static/log_modal.js"></script>
     <style>
@@ -56,8 +56,8 @@
 <div class="container">
     <div class="header">
         <div>
-            <h1>账号管理</h1>
-            <p class="muted">管理员维护账号和页面权限。默认管理员：admin / 88293529。</p>
+            <h1>{{ '应用设置' if is_desktop_app else '账号管理' }}</h1>
+            <p class="muted">{{ '配置通道数量、本公司信息和 CRM 通道批量登录。' if is_desktop_app else '管理员维护账号和页面权限。默认管理员：admin / 88293529。' }}</p>
         </div>
         <div class="page-nav">
             {% for link in nav_links %}
@@ -66,6 +66,7 @@
         </div>
     </div>
 
+    {% if not is_desktop_app %}
     <div class="card">
         <h2>当前工具账号</h2>
         <div class="status-text">当前工具账号：<span id="accountStatus">检测中</span></div>
@@ -82,6 +83,7 @@
             <div style="display:flex;align-items:end;"><button class="btn btn-primary" onclick="changePassword()">修改密码</button></div>
         </div>
     </div>
+    {% endif %}
 
     <div class="card" id="runtimeConfigCard" style="display:none">
         <h2>系统配置</h2>
@@ -127,6 +129,7 @@
         <div class="log-box" id="bulkCrmLoginLog"><div class="dim">等待操作...</div></div>
     </div>
 
+    {% if not is_desktop_app %}
     <div class="card" id="accountEditCard" style="display:none">
         <h2>账号设置</h2>
         <input type="hidden" id="accountId">
@@ -152,9 +155,12 @@
         <h2>账号列表</h2>
         <div id="accountsBox"></div>
     </div>
+    {% endif %}
 </div>
 
 <script>
+const IS_DESKTOP_APP = {{ is_desktop_app|tojson }};
+
 function escapeHtml(text) {
     return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
@@ -421,6 +427,15 @@ async function saveRuntimeConfig() {
 }
 
 async function loadAccounts() {
+    if (IS_DESKTOP_APP) {
+        document.getElementById('runtimeConfigCard').style.display = '';
+        document.getElementById('bulkCrmLoginCard').style.display = '';
+        loadRuntimeConfig();
+        loadBulkCrmSlots();
+        loadSavedCrmCredentials();
+        if (currentBulkCrmLoginJobId) startBulkLoginPolling();
+        return;
+    }
     const data = await fetch('/api/accounts').then(res => res.json());
     const account = data.account || null;
     document.getElementById('accountStatus').textContent = account ? `${account.username}${account.is_admin ? '（管理员）' : ''}` : '未登录';
