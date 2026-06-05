@@ -73,15 +73,17 @@ jobs:
           OutFile "CRM-barcode-query-Windows-__ARCH__.exe"
           InstallDir "$LOCALAPPDATA\CRMBarcodeQuery"
           RequestExecutionLevel user
+          Icon "build\app_icon.ico"
+          UninstallIcon "build\app_icon.ico"
           Page directory
           Page instfiles
           Section "Install"
             SetShellVarContext current
             SetOutPath "$INSTDIR"
             File /r "windows-package\*"
-            CreateShortCut "$DESKTOP\CRM Barcode Query.lnk" "$INSTDIR\CRMBarcodeQuery.exe"
+            CreateShortCut "$DESKTOP\CRM Barcode Query.lnk" "$INSTDIR\CRMBarcodeQuery.exe" "" "$INSTDIR\CRMBarcodeQuery.exe"
             CreateDirectory "$SMPROGRAMS\CRM Barcode Query"
-            CreateShortCut "$SMPROGRAMS\CRM Barcode Query\CRM Barcode Query.lnk" "$INSTDIR\CRMBarcodeQuery.exe"
+            CreateShortCut "$SMPROGRAMS\CRM Barcode Query\CRM Barcode Query.lnk" "$INSTDIR\CRMBarcodeQuery.exe" "" "$INSTDIR\CRMBarcodeQuery.exe"
           SectionEnd
           '@.Replace("__ARCH__", "${{ matrix.arch }}")
 

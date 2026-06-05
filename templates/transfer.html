@@ -529,6 +529,10 @@ function renderBulkLoginStatus(data) {
         document.getElementById('captchaSubmitBtn').style.display = '';
         document.getElementById('resetLoginBtn').style.display = '';
         document.getElementById('loginPassword').value = '';
+        if (!data.captcha_received) {
+            document.getElementById('captchaSubmitBtn').disabled = false;
+            document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
+        }
         const captchaInput = document.getElementById('captchaInput');
         if (!captchaInput.value) captchaInput.focus();
     }

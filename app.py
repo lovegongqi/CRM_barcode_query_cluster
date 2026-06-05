@@ -43,6 +43,7 @@ except (TypeError, ValueError):
 RUNTIME_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
 RESOURCE_BASE_DIR = getattr(sys, "_MEIPASS", RUNTIME_BASE_DIR)
 CRM_CONFIG_PATH = os.path.join(RUNTIME_BASE_DIR, "config.json")
+IS_DESKTOP_APP = os.environ.get("CRM_DESKTOP_APP") == "1"
 
 def load_crm_config():
     config_paths = [
@@ -186,6 +187,11 @@ class CRMSession:
             print(f"  [错误] 打开 CRM 首页失败: {message}")
             return False
         time.sleep(3)
+        if self._is_current_page_logged_in():
+            self.logged_in = True
+            self.needs_navigation = True
+        else:
+            self.logged_in = False
         return True
 
     def _cleanup_singleton_lock(self, session_dir):
@@ -320,6 +326,7 @@ class CRMSession:
                         continue
 
                 # 点击发送验证码
+                sent_captcha = False
                 for selector in [
                     "button:has-text('发送验证码')", "button:has-text('获取验证码')",
                     "a:has-text('发送验证码')", "a:has-text('获取验证码')",
@@ -330,11 +337,22 @@ class CRMSession:
                         if el and el.is_visible():
                             el.click()
                             time.sleep(2)
-                            return True, "captcha_sent"
+                            sent_captcha = True
+                            break
                     except:
                         continue
 
-                return True, "captcha_not_found"
+                for _ in range(20 if sent_captcha else 6):
+                    captcha_input, _captcha_scope = self._find_captcha_input()
+                    if captcha_input:
+                        return True, "captcha_sent" if sent_captcha else "captcha_ready"
+                    if self._wait_until_logged_in(timeout=1):
+                        return True, "登录成功"
+                    time.sleep(0.5)
+
+                if sent_captcha:
+                    return False, "验证码已发送，但验证码输入框未出现，请点击重新登录后再获取验证码"
+                return False, "未找到发送验证码按钮，也未进入验证码输入页面"
 
             except Exception as e:
                 return False, str(e)
@@ -463,7 +481,7 @@ class CRMSession:
                 # 点确定
                 if not self._click_confirm_near_captcha(captcha_scope, captcha_input):
                     return False, "验证码已填入，但未找到确定按钮"
-                if self._wait_until_logged_in(timeout=18):
+                if self._wait_until_logged_in(timeout=30):
                     return True, "登录成功"
                 return False, "验证码可能错误，请重试，或点击重新登录"
 
@@ -575,7 +593,7 @@ class CRMSession:
                         except:
                             continue
 
-                    if self._wait_until_logged_in(timeout=18):
+                    if self._wait_until_logged_in(timeout=30):
                         return True, "登录成功"
                     return False, "验证码可能错误，请重试"
 
@@ -652,7 +670,8 @@ class CRMSession:
         """检查浏览器当前是否已登录"""
         with self.lock:
             if not self.is_alive():
-                return False, "浏览器未启动"
+                if not self._ensure_browser():
+                    return False, "浏览器未启动"
             try:
                 url = self.page.url.lower()
                 if "login" in url or "登录" in url:
@@ -1237,7 +1256,11 @@ class CRMSession:
 
         with self.lock:
             if not self.is_alive():
-                return False, "浏览器未启动"
+                emit("正在恢复 CRM 浏览器会话", "info")
+                if not self._ensure_browser():
+                    return False, "浏览器未启动"
+            if not self.logged_in and not self._is_current_page_logged_in():
+                return False, "CRM 当前未登录，请先登录 CRM"
             closed_count = self._close_query_report_pages_locked() if (
                 self.report_last_used_at and time.time() - self.report_last_used_at >= REPORT_IDLE_TIMEOUT_SECONDS
             ) else 0
@@ -2477,7 +2500,11 @@ class CRMSession:
 
         with self.lock:
             if not self.is_alive():
-                return False, "浏览器未启动，请先登录 CRM"
+                emit("正在恢复 CRM 浏览器会话", "info")
+                if not self._ensure_browser():
+                    return False, "浏览器未启动，请先登录 CRM"
+            if not self.logged_in and not self._is_current_page_logged_in():
+                return False, "CRM 当前未登录，请先登录 CRM"
             try:
                 def fail(message):
                     self._return_to_move_list()
@@ -2579,7 +2606,7 @@ class CRMWorker:
         self.tasks = queue.Queue()
         self.state_lock = threading.Lock()
         self.browser_running = False
-        self.logged_in_cache = False
+        self.logged_in_cache = _slot_remembered_logged_in(slot_id)
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -2593,6 +2620,7 @@ class CRMWorker:
         with self.state_lock:
             self.browser_running = browser_running
             self.logged_in_cache = logged_in
+        _save_slot_logged_in(self.slot_id, logged_in)
 
     def _run(self):
         session = CRMSession(self.session_dir)
@@ -2638,6 +2666,7 @@ class CRMWorker:
         with self.state_lock:
             self.browser_running = False
             self.logged_in_cache = False
+        _save_slot_logged_in(self.slot_id, False)
         return result
 
     def cancel_login(self):
@@ -2706,6 +2735,46 @@ def _crm_session_base_dir():
         return load_crm_config()["session"]["state_path"]
     except Exception:
         return os.path.join(RUNTIME_BASE_DIR, "session")
+
+CRM_SLOT_STATE_FILE = os.path.join(_runtime_data_base_dir(), "crm_slot_state.json")
+crm_slot_state_lock = threading.Lock()
+
+def _load_crm_slot_state():
+    try:
+        with crm_slot_state_lock:
+            if not os.path.exists(CRM_SLOT_STATE_FILE):
+                return {}
+            with open(CRM_SLOT_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _slot_remembered_logged_in(slot_id):
+    row = _load_crm_slot_state().get(slot_id) or {}
+    return bool(row.get("logged_in"))
+
+def _save_slot_logged_in(slot_id, logged_in):
+    try:
+        with crm_slot_state_lock:
+            data = {}
+            if os.path.exists(CRM_SLOT_STATE_FILE):
+                try:
+                    with open(CRM_SLOT_STATE_FILE, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except Exception:
+                    data = {}
+            data[slot_id] = {
+                "logged_in": bool(logged_in),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            os.makedirs(os.path.dirname(CRM_SLOT_STATE_FILE), exist_ok=True)
+            with open(CRM_SLOT_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 class CRMWorkerPool:
     def __init__(self):
@@ -2897,6 +2966,8 @@ def _empty_bulk_login_job(scope, slots=None):
         'done': False,
         'success': False,
         'error': '',
+        'username': '',
+        'password': '',
         'stop_requested': False,
         'captcha': '',
         'step1_done': False,
@@ -3029,6 +3100,8 @@ def _submit_bulk_login_slot(job_id, slot, captcha):
         job = bulk_login_jobs.get(job_id)
         if not job:
             return False
+        username = job.get('username') or ''
+        password = job.get('password') or ''
         target = next((row for row in job.get('slots') or [] if row.get('id') == slot['id']), None)
         if not target or target.get('status') != 'waiting_captcha':
             return False
@@ -3038,13 +3111,29 @@ def _submit_bulk_login_slot(job_id, slot, captcha):
     try:
         worker = crm_pool.get(slot['id'], slot.get('kind') or 'query')
         success, message = worker.login_step2(captcha)
+        if (
+            not success
+            and username
+            and password
+            and "验证码输入框未出现" in str(message or "")
+        ):
+            _bulk_login_job_log(job_id, f"{slot['label']} 验证码框未出现，正在重开登录页后重试", 'warn')
+            step1_success, step1_message = worker.login_step1(username, password)
+            if step1_success and _slot_logged_in_message(step1_message):
+                success, message = True, step1_message
+            elif step1_success:
+                success, message = worker.login_step2(captcha)
+            else:
+                success, message = False, step1_message
     except Exception as e:
         success, message = False, str(e)
     if success:
         _update_bulk_login_slot(job_id, slot['id'], 'logged_in', message or '登录成功')
         _bulk_login_job_log(job_id, f"{slot['label']} 登录成功", 'success')
         return True
-    _update_bulk_login_slot(job_id, slot['id'], 'waiting_captcha', message or '验证码提交失败')
+    message_text = str(message or '验证码提交失败')
+    keep_waiting = any(text in message_text for text in ["验证码可能错误", "验证码不能为空", "验证码已填入"])
+    _update_bulk_login_slot(job_id, slot['id'], 'waiting_captcha' if keep_waiting else 'failed', message_text)
     _bulk_login_job_log(job_id, f"{slot['label']} 验证码提交失败：{message or '未知错误'}", 'error')
     with bulk_login_job_lock:
         job = bulk_login_jobs.get(job_id)
@@ -3079,11 +3168,18 @@ def _run_bulk_login_job(job_id, username, password):
                 break
         _update_bulk_login_slot(job_id, slot['id'], 'opening', '正在打开登录页')
         _bulk_login_job_log(job_id, f"打开 {slot['label']} 登录页", 'info')
-        try:
-            worker = crm_pool.get(slot['id'], slot.get('kind') or 'query')
-            success, message = worker.login_step1(username, password)
-        except Exception as e:
-            success, message = False, str(e)
+        success, message = False, ""
+        for attempt in range(2):
+            try:
+                worker = crm_pool.get(slot['id'], slot.get('kind') or 'query')
+                success, message = worker.login_step1(username, password)
+            except Exception as e:
+                success, message = False, str(e)
+            if success:
+                break
+            if attempt == 0:
+                _bulk_login_job_log(job_id, f"{slot['label']} 登录页未准备好，准备重试一次：{message or '未知错误'}", 'warn')
+                time.sleep(2)
 
         if not success:
             _update_bulk_login_slot(job_id, slot['id'], 'failed', message or '登录失败')
@@ -3096,7 +3192,7 @@ def _run_bulk_login_job(job_id, username, password):
             continue
 
         _update_bulk_login_slot(job_id, slot['id'], 'waiting_captcha', message or '等待验证码')
-        _bulk_login_job_log(job_id, f"{slot['label']} 已进入验证码步骤", 'success' if message != 'captcha_not_found' else 'warn')
+        _bulk_login_job_log(job_id, f"{slot['label']} 已进入验证码步骤", 'success')
         with bulk_login_job_lock:
             job = bulk_login_jobs.get(job_id)
             captcha = (job or {}).get('captcha') or ''
@@ -4225,10 +4321,8 @@ def ensure_product_library_for_barcodes(selected_barcodes, log=None, worker=None
 
 def _crm_ready_for_auto_query(worker=None):
     worker = worker or crm_pool.get(kind="query")
-    if not worker.is_alive():
-        return False, "CRM 浏览器未启动，请先到在线查询页面登录 CRM"
     if not worker.logged_in:
-        return False, "CRM 当前未登录，请先到在线查询页面完成登录"
+        return False, "CRM 当前未登录，请先登录 CRM"
     return True, ""
 
 def _query_slot_label(slot_id):
@@ -4250,7 +4344,7 @@ def _select_idle_query_worker_desc():
     logged_in_count = 0
     for slot_id in reversed(slots):
         worker = crm_pool.get(slot_id, "query")
-        if not worker.is_alive() or not worker.logged_in:
+        if not worker.logged_in:
             continue
         logged_in_count += 1
         if _query_slot_has_running_batch(slot_id):
@@ -4605,10 +4699,23 @@ def account_public(row):
         'display_name': row.get('display_name', ''),
         'permissions': row.get('permissions', []),
         'updated_at': row.get('updated_at', ''),
-        'is_admin': row.get('username') == 'admin',
+        'is_admin': row.get('username') == 'admin' or bool(row.get('is_admin')),
+    }
+
+def desktop_account_row():
+    return {
+        'id': 'desktop',
+        'username': 'desktop',
+        'display_name': '本机管理员',
+        'password': '',
+        'permissions': ['crm', 'results', 'transfer', 'accounts', 'product-library'],
+        'updated_at': '',
+        'is_admin': True,
     }
 
 def current_account():
+    if IS_DESKTOP_APP:
+        return desktop_account_row()
     username = session.get('account_username')
     if not username:
         return None
@@ -4640,7 +4747,7 @@ def visible_page_links():
 
 def is_admin_account():
     row = current_account()
-    return bool(row and row.get('username') == 'admin')
+    return bool(row and (row.get('username') == 'admin' or row.get('is_admin')))
 
 def account_has_permission(permission):
     row = current_account()
@@ -4672,6 +4779,8 @@ def required_permission_for_path(path):
 @app.before_request
 def require_app_login():
     path = request.path
+    if IS_DESKTOP_APP:
+        return None
     if path.startswith("/api/app-auth"):
         return None
     if path == "/login":
@@ -5644,6 +5753,8 @@ def api_crm_bulk_login_start():
             'running': bool(slots),
             'done': not bool(slots),
             'success': not bool(slots),
+            'username': username,
+            'password': password,
             'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'finished_at': '' if slots else datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         })

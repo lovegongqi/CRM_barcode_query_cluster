@@ -23,17 +23,22 @@ if (!(Test-Path ".venv-win")) {
 
 Write-Host "==> Installing Python dependencies"
 & .\.venv-win\Scripts\python.exe -m pip install --upgrade pip
-& .\.venv-win\Scripts\pip.exe install -r requirements.txt pyinstaller
+& .\.venv-win\Scripts\pip.exe install -r requirements.txt -r requirements-desktop.txt pyinstaller
 
-Write-Host "==> Building exe"
+Write-Host "==> Cleaning previous build"
 if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
 if (Test-Path "dist\CRMBarcodeQuery") { Remove-Item -Recurse -Force "dist\CRMBarcodeQuery" }
 
+Write-Host "==> Generating app icon"
+& .\.venv-win\Scripts\python.exe scripts\generate_app_icon.py
+
+Write-Host "==> Building exe"
 & .\.venv-win\Scripts\pyinstaller.exe `
     --noconfirm `
     --onedir `
     --windowed `
     --name "CRMBarcodeQuery" `
+    --icon "build\app_icon.ico" `
     --add-data "templates;templates" `
     --add-data "static;static" `
     --add-data "config.example.json;." `

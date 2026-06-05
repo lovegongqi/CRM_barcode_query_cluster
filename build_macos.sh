@@ -18,17 +18,22 @@ fi
 
 echo "==> Installing Python dependencies"
 ./.venv-macos/bin/python -m pip install --upgrade pip
-./.venv-macos/bin/pip install -r requirements.txt pyinstaller
+./.venv-macos/bin/pip install -r requirements.txt -r requirements-desktop.txt pyinstaller
 
-echo "==> Building executable"
+echo "==> Cleaning previous build"
 rm -rf build "$RUNTIME_DIST_DIR" "$APP_BUNDLE"
 
+echo "==> Generating app icon"
+./.venv-macos/bin/python scripts/generate_app_icon.py
+
+echo "==> Building executable"
 ./.venv-macos/bin/pyinstaller \
   --noconfirm \
   --onedir \
   --console \
   --distpath "$RUNTIME_DIST_DIR" \
   --name "$RUNTIME_NAME" \
+  --icon "build/app_icon.icns" \
   --add-data "templates:templates" \
   --add-data "static:static" \
   --add-data "config.example.json:." \
@@ -57,6 +62,7 @@ mkdir -p "$RUNTIME_DIR/barcode" "$RUNTIME_DIR/results" "$RUNTIME_DIR/session"
 echo "==> Wrapping package as macOS app"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp -R "$RUNTIME_DIR" "$APP_BUNDLE/Contents/Resources/$RUNTIME_NAME"
+cp "build/app_icon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -71,6 +77,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
   <string>CRMBarcodeQuery</string>
   <key>CFBundleIdentifier</key>
   <string>cn.ecowater.crmbarcodequery</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

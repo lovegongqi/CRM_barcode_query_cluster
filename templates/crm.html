@@ -569,21 +569,20 @@
                 const loggedSlots = querySlots.filter(slot => slot.logged_in).length;
                 const browserRunning = querySlots.some(slot => slot.browser_running);
 
-                if (browserRunning) {
+                if (loggedSlots > 0) {
                     browserDot.className = 'status-dot green';
-                    if (loggedSlots > 0) {
-                        loginDot.className = 'status-dot green';
-                        loginStatus.textContent = `已登录 ${loggedSlots}/${totalSlots}`;
-                        loginBtn.style.display = loggedSlots < totalSlots ? '' : 'none';
-                        logoutBtn.style.display = '';
-                        batchQueryBtn.disabled = isBatchRunning || batchStartPending || isMultiBatchRunning;
-                    } else {
-                        loginDot.className = 'status-dot red';
-                        loginStatus.textContent = '未登录';
-                        loginBtn.style.display = '';
-                        logoutBtn.style.display = 'none';
-                        batchQueryBtn.disabled = isBatchRunning || batchStartPending || isMultiBatchRunning;
-                    }
+                    loginDot.className = 'status-dot green';
+                    loginStatus.textContent = `已登录 ${loggedSlots}/${totalSlots}`;
+                    loginBtn.style.display = loggedSlots < totalSlots ? '' : 'none';
+                    logoutBtn.style.display = '';
+                    batchQueryBtn.disabled = isBatchRunning || batchStartPending || isMultiBatchRunning;
+                } else if (browserRunning) {
+                    browserDot.className = 'status-dot green';
+                    loginDot.className = 'status-dot red';
+                    loginStatus.textContent = '未登录';
+                    loginBtn.style.display = '';
+                    logoutBtn.style.display = 'none';
+                    batchQueryBtn.disabled = isBatchRunning || batchStartPending || isMultiBatchRunning;
                 } else {
                     browserDot.className = 'status-dot gray';
                     loginDot.className = 'status-dot gray';
@@ -642,6 +641,10 @@
                 document.getElementById('captchaSubmitBtn').style.display = '';
                 document.getElementById('resetLoginBtn').style.display = '';
                 document.getElementById('loginPassword').value = '';
+                if (!data.captcha_received) {
+                    document.getElementById('captchaSubmitBtn').disabled = false;
+                    document.getElementById('captchaSubmitBtn').textContent = '提交验证码';
+                }
                 const captchaInput = document.getElementById('captchaInput');
                 if (!captchaInput.value) captchaInput.focus();
             }

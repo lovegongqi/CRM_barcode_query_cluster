@@ -39,6 +39,8 @@ os.makedirs(SESSION_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.environ.setdefault("CRM_DATA_DIR", DATA_DIR)
 os.environ.setdefault("CRM_SESSION_BASE", SESSION_DIR)
+os.environ.setdefault("CRM_DESKTOP_APP", "1")
+os.environ.setdefault("CRM_DISABLE_DATA_MIGRATION", "1")
 LOCAL_BROWSER_DIR = os.path.join(BASE_DIR, "ms-playwright")
 if os.path.isdir(LOCAL_BROWSER_DIR):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", LOCAL_BROWSER_DIR)

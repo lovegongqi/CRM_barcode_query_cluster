@@ -28,6 +28,7 @@ venv/
 
 # Packaging/build artifacts
 *.egg-info/
+*.spec
 build/
 dist/
 

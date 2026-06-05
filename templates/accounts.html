@@ -304,6 +304,10 @@ function renderBulkLoginJob(data) {
     document.getElementById('bulkCrmLoginBtn').textContent = data.running ? '登录中...' : '批量登录';
     if (data.waiting_captcha) {
         document.getElementById('bulkCaptchaRow').style.display = '';
+        if (!data.captcha_received) {
+            document.getElementById('bulkCaptchaBtn').disabled = false;
+            document.getElementById('bulkCaptchaBtn').textContent = '提交验证码';
+        }
         const input = document.getElementById('bulkCrmCaptcha');
         if (!input.value) input.focus();
     }
