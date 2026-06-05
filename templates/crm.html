@@ -187,6 +187,9 @@
                         <input type="password" id="loginPassword" placeholder="密码">
                     </div>
                 </div>
+                <label style="display:flex;align-items:center;gap:8px;margin:4px 0 12px;">
+                    <input type="checkbox" id="rememberCrmLogin"> 记住账号密码
+                </label>
                 <div class="form-row" id="captchaRow" style="display:none">
                     <div class="form-group" style="flex:1">
                         <label>短信验证码</label>
@@ -230,6 +233,36 @@
 
         function isLoggedInMessage(message) {
             return ['已登录（会话有效）', '登录成功', '登录成功（页面已跳转）'].includes(message || '');
+        }
+
+        function loadSavedCrmCredentials(usernameId='loginUsername', passwordId='loginPassword', rememberId='rememberCrmLogin') {
+            const remember = localStorage.getItem('crm_remember_credentials') === '1';
+            const rememberEl = document.getElementById(rememberId);
+            if (rememberEl) rememberEl.checked = remember;
+            if (!remember) {
+                localStorage.removeItem('crm_username');
+                localStorage.removeItem('crm_password');
+                const passwordEl = document.getElementById(passwordId);
+                if (passwordEl) passwordEl.value = '';
+                return;
+            }
+            const usernameEl = document.getElementById(usernameId);
+            const passwordEl = document.getElementById(passwordId);
+            if (usernameEl) usernameEl.value = localStorage.getItem('crm_username') || '';
+            if (passwordEl) passwordEl.value = localStorage.getItem('crm_password') || '';
+        }
+
+        function saveCrmCredentials(username, password, rememberId='rememberCrmLogin') {
+            const remember = !!document.getElementById(rememberId)?.checked;
+            if (remember) {
+                localStorage.setItem('crm_remember_credentials', '1');
+                localStorage.setItem('crm_username', username);
+                localStorage.setItem('crm_password', password);
+            } else {
+                localStorage.removeItem('crm_remember_credentials');
+                localStorage.removeItem('crm_username');
+                localStorage.removeItem('crm_password');
+            }
         }
 
         async function loadSlots() {
@@ -512,10 +545,7 @@
             document.getElementById('modalLoginBtn').disabled = false;
             document.getElementById('modalLoginBtn').textContent = '批量登录';
             document.getElementById('captchaInput').value = '';
-            const savedUsername = localStorage.getItem('crm_username');
-            const savedPassword = localStorage.getItem('crm_password');
-            if (savedUsername) document.getElementById('loginUsername').value = savedUsername;
-            if (savedPassword) document.getElementById('loginPassword').value = savedPassword;
+            loadSavedCrmCredentials();
             setTimeout(() => document.getElementById('loginUsername').focus(), 50);
         }
 
@@ -707,8 +737,7 @@
             lastLoginLogSeq = 0;
 
             try {
-                localStorage.setItem('crm_username', username);
-                localStorage.setItem('crm_password', password);
+                saveCrmCredentials(username, password);
                 const r = await fetch('/api/crm/bulk-login/start', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -787,16 +816,13 @@
             document.getElementById('resetLoginBtn').style.display = 'none';
             document.getElementById('modalLoginBtn').style.display = '';
             document.getElementById('captchaInput').value = '';
-            const savedPassword = localStorage.getItem('crm_password');
-            if (savedPassword) document.getElementById('loginPassword').value = savedPassword;
+            loadSavedCrmCredentials();
             btn.disabled = false;
             await doLogin();
         }
 
         async function doLogout() {
             log('正在退出所有查询通道...', 'warn');
-            localStorage.removeItem('crm_username');
-            localStorage.removeItem('crm_password');
             await loadSlots();
             const slots = querySlots.length ? querySlots : [{id: currentQuerySlot}];
             await Promise.all(slots.map(slot => fetch('/api/crm/logout?kind=query&slot_id=' + encodeURIComponent(slot.id), {method:'POST'}).catch(() => {})));
@@ -1100,10 +1126,7 @@
         }
 
         // 页面加载时自动填入保存的用户名
-        const savedUsername = localStorage.getItem('crm_username');
-        if (savedUsername) {
-            document.getElementById('loginUsername').value = savedUsername;
-        }
+        loadSavedCrmCredentials();
 
         // 页面加载时恢复当前查询窗口自己的条码
         restoreQueryInput();

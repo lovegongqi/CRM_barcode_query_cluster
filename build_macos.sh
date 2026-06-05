@@ -36,10 +36,12 @@ echo "==> Building executable"
   --icon "build/app_icon.icns" \
   --add-data "templates:templates" \
   --add-data "static:static" \
+  --add-data "build/app_icon.png:." \
   --add-data "config.example.json:." \
   --add-data "config.docker.example.json:." \
   --collect-all playwright \
   --collect-all webview \
+  --collect-all pystray \
   --hidden-import openpyxl.cell._writer \
   app_launcher.py
 

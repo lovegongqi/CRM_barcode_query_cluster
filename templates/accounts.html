@@ -116,6 +116,7 @@
         <div class="bulk-login-grid">
             <div><label>CRM 账号</label><input id="bulkCrmUsername" placeholder="CRM 用户名"></div>
             <div><label>CRM 密码</label><input id="bulkCrmPassword" type="password" placeholder="CRM 密码"></div>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:24px;"><input id="bulkRememberCrmLogin" type="checkbox"> 记住账号密码</label>
             <button class="btn btn-primary" id="bulkCrmLoginBtn" onclick="startBulkCrmLogin()">批量登录</button>
         </div>
         <div class="bulk-captcha-row" id="bulkCaptchaRow" style="display:none">
@@ -180,6 +181,36 @@ let currentBulkCrmLoginJobId = sessionStorage.getItem('crm_bulk_login_job_all') 
 let bulkLoginPollTimer = null;
 let lastBulkLoginLogSeq = 0;
 
+function loadSavedCrmCredentials(usernameId='bulkCrmUsername', passwordId='bulkCrmPassword', rememberId='bulkRememberCrmLogin') {
+    const remember = localStorage.getItem('crm_remember_credentials') === '1';
+    const rememberEl = document.getElementById(rememberId);
+    if (rememberEl) rememberEl.checked = remember;
+    if (!remember) {
+        localStorage.removeItem('crm_username');
+        localStorage.removeItem('crm_password');
+        const passwordEl = document.getElementById(passwordId);
+        if (passwordEl) passwordEl.value = '';
+        return;
+    }
+    const usernameEl = document.getElementById(usernameId);
+    const passwordEl = document.getElementById(passwordId);
+    if (usernameEl) usernameEl.value = localStorage.getItem('crm_username') || '';
+    if (passwordEl) passwordEl.value = localStorage.getItem('crm_password') || '';
+}
+
+function saveCrmCredentials(username, password, rememberId='bulkRememberCrmLogin') {
+    const remember = !!document.getElementById(rememberId)?.checked;
+    if (remember) {
+        localStorage.setItem('crm_remember_credentials', '1');
+        localStorage.setItem('crm_username', username);
+        localStorage.setItem('crm_password', password);
+    } else {
+        localStorage.removeItem('crm_remember_credentials');
+        localStorage.removeItem('crm_username');
+        localStorage.removeItem('crm_password');
+    }
+}
+
 function bulkLog(message, level='dim') {
     const box = document.getElementById('bulkCrmLoginLog');
     if (!box) return;
@@ -236,7 +267,7 @@ async function startBulkCrmLogin() {
     pendingBulkCrmSlots = [];
     document.getElementById('bulkCaptchaRow').style.display = 'none';
     document.getElementById('bulkCrmLoginLog').innerHTML = '';
-    localStorage.setItem('crm_username', username);
+    saveCrmCredentials(username, password);
     lastBulkLoginLogSeq = 0;
     try {
         const data = await fetch('/api/crm/bulk-login/start', {
@@ -402,7 +433,7 @@ async function loadAccounts() {
     if (canManage) {
         loadRuntimeConfig();
         loadBulkCrmSlots();
-        document.getElementById('bulkCrmUsername').value = localStorage.getItem('crm_username') || '';
+        loadSavedCrmCredentials();
         if (currentBulkCrmLoginJobId) startBulkLoginPolling();
     }
     if (!data.success) {

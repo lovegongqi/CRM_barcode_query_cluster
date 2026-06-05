@@ -156,6 +156,9 @@
                     <input type="password" id="loginPassword" placeholder="密码">
                 </div>
             </div>
+            <label style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
+                <input type="checkbox" id="rememberCrmLogin"> 记住账号密码
+            </label>
             <div id="captchaRow" style="display:none;margin-top:12px;">
                 <label>短信验证码</label>
                 <input type="text" id="captchaInput" placeholder="输入收到短信验证码" maxlength="6">
@@ -187,6 +190,36 @@ let loginPollTimer = null;
 let lastLoginLogSeq = 0;
 const BUSINESS_CONFIG = {{ business_config|tojson }};
 const OWN_DEALER_NAME = BUSINESS_CONFIG.own_dealer_name || '江西省天麓工贸有限公司';
+
+function loadSavedCrmCredentials(usernameId='loginUsername', passwordId='loginPassword', rememberId='rememberCrmLogin') {
+    const remember = localStorage.getItem('crm_remember_credentials') === '1';
+    const rememberEl = document.getElementById(rememberId);
+    if (rememberEl) rememberEl.checked = remember;
+    if (!remember) {
+        localStorage.removeItem('crm_username');
+        localStorage.removeItem('crm_password');
+        const passwordEl = document.getElementById(passwordId);
+        if (passwordEl) passwordEl.value = '';
+        return;
+    }
+    const usernameEl = document.getElementById(usernameId);
+    const passwordEl = document.getElementById(passwordId);
+    if (usernameEl) usernameEl.value = localStorage.getItem('crm_username') || '';
+    if (passwordEl) passwordEl.value = localStorage.getItem('crm_password') || '';
+}
+
+function saveCrmCredentials(username, password, rememberId='rememberCrmLogin') {
+    const remember = !!document.getElementById(rememberId)?.checked;
+    if (remember) {
+        localStorage.setItem('crm_remember_credentials', '1');
+        localStorage.setItem('crm_username', username);
+        localStorage.setItem('crm_password', password);
+    } else {
+        localStorage.removeItem('crm_remember_credentials');
+        localStorage.removeItem('crm_username');
+        localStorage.removeItem('crm_password');
+    }
+}
 
 function transferPayloadForSlot(slotId, extra={}) {
     return Object.assign({slot_id: slotId, kind: 'transfer'}, extra);
@@ -466,10 +499,7 @@ function openLoginModal() {
     document.getElementById('modalLoginBtn').disabled = false;
     document.getElementById('modalLoginBtn').textContent = '批量登录';
     document.getElementById('captchaInput').value = '';
-    const savedUsername = localStorage.getItem('crm_username');
-    const savedPassword = localStorage.getItem('crm_password');
-    if (savedUsername) document.getElementById('loginUsername').value = savedUsername;
-    if (savedPassword) document.getElementById('loginPassword').value = savedPassword;
+    loadSavedCrmCredentials();
     setTimeout(() => document.getElementById('loginUsername').focus(), 50);
 }
 
@@ -590,8 +620,7 @@ async function doLogin() {
     pendingLoginSlots = [];
     lastLoginLogSeq = 0;
     try {
-        localStorage.setItem('crm_username', username);
-        localStorage.setItem('crm_password', password);
+        saveCrmCredentials(username, password);
         const r = await fetch('/api/crm/bulk-login/start', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},

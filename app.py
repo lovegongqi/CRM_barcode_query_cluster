@@ -854,6 +854,11 @@ class CRMSession:
                 return False, "未发现打开的查询报表页"
             return True, f"已关闭 {closed_count} 个空闲查询报表页"
 
+    def shutdown(self):
+        with self.lock:
+            self._close_browser()
+            return True
+
     def _find_barcode_input(self, page=None):
         try:
             target_page = page or self.page
@@ -2627,6 +2632,11 @@ class CRMWorker:
         while True:
             method_name, args, kwargs, result_queue = self.tasks.get()
             try:
+                if method_name == "shutdown":
+                    result = session.shutdown()
+                    self._update_state(session)
+                    result_queue.put((True, result))
+                    return
                 result = getattr(session, method_name)(*args, **kwargs)
                 self._update_state(session)
                 result_queue.put((True, result))
@@ -2689,6 +2699,15 @@ class CRMWorker:
 
     def create_transfer(self, summary, distributor, transfer_type="移出", remark="", log=None):
         return self._call("create_transfer", summary, distributor, transfer_type, remark, log)
+
+    def shutdown(self):
+        try:
+            result = self._call("shutdown")
+        except Exception:
+            result = False
+        with self.state_lock:
+            self.browser_running = False
+        return result
 
 def _positive_int_env(name, default):
     try:
@@ -2848,6 +2867,15 @@ class CRMWorkerPool:
             self.query_slots = self._make_slots("query", self.query_count)
             self.transfer_slots = self._make_slots("transfer", self.transfer_count)
         return self.slots_payload()
+
+    def shutdown(self):
+        with self.pool_lock:
+            workers = list(self.workers.values())
+        for worker in workers:
+            try:
+                worker.shutdown()
+            except Exception:
+                pass
 
 crm_pool = CRMWorkerPool()
 

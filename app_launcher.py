@@ -12,6 +12,16 @@ import webbrowser
 
 
 APP_NAME = "CRMBarcodeQuery"
+CONTROL_HOST = "127.0.0.1"
+CONTROL_PORT = int(os.environ.get("CRM_DESKTOP_CONTROL_PORT", "51241"))
+CONTROL_TOKEN = "CRMBarcodeQuery:show"
+
+APP_WINDOW = None
+TRAY_ICON = None
+CONTROL_SOCKET = None
+EXIT_REQUESTED = False
+SHOW_PENDING = False
+WINDOW_LOCK = threading.Lock()
 
 
 def _user_data_dir():
@@ -63,6 +73,176 @@ PORT = _find_free_port()
 def _log(message):
     with open(LOG_FILE, "a", encoding="utf-8") as log:
         log.write(f"{message}\n")
+
+
+def _notify_existing_instance():
+    try:
+        with socket.create_connection((CONTROL_HOST, CONTROL_PORT), timeout=1) as sock:
+            sock.sendall(CONTROL_TOKEN.encode("utf-8"))
+        return True
+    except Exception:
+        return False
+
+
+def _control_loop(sock):
+    while True:
+        try:
+            conn, _addr = sock.accept()
+        except OSError:
+            return
+        with conn:
+            try:
+                data = conn.recv(1024).decode("utf-8", errors="ignore")
+            except Exception:
+                data = ""
+        if CONTROL_TOKEN in data:
+            _request_show_window()
+
+
+def _start_single_instance_server():
+    global CONTROL_SOCKET
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((CONTROL_HOST, CONTROL_PORT))
+    except OSError:
+        sock.close()
+        if _notify_existing_instance():
+            _log("existing instance notified; exiting this launcher")
+            return False
+        raise RuntimeError("CRM 条码查询可能已经在运行，但无法唤醒现有窗口")
+    sock.listen(5)
+    CONTROL_SOCKET = sock
+    threading.Thread(target=_control_loop, args=(sock,), daemon=True).start()
+    return True
+
+
+def _request_show_window():
+    global SHOW_PENDING
+    with WINDOW_LOCK:
+        window = APP_WINDOW
+        if not window:
+            SHOW_PENDING = True
+            return
+    try:
+        window.show()
+        if hasattr(window, "restore"):
+            window.restore()
+        _log("window shown")
+    except Exception:
+        _log("show window failed")
+        _log(traceback.format_exc())
+
+
+def _set_app_window(window):
+    global APP_WINDOW, SHOW_PENDING
+    with WINDOW_LOCK:
+        APP_WINDOW = window
+        should_show = SHOW_PENDING
+        SHOW_PENDING = False
+    if should_show:
+        _request_show_window()
+
+
+def _resource_path(filename):
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        path = os.path.join(sys._MEIPASS, filename)
+        if os.path.exists(path):
+            return path
+    path = os.path.join(BASE_DIR, filename)
+    if os.path.exists(path):
+        return path
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "build", filename)
+
+
+def _tray_image():
+    try:
+        from PIL import Image, ImageDraw
+        icon_path = _resource_path("app_icon.png")
+        if os.path.exists(icon_path):
+            return Image.open(icon_path)
+        image = Image.new("RGBA", (64, 64), (17, 126, 160, 255))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((14, 16, 50, 32), fill=(255, 255, 255, 255))
+        for x in (20, 26, 35, 43):
+            draw.rectangle((x, 18, x + 3, 30), fill=(8, 70, 95, 255))
+        draw.text((15, 40), "CRM", fill=(255, 255, 255, 255))
+        return image
+    except Exception:
+        return None
+
+
+def _shutdown_backend():
+    try:
+        from app import crm_pool  # noqa: E402
+        crm_pool.shutdown()
+        _log("CRM worker pool shutdown complete")
+    except Exception:
+        _log("CRM worker pool shutdown failed")
+        _log(traceback.format_exc())
+
+
+def _quit_app(icon=None, item=None):
+    global EXIT_REQUESTED
+    if EXIT_REQUESTED:
+        return
+    EXIT_REQUESTED = True
+    _log("quit requested")
+    try:
+        if icon:
+            icon.visible = False
+            icon.stop()
+    except Exception:
+        pass
+    _shutdown_backend()
+    with WINDOW_LOCK:
+        window = APP_WINDOW
+    if window:
+        try:
+            window.destroy()
+            return
+        except Exception:
+            _log("destroy window failed")
+            _log(traceback.format_exc())
+    os._exit(0)
+
+
+def _start_tray_icon():
+    global TRAY_ICON
+    try:
+        import pystray
+        image = _tray_image()
+        if image is None:
+            return False
+        menu = pystray.Menu(
+            pystray.MenuItem("打开窗口", lambda icon, item: _request_show_window(), default=True),
+            pystray.MenuItem("退出应用", _quit_app),
+        )
+        TRAY_ICON = pystray.Icon(APP_NAME, image, "CRM 条码查询", menu)
+        TRAY_ICON.run_detached()
+        return True
+    except Exception:
+        TRAY_ICON = None
+        _log("tray icon failed")
+        _log(traceback.format_exc())
+        return False
+
+
+def _on_window_closing():
+    if EXIT_REQUESTED:
+        return True
+    if not TRAY_ICON:
+        return True
+    with WINDOW_LOCK:
+        window = APP_WINDOW
+    if window:
+        try:
+            window.hide()
+            _log("window hidden to tray")
+        except Exception:
+            _log("hide window failed")
+            _log(traceback.format_exc())
+            return True
+    return False
 
 
 def _wait_for_server(port, timeout=20):
@@ -152,14 +332,19 @@ def _open_native_window(port):
     try:
         import webview
         _log("launching native webview window")
-        webview.create_window(
+        window = webview.create_window(
             "CRM 条码查询",
             url,
             width=1280,
             height=900,
             min_size=(960, 700),
         )
+        _set_app_window(window)
+        window.events.closing += _on_window_closing
+        _start_tray_icon()
         webview.start(debug=False)
+        if not EXIT_REQUESTED:
+            _shutdown_backend()
         return True
     except Exception:
         _log("native webview failed, falling back to packaged Chromium")
@@ -192,6 +377,9 @@ if __name__ == "__main__":
         _log(f"SESSION_DIR={SESSION_DIR}")
         _log(f"PORT={PORT}")
 
+        if not _start_single_instance_server():
+            sys.exit(0)
+
         from app import BARCODE_DIR  # noqa: E402
 
         os.makedirs(BARCODE_DIR, exist_ok=True)
@@ -202,6 +390,7 @@ if __name__ == "__main__":
         window_process = _launch_app_window(PORT)
         if window_process:
             window_process.wait()
+            _shutdown_backend()
         else:
             while True:
                 time.sleep(3600)
