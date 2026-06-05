@@ -6,13 +6,16 @@ __pycache__
 
 accounts.json
 config.json
+runtime_config.json
 .env
 
 barcode
 results
+temp_queries
 session
 venv
 .venv
+release-artifacts
 
 *.log
 *.pid

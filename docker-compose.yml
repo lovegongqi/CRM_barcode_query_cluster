@@ -10,8 +10,7 @@ services:
       CRM_TRANSFER_WORKERS: "${CRM_TRANSFER_WORKERS:-2}"
       CRM_DATA_DIR: /app/data
       CRM_SESSION_BASE: /app/session
-      CRM_LEGACY_BARCODE_DIR: /app/legacy/barcode
-      CRM_LEGACY_RESULTS_DIR: /app/legacy/results
+      CRM_DISABLE_DATA_MIGRATION: "1"
     ports:
       - "5001:5001"
     volumes:
@@ -19,9 +18,6 @@ services:
       # - ./config.json:/app/config.json:ro
       - crm_app_data:/app/data
       - crm_browser_session:/app/session
-      # 兼容旧版本 bind mount 数据：首次启动会自动复制到 crm_app_data 命名卷
-      - ./barcode:/app/legacy/barcode:ro
-      - ./results:/app/legacy/results:ro
     shm_size: "1gb"
 
 volumes:
