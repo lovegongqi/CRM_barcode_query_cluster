@@ -1510,7 +1510,14 @@
 
         function getFilterFieldValue(item, fieldId) {
             if (fieldId === 'querySlotLabel') return (item && item.querySlotLabel ? String(item.querySlotLabel).trim() : '');
+            if (fieldId === 'newisclosed1_sr2') return getServiceClosedStatus((item && item.fields) || {});
             return gfFields((item && item.fields) || {}, fieldId);
+        }
+
+        function getServiceClosedStatus(fields) {
+            const sr2 = fields['sr2'];
+            const rows = Array.isArray(sr2) ? sr2 : (sr2 ? [sr2] : []);
+            return rows.some(row => row && row['newisclosed1'] === '已结单') ? '已结单' : '未结单';
         }
 
         function gfFields(fields, fieldId) {
@@ -1524,7 +1531,12 @@
             const srKey = 'sr' + srNum;
             const realKey = fieldId.substring(0, idx);
             const sub = fields[srKey];
-            if (Array.isArray(sub)) return '';
+            if (Array.isArray(sub)) {
+                return Array.from(new Set(sub.map(row => {
+                    const raw = row && row[realKey];
+                    return (typeof raw === 'string' ? raw.trim() : '');
+                }).filter(Boolean)));
+            }
             if (sub && typeof sub === 'object') {
                 const raw = sub[realKey];
                 return (typeof raw === 'string' ? raw.trim() : '');
@@ -1533,6 +1545,9 @@
         }
 
         function valMatch(extracted, selected) {
+            if (Array.isArray(extracted)) {
+                return extracted.some(value => valMatch(String(value || ''), selected));
+            }
             const e = extracted.replace(/\s+/g, ' ').trim().toLowerCase();
             return selected.some(s => e === s.replace(/\s+/g, ' ').trim().toLowerCase());
         }

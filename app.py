@@ -3905,8 +3905,28 @@ def _suggest_column_width(label, values):
         return min(max(max_width + 2, 14), 20)
     return min(max(max_width + 2, 12), 28)
 
+def _service_closed_filter_value(fields):
+    sub = (fields or {}).get('sr2', {})
+    records = sub if isinstance(sub, list) else ([sub] if isinstance(sub, dict) else [])
+    return '已结单' if any((row or {}).get('newisclosed1') == '已结单' for row in records) else '未结单'
+
 def _get_filter_value(item, field_id):
-    return _get_field(item.get('fields') or {}, field_id)
+    fields = item.get('fields') or {}
+    if field_id == 'newisclosed1_sr2':
+        return _service_closed_filter_value(fields)
+    m = re.search(r'_sr(\d+)$', field_id)
+    if m:
+        sr_key = f"sr{m.group(1)}"
+        real_fid = field_id.rsplit('_sr', 1)[0]
+        sub = fields.get(sr_key, {})
+        if isinstance(sub, list):
+            values = []
+            for row in sub:
+                value = _clean_export_value((row or {}).get(real_fid, ''))
+                if value and value not in values:
+                    values.append(value)
+            return values
+    return _get_field(fields, field_id)
 
 def get_filter_options(barcodes):
     options = {}
@@ -3914,8 +3934,10 @@ def get_filter_options(barcodes):
         values = set()
         for b in barcodes:
             val = _get_filter_value(b, field_id)
-            if val:
-                values.add(val)
+            vals = val if isinstance(val, list) else [val]
+            for item in vals:
+                if item:
+                    values.add(item)
         options[field_id] = {
             'label': label,
             'field_id': field_id,
