@@ -126,8 +126,12 @@ def _request_show_window():
             SHOW_PENDING = True
             return
     try:
+        if sys.platform == "darwin":
+            _activate_macos_app()
         if hasattr(window, "restore"):
             window.restore()
+        if hasattr(window, "bring_to_front"):
+            window.bring_to_front()
         window.show()
         if sys.platform == "darwin":
             _activate_macos_app()
@@ -302,13 +306,13 @@ def _on_window_closing():
             _log("macOS status item unavailable; closing app instead of hiding")
             return True
         try:
+            if hasattr(window, "minimize"):
+                window.minimize()
+                _log("window minimized; macOS status item remains available")
+                return False
             if hasattr(window, "hide"):
                 window.hide()
                 _log("window hidden to macOS status item")
-                return False
-            if hasattr(window, "minimize"):
-                window.minimize()
-                _log("window minimized to dock")
                 return False
             _log("no hide/minimize support; closing app")
             return True

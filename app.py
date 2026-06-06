@@ -67,6 +67,14 @@ try:
     REPORT_IDLE_CLEANUP_INTERVAL_SECONDS = max(60, int(os.environ.get("CRM_REPORT_IDLE_CHECK_SECONDS", "300")))
 except (TypeError, ValueError):
     REPORT_IDLE_CLEANUP_INTERVAL_SECONDS = 300
+try:
+    QUERY_SLOT_FAILURE_COOLDOWN_SECONDS = max(30, int(os.environ.get("CRM_QUERY_SLOT_FAILURE_COOLDOWN_SECONDS", "300")))
+except (TypeError, ValueError):
+    QUERY_SLOT_FAILURE_COOLDOWN_SECONDS = 300
+try:
+    LIBRARY_QUERY_SLOT_RETRY_LIMIT = max(1, int(os.environ.get("CRM_LIBRARY_QUERY_SLOT_RETRY_LIMIT", "3")))
+except (TypeError, ValueError):
+    LIBRARY_QUERY_SLOT_RETRY_LIMIT = 3
 
 RUNTIME_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
 RESOURCE_BASE_DIR = getattr(sys, "_MEIPASS", RUNTIME_BASE_DIR)
@@ -1366,6 +1374,7 @@ class CRMSession:
                             if not input_box or not input_box.is_visible():
                                 return False, "未找到条码输入框"
 
+                has_loading = False
                 for _ in range(30):
                     try:
                         imgs = self.page.query_selector_all("img")
@@ -1384,6 +1393,11 @@ class CRMSession:
                     except:
                         break
                     time.sleep(1)
+                if has_loading:
+                    emit("报表加载遮罩长时间未消失，关闭旧报表页后换通道或重试", "warn")
+                    self.needs_navigation = True
+                    self._close_query_report_pages_locked()
+                    return False, "报表仍在加载，已关闭旧报表页"
 
                 input_box.click()
                 time.sleep(0.3)
@@ -1498,7 +1512,8 @@ class CRMSession:
                     self.needs_navigation = False
                     return True, barcode
                 else:
-                    self.needs_navigation = False
+                    self.needs_navigation = True
+                    self._close_query_report_pages_locked()
                     return False, "查询结果为空"
 
             except Exception as e:
@@ -1506,6 +1521,7 @@ class CRMSession:
                 if crash_message:
                     return False, crash_message
                 self.needs_navigation = True
+                self._close_query_report_pages_locked()
                 return False, str(e)
             finally:
                 self.report_last_used_at = time.time()
@@ -2649,6 +2665,7 @@ class CRMWorker:
         self.browser_running = False
         self.remembered_logged_in_cache = _slot_remembered_logged_in(slot_id)
         self.logged_in_cache = False
+        self.current_task = ""
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -2671,6 +2688,8 @@ class CRMWorker:
         while True:
             method_name, args, kwargs, result_queue = self.tasks.get()
             try:
+                with self.state_lock:
+                    self.current_task = method_name
                 if method_name == "shutdown":
                     result = session.shutdown()
                     self._update_state(session)
@@ -2683,6 +2702,9 @@ class CRMWorker:
                 crash_message = session._handle_browser_exception(e)
                 self._update_state(session)
                 result_queue.put((False, crash_message or str(e)))
+            finally:
+                with self.state_lock:
+                    self.current_task = ""
 
     def _call(self, method_name, *args, **kwargs):
         result_queue = queue.Queue(maxsize=1)
@@ -2705,6 +2727,11 @@ class CRMWorker:
     def remembered_logged_in(self):
         with self.state_lock:
             return self.remembered_logged_in_cache
+
+    @property
+    def busy(self):
+        with self.state_lock:
+            return bool(self.current_task)
 
     def login(self, username, password, captcha=None):
         return self._call("login", username, password, captcha)
@@ -2895,6 +2922,7 @@ class CRMWorkerPool:
                 "browser_running": self.workers[slot_id].is_alive(),
                 "logged_in": self.workers[slot_id].logged_in,
                 "remembered_logged_in": self.workers[slot_id].remembered_logged_in,
+                "busy": self.workers[slot_id].busy,
             } for index, slot_id in enumerate(slot_ids, 1)]
         return {
             "query": rows(query_slots, "query"),
@@ -3331,7 +3359,7 @@ def _library_query_log(message, level='dim'):
         })
         library_query_job['logs'] = library_query_job['logs'][-300:]
 
-def _run_library_query_job(barcode, worker=None):
+def _run_library_query_job(barcode, worker=None, slot_id='', slot_label=''):
     if is_disassembly_barcode(barcode):
         _library_query_log(f"已跳过拆机条码：{barcode}，CRM 不查询", 'warn')
         with library_query_lock:
@@ -3342,40 +3370,78 @@ def _run_library_query_job(barcode, worker=None):
             library_query_job['error'] = ''
         return
     _library_query_log(f"开始查询条码：{barcode}", 'info')
-    try:
-        actual_worker = worker or crm_pool.get(kind="query")
-        existing_paths = existing_barcode_result_paths(barcode)
-        had_metadata = barcode_metadata_exists(barcode)
-        success, result = actual_worker.query_barcode(barcode, _library_query_log, TEMP_QUERY_DIR)
-        with library_query_lock:
-            library_query_job['running'] = False
-            library_query_job['done'] = True
-            library_query_job['success'] = bool(success)
-            library_query_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    attempted_slots = set()
+    last_error = ""
+    max_attempts = max(1, min(LIBRARY_QUERY_SLOT_RETRY_LIMIT, len(crm_pool.query_slots)))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if not worker:
+                worker, slot_id, slot_label, error = _select_idle_query_worker_desc(attempted_slots)
+                if error:
+                    last_error = error
+                    break
+                _library_query_log(f"已切换查询通道：{slot_label}", 'info')
+            attempted_slots.add(slot_id or worker.slot_id)
+            with library_query_lock:
+                library_query_job['slot_id'] = slot_id or worker.slot_id
+                library_query_job['slot_label'] = slot_label or _query_slot_label(worker.slot_id)
+            if attempt > 1:
+                _library_query_log(f"使用 {slot_label or _query_slot_label(worker.slot_id)} 重试查询（第 {attempt}/{max_attempts} 个通道）", 'warn')
+
+            actual_worker = worker
+            actual_slot_id = slot_id or actual_worker.slot_id
+            existing_paths = existing_barcode_result_paths(barcode)
+            had_metadata = barcode_metadata_exists(barcode)
+            success, result = actual_worker.query_barcode(barcode, _library_query_log, TEMP_QUERY_DIR)
             if success:
-                library_query_job['error'] = ''
-            else:
-                library_query_job['error'] = _brief_batch_error(result, 800)
-        if success:
-            removed = delete_temporary_query_result(
-                barcode,
-                _library_query_log,
-                keep_paths=existing_paths,
-                keep_metadata=had_metadata,
-            )
-            if not removed and (existing_paths or had_metadata):
-                _library_query_log("该条码原本已在结果管理中，保留原查询文件", 'dim')
-            _library_query_log(f"条码查询完成：{barcode}", 'success')
-        else:
-            _library_query_log(f"条码查询失败：{result}", 'error')
-    except Exception as e:
-        with library_query_lock:
-            library_query_job['running'] = False
-            library_query_job['done'] = True
-            library_query_job['success'] = False
-            library_query_job['error'] = _brief_batch_error(e, 800)
-            library_query_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        _library_query_log(f"条码查询出错：{e}", 'error')
+                _mark_query_slot_healthy(actual_slot_id)
+                with library_query_lock:
+                    library_query_job['running'] = False
+                    library_query_job['done'] = True
+                    library_query_job['success'] = True
+                    library_query_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    library_query_job['error'] = ''
+                removed = delete_temporary_query_result(
+                    barcode,
+                    _library_query_log,
+                    keep_paths=existing_paths,
+                    keep_metadata=had_metadata,
+                )
+                if not removed and (existing_paths or had_metadata):
+                    _library_query_log("该条码原本已在结果管理中，保留原查询文件", 'dim')
+                _library_query_log(f"条码查询完成：{barcode}", 'success')
+                return
+
+            last_error = _brief_batch_error(result, 800)
+            _mark_query_slot_unhealthy(actual_slot_id, result)
+            _library_query_log(f"{slot_label or _query_slot_label(actual_slot_id)} 查询失败：{last_error}", 'error')
+            if attempt < max_attempts:
+                _library_query_log("将自动换一个未使用的查询通道重试", 'warn')
+                worker = None
+                slot_id = ''
+                slot_label = ''
+                continue
+            break
+        except Exception as e:
+            actual_slot_id = slot_id or getattr(worker, 'slot_id', '')
+            last_error = _brief_batch_error(e, 800)
+            _mark_query_slot_unhealthy(actual_slot_id, e)
+            _library_query_log(f"{slot_label or _query_slot_label(actual_slot_id)} 查询出错：{last_error}", 'error')
+            if attempt < max_attempts:
+                _library_query_log("将自动换一个未使用的查询通道重试", 'warn')
+                worker = None
+                slot_id = ''
+                slot_label = ''
+                continue
+            break
+
+    with library_query_lock:
+        library_query_job['running'] = False
+        library_query_job['done'] = True
+        library_query_job['success'] = False
+        library_query_job['error'] = last_error or '条码查询失败'
+        library_query_job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _library_query_log(f"条码查询失败：{last_error or '未找到可用查询通道'}", 'error')
 
 def _transfer_log(message, level='dim'):
     with transfer_job_lock:
@@ -4493,12 +4559,50 @@ def _query_slot_has_running_batch(slot_id):
         job = batch_jobs.get(job_id)
         return bool(job and job.get('running'))
 
-def _select_idle_query_worker_desc():
+query_slot_cooldown_lock = threading.Lock()
+query_slot_cooldowns = {}
+
+def _mark_query_slot_healthy(slot_id):
+    if not slot_id:
+        return
+    with query_slot_cooldown_lock:
+        query_slot_cooldowns.pop(slot_id, None)
+
+def _mark_query_slot_unhealthy(slot_id, reason=''):
+    if not slot_id:
+        return
+    with query_slot_cooldown_lock:
+        query_slot_cooldowns[slot_id] = {
+            'until': time.time() + QUERY_SLOT_FAILURE_COOLDOWN_SECONDS,
+            'reason': _brief_batch_error(reason, 160),
+        }
+
+def _query_slot_cooldown_message(slot_id):
+    with query_slot_cooldown_lock:
+        row = query_slot_cooldowns.get(slot_id)
+        if not row:
+            return ''
+        remaining = int(row.get('until', 0) - time.time())
+        if remaining <= 0:
+            query_slot_cooldowns.pop(slot_id, None)
+            return ''
+        reason = row.get('reason') or '上次查询失败'
+        return f"{reason}，冷却 {remaining} 秒"
+
+def _select_idle_query_worker_desc(exclude_slot_ids=None):
+    exclude_slot_ids = set(exclude_slot_ids or [])
     with crm_pool.pool_lock:
         slots = list(crm_pool.query_slots)
     logged_in_count = 0
+    busy_count = 0
+    skipped_cooldown = 0
     for slot_id in reversed(slots):
+        if slot_id in exclude_slot_ids:
+            continue
         worker = crm_pool.get(slot_id, "query")
+        if worker.busy:
+            busy_count += 1
+            continue
         if not worker.logged_in:
             if not worker.remembered_logged_in:
                 continue
@@ -4506,11 +4610,19 @@ def _select_idle_query_worker_desc():
             if not success or not worker.logged_in:
                 continue
         logged_in_count += 1
+        cooldown_message = _query_slot_cooldown_message(slot_id)
+        if cooldown_message:
+            skipped_cooldown += 1
+            continue
         if _query_slot_has_running_batch(slot_id):
             continue
         return worker, slot_id, _query_slot_label(slot_id), ""
     if logged_in_count == 0:
+        if busy_count:
+            return None, "", "", "所有已登录查询通道都在查询中，请稍后再试"
         return None, "", "", "没有已登录的查询通道，请先到在线查询页登录 CRM"
+    if skipped_cooldown:
+        return None, "", "", "已登录查询通道刚查询失败正在冷却，请稍后再试，或到在线查询页重新登录对应通道"
     return None, "", "", "所有已登录查询通道都在查询中，请稍后再试"
 
 def _request_slot_id(kind="query"):
@@ -5673,7 +5785,7 @@ def api_product_library_query_start():
             'finished_at': '',
         })
     _library_query_log(f"已分配查询通道：{slot_label}", 'info')
-    threading.Thread(target=_run_library_query_job, args=(barcode, worker), daemon=True).start()
+    threading.Thread(target=_run_library_query_job, args=(barcode, worker, slot_id, slot_label), daemon=True).start()
     return jsonify({'success': True, 'slot_id': slot_id, 'slot_label': slot_label, 'message': '条码查询已开始'})
 
 @app.route("/api/product-library/query/status")
