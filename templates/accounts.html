@@ -30,10 +30,12 @@
         .permissions { display:flex; gap:10px; flex-wrap:wrap; margin:12px 0; }
         .permissions label { display:flex; align-items:center; gap:6px; color:#334155; font-size:13px; margin:0; }
         .permissions input { width:auto; }
-        .channel-grid { display:grid; grid-template-columns:1fr 1fr auto; gap:12px; align-items:end; }
+        .channel-grid { display:grid; grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto; gap:12px; align-items:end; }
         .stepper { display:flex; gap:6px; align-items:center; }
         .stepper input { width:80px; height:36px; text-align:center; font-weight:800; }
         .stepper button { min-width:36px; min-height:36px; padding:0 10px; border:1px solid #cfd8e3; border-radius:6px; background:#fff; font-weight:900; cursor:pointer; }
+        .business-config-grid { display:grid; grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) minmax(190px,auto); gap:12px; align-items:end; margin-top:12px; }
+        .business-config-grid .inline-check { align-self:end; }
         .bulk-login-grid { display:grid; grid-template-columns:minmax(160px,1fr) minmax(160px,1fr) auto auto; gap:12px; align-items:end; }
         .bulk-login-grid .remember-inline { display:flex; align-items:center; gap:8px; margin:0 0 8px; white-space:nowrap; color:#334155; }
         .bulk-login-grid .remember-inline input { width:auto; }
@@ -51,8 +53,9 @@
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
         th { background:#f8fafc; color:#475569; }
-        @media (max-width:860px) { .container { padding:14px; } .form-grid, .channel-grid, .bulk-login-grid, .bulk-captcha-row { grid-template-columns:1fr; } }
+        @media (max-width:860px) { .container { padding:14px; } .form-grid, .channel-grid, .business-config-grid, .bulk-login-grid, .bulk-captcha-row { grid-template-columns:1fr; } }
     </style>
+    <link rel="stylesheet" href="/static/app_layout.css">
 </head>
 <body>
 <div class="container">
@@ -108,10 +111,10 @@
             </div>
             <button class="btn btn-primary" onclick="saveRuntimeConfig()">保存配置</button>
         </div>
-        <div class="form-grid" style="margin-top:12px;">
+        <div class="business-config-grid">
             <div><label>本公司经销商名称</label><input id="ownDealerName" placeholder="例如：江西省天麓工贸有限公司"></div>
             <div><label>冻结仓库名称</label><input id="frozenWarehouseName" placeholder="例如：江西天麓冻结仓库"></div>
-            <label style="display:flex;align-items:center;gap:8px;margin-top:24px;"><input id="frozenWarehouseSaveOnly" type="checkbox"> 冻结仓库只保存不确认</label>
+            <label class="inline-check"><input id="frozenWarehouseSaveOnly" type="checkbox"> 冻结仓库只保存不确认</label>
         </div>
     </div>
 

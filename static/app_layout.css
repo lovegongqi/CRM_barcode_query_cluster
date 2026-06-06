@@ -1,0 +1,222 @@
+:root {
+    --app-bg: #f4f7fb;
+    --app-card: #fff;
+    --app-border: #d9e1ec;
+    --app-text: #202938;
+    --app-muted: #667085;
+    --app-blue: #2563eb;
+    --app-shadow: 0 8px 24px rgba(15, 23, 42, .06);
+}
+
+html {
+    min-width: 0;
+}
+
+body {
+    background: var(--app-bg);
+    color: var(--app-text);
+}
+
+body.results-page {
+    padding: 0 !important;
+}
+
+.container,
+.page-shell {
+    width: min(1280px, 100%);
+    max-width: 1280px;
+}
+
+.container {
+    padding: 24px;
+}
+
+.header {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.header h1,
+h1 {
+    letter-spacing: 0;
+}
+
+.page-nav {
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+}
+
+.page-nav a {
+    width: auto !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    flex: initial !important;
+    min-height: 38px !important;
+    padding: 0 8px !important;
+    border-radius: 8px !important;
+    font-size: 13px !important;
+    line-height: 1.1 !important;
+    white-space: nowrap;
+}
+
+.card,
+.status-bar,
+.query-card,
+.login-card {
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    box-shadow: var(--app-shadow);
+}
+
+.card {
+    padding: 20px;
+}
+
+.card h2,
+.card-head {
+    border-bottom-color: #e5eaf2;
+}
+
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+    min-height: 38px;
+    border-radius: 8px;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+    width: 16px !important;
+    min-width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    accent-color: var(--app-blue);
+}
+
+.btn,
+button.btn,
+a.btn,
+.action-btn,
+.btn-q,
+.links a,
+.transfer-slot-option,
+.slot-tab,
+.slot-pill {
+    border-radius: 8px;
+    font-weight: 800;
+    letter-spacing: 0;
+}
+
+.btn,
+button.btn,
+a.btn {
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.card-head,
+.status-bar,
+.auth-card {
+    min-width: 0;
+}
+
+.card-head h2,
+.status-text,
+.status-item {
+    min-width: 0;
+}
+
+.actions,
+.auth-actions,
+.status-actions,
+.modal-actions,
+.header-actions,
+.crm-actions {
+    gap: 8px;
+}
+
+.log,
+.log-area,
+.log-box,
+.query-log,
+.global-log-body {
+    border-radius: 8px;
+}
+
+.table-scroll,
+.summary,
+.transfer-summary,
+#libraryBox,
+#accountsBox {
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+table {
+    max-width: 100%;
+}
+
+.inline-check,
+.remember-inline {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    margin: 0;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 800;
+    white-space: normal;
+}
+
+@media (max-width: 860px) {
+    .container,
+    .page-shell {
+        padding: 14px;
+    }
+
+    .card {
+        padding: 16px;
+    }
+
+    .page-nav {
+        gap: 6px;
+    }
+
+    .page-nav a {
+        min-height: 34px !important;
+        padding: 0 3px !important;
+        font-size: clamp(10px, 2.7vw, 12px) !important;
+    }
+
+    .card-head,
+    .auth-card,
+    .status-bar {
+        align-items: stretch;
+        flex-wrap: wrap;
+    }
+
+    .crm-actions,
+    .status-actions,
+    .auth-actions {
+        margin-left: auto;
+    }
+
+    .btn,
+    button.btn,
+    a.btn {
+        min-height: 36px;
+        padding-left: 12px;
+        padding-right: 12px;
+        font-size: 13px;
+    }
+}

@@ -18,6 +18,8 @@ CONTROL_TOKEN = "CRMBarcodeQuery:show"
 
 APP_WINDOW = None
 TRAY_ICON = None
+MAC_STATUS_ITEM = None
+MAC_STATUS_TARGET = None
 CONTROL_SOCKET = None
 EXIT_REQUESTED = False
 SHOW_PENDING = False
@@ -220,6 +222,8 @@ def _quit_app(icon=None, item=None):
 
 def _start_tray_icon():
     global TRAY_ICON
+    if sys.platform == "darwin" and _start_macos_status_item():
+        return True
     try:
         import pystray
         image = _tray_image()
@@ -235,6 +239,55 @@ def _start_tray_icon():
     except Exception:
         TRAY_ICON = None
         _log("tray icon failed")
+        _log(traceback.format_exc())
+        return False
+
+
+def _start_macos_status_item():
+    global MAC_STATUS_ITEM, MAC_STATUS_TARGET
+    try:
+        from AppKit import NSImage, NSMakeSize, NSMenu, NSMenuItem, NSStatusBar, NSVariableStatusItemLength  # type: ignore
+        from Foundation import NSObject  # type: ignore
+
+        class MacStatusTarget(NSObject):
+            def openWindow_(self, sender):
+                _request_show_window()
+
+            def quitApp_(self, sender):
+                _quit_app()
+
+        target = MacStatusTarget.alloc().init()
+        status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
+        button = status_item.button()
+        icon_path = _resource_path("app_icon.png")
+        if button and os.path.exists(icon_path):
+            image = NSImage.alloc().initWithContentsOfFile_(icon_path)
+            if image:
+                image.setSize_(NSMakeSize(18, 18))
+                button.setImage_(image)
+            else:
+                button.setTitle_("CRM")
+        elif button:
+            button.setTitle_("CRM")
+
+        menu = NSMenu.alloc().init()
+        open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打开窗口", "openWindow:", "")
+        open_item.setTarget_(target)
+        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("退出应用", "quitApp:", "")
+        quit_item.setTarget_(target)
+        menu.addItem_(open_item)
+        menu.addItem_(NSMenuItem.separatorItem())
+        menu.addItem_(quit_item)
+        status_item.setMenu_(menu)
+
+        MAC_STATUS_ITEM = status_item
+        MAC_STATUS_TARGET = target
+        _log("macOS status item started")
+        return True
+    except Exception:
+        MAC_STATUS_ITEM = None
+        MAC_STATUS_TARGET = None
+        _log("macOS status item failed")
         _log(traceback.format_exc())
         return False
 
