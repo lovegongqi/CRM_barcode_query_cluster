@@ -1,4 +1,4 @@
-# CRM 条码查询工具
+# 怡口CRM条码查询工具
 
 这是一个 Flask + Playwright 的 CRM 条码查询工具，包含：
 

@@ -10,6 +10,7 @@ os.environ['ASYNCIO_CORE_EVENT_LOOP'] = '0'
 import re
 import json
 import time
+import builtins
 import html as html_mod
 import threading
 import queue
@@ -24,6 +25,33 @@ try:
     sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 except Exception:
     pass
+
+_ORIGINAL_PRINT = builtins.print
+
+def _console_safe_text(value):
+    return ('' if value is None else str(value)).replace('\xa0', ' ')
+
+def _safe_print(*args, **kwargs):
+    safe_args = [_console_safe_text(arg) for arg in args]
+    try:
+        _ORIGINAL_PRINT(*safe_args, **kwargs)
+    except UnicodeEncodeError:
+        file = kwargs.get("file") or sys.stdout
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        sep = " " if sep is None else str(sep)
+        end = "\n" if end is None else str(end)
+        text = sep.join(safe_args) + end
+        encoding = getattr(file, "encoding", None) or "utf-8"
+        text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        try:
+            file.write(text)
+            if kwargs.get("flush"):
+                file.flush()
+        except Exception:
+            pass
+
+print = _safe_print
 
 try:
     from playwright.sync_api import sync_playwright
