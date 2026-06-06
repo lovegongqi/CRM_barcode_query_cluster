@@ -124,13 +124,25 @@ def _request_show_window():
             SHOW_PENDING = True
             return
     try:
-        window.show()
         if hasattr(window, "restore"):
             window.restore()
+        window.show()
+        if sys.platform == "darwin":
+            _activate_macos_app()
         _log("window shown")
     except Exception:
         _log("show window failed")
         _log(traceback.format_exc())
+
+
+def _activate_macos_app():
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import NSApplication  # type: ignore
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except Exception:
+        pass
 
 
 def _set_app_window(window):
@@ -230,10 +242,23 @@ def _start_tray_icon():
 def _on_window_closing():
     if EXIT_REQUESTED:
         return True
-    if not TRAY_ICON:
-        return True
     with WINDOW_LOCK:
         window = APP_WINDOW
+    if sys.platform == "darwin" and window:
+        try:
+            if hasattr(window, "minimize"):
+                window.minimize()
+                _log("window minimized to dock")
+                return False
+            window.hide()
+            _log("window hidden")
+            return False
+        except Exception:
+            _log("minimize/hide window failed")
+            _log(traceback.format_exc())
+            return True
+    if not TRAY_ICON:
+        return True
     if window:
         try:
             window.hide()
