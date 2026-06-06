@@ -42,6 +42,9 @@ echo "==> Building executable"
   --collect-all playwright \
   --collect-all webview \
   --collect-all pystray \
+  --hidden-import AppKit \
+  --hidden-import Foundation \
+  --hidden-import objc \
   --hidden-import openpyxl.cell._writer \
   app_launcher.py
 

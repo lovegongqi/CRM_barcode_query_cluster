@@ -3734,6 +3734,8 @@ DISTRIBUTOR_HISTORY_FILE = os.path.join(BARCODE_DIR, "distributor_history.json")
 RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
 TEMP_QUERY_DIR = os.path.join(DATA_BASE_DIR, "temp_queries")
 RUNTIME_CONFIG_FILE = _runtime_config_path()
+CRM_CREDENTIALS_FILE = os.path.join(DATA_BASE_DIR, "crm_credentials.json")
+crm_credentials_lock = threading.Lock()
 DEFAULT_OWN_DEALER_NAME = "江西省天麓工贸有限公司"
 DEFAULT_FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
 OWN_DEALER_NAME = DEFAULT_OWN_DEALER_NAME
@@ -4882,6 +4884,59 @@ def current_account_public():
     row = current_account()
     return account_public(row) if row else None
 
+def crm_credentials_owner_key():
+    row = current_account()
+    if row and row.get("username"):
+        return str(row.get("username"))
+    return "desktop" if IS_DESKTOP_APP else ""
+
+def load_crm_credentials_store():
+    with crm_credentials_lock:
+        try:
+            if not os.path.exists(CRM_CREDENTIALS_FILE):
+                return {}
+            with open(CRM_CREDENTIALS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+def save_crm_credentials_store(data):
+    with crm_credentials_lock:
+        os.makedirs(os.path.dirname(CRM_CREDENTIALS_FILE), exist_ok=True)
+        with open(CRM_CREDENTIALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+def get_remembered_crm_credentials():
+    key = crm_credentials_owner_key()
+    if not key:
+        return {"remember": False, "username": "", "password": ""}
+    row = load_crm_credentials_store().get(key) or {}
+    if not isinstance(row, dict) or not row.get("remember"):
+        return {"remember": False, "username": "", "password": ""}
+    return {
+        "remember": True,
+        "username": str(row.get("username") or ""),
+        "password": str(row.get("password") or ""),
+    }
+
+def save_remembered_crm_credentials(remember, username="", password=""):
+    key = crm_credentials_owner_key()
+    if not key:
+        return False
+    data = load_crm_credentials_store()
+    if remember:
+        data[key] = {
+            "remember": True,
+            "username": str(username or "").strip(),
+            "password": str(password or ""),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    else:
+        data.pop(key, None)
+    save_crm_credentials_store(data)
+    return True
+
 PAGE_LINKS = [
     {'permission': 'crm', 'label': '在线查询', 'href': '/crm'},
     {'permission': 'results', 'label': '结果管理', 'href': '/'},
@@ -4936,6 +4991,8 @@ def required_permission_for_path(path):
         return "account-self"
     if path.startswith("/api/barcodes") or path.startswith("/api/filter-options") or path.startswith("/api/export"):
         return "results"
+    if path == "/api/crm/credentials":
+        return "account-self"
     if path.startswith("/api/crm"):
         return "crm"
     return None
@@ -5821,6 +5878,20 @@ def api_crm_status():
 @app.route("/api/crm/slots")
 def api_crm_slots():
     return jsonify({'success': True, **crm_pool.slots_payload()})
+
+@app.route("/api/crm/credentials", methods=["GET", "POST"])
+def api_crm_credentials():
+    if request.method == "GET":
+        return jsonify({"success": True, **get_remembered_crm_credentials()})
+    data = request.get_json(silent=True) or {}
+    remember = bool(data.get("remember"))
+    username = str(data.get("username") or "").strip()
+    password = str(data.get("password") or "")
+    if remember and (not username or not password):
+        return jsonify({"success": False, "error": "请输入 CRM 账号和密码"})
+    if not save_remembered_crm_credentials(remember, username, password):
+        return jsonify({"success": False, "error": "保存失败"})
+    return jsonify({"success": True, "remember": remember})
 
 @app.route("/api/crm/transfer/slots-status")
 def api_crm_transfer_slots_status():

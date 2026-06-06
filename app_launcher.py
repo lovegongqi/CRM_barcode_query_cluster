@@ -298,14 +298,22 @@ def _on_window_closing():
     with WINDOW_LOCK:
         window = APP_WINDOW
     if sys.platform == "darwin" and window:
+        if not MAC_STATUS_ITEM:
+            _log("macOS status item unavailable; closing app instead of hiding")
+            return True
         try:
+            if hasattr(window, "hide"):
+                window.hide()
+                _log("window hidden to macOS status item")
+                return False
             if hasattr(window, "minimize"):
                 window.minimize()
                 _log("window minimized to dock")
                 return False
-            window.hide()
-            _log("window hidden")
-            return False
+            _log("no hide/minimize support; closing app")
+            return True
+        except (SystemExit, KeyboardInterrupt):
+            raise
         except Exception:
             _log("minimize/hide window failed")
             _log(traceback.format_exc())
