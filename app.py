@@ -5784,6 +5784,7 @@ def api_product_library_query_start():
             'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'finished_at': '',
         })
+    _library_query_log("准备启动 CRM 查询...", 'info')
     _library_query_log(f"已分配查询通道：{slot_label}", 'info')
     threading.Thread(target=_run_library_query_job, args=(barcode, worker, slot_id, slot_label), daemon=True).start()
     return jsonify({'success': True, 'slot_id': slot_id, 'slot_label': slot_label, 'message': '条码查询已开始'})

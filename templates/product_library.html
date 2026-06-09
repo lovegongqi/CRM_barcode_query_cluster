@@ -230,6 +230,18 @@ async function pollQueryStatus() {
     }
 }
 
+async function restoreQueryStatus() {
+    const data = await fetch('/api/product-library/query/status').then(res => res.json()).catch(() => null);
+    if (!data || !data.success) return;
+    renderQueryLogs(data.logs || []);
+    if (data.running) {
+        if (queryTimer) clearInterval(queryTimer);
+        queryTimer = setInterval(pollQueryStatus, 1000);
+    }
+}
+
+restoreQueryStatus();
+
 </script>
 </body>
 </html>
