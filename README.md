@@ -221,6 +221,9 @@ crm_barcode_query_browser_session  -> /app/session
 /app/data/config/distributor_history.json   # 移库目标分销商历史
 /app/data/config/barcode_data.json          # 条码备注、归档、本地移库同步状态
 /app/data/config/accounts.json              # 工具账号和权限
+/app/data/config/runtime_config.json        # 通道数量、公司名称、冻结仓配置
+/app/data/config/crm_credentials.json       # 记住的 CRM 账号密码
+/app/data/config/crm_slot_state.json        # 查询/移库通道登录状态缓存
 /app/data/barcode/*.html                    # CRM 条码查询结果页面
 /app/data/barcode/archived/*.html           # 已归档查询结果页面
 ```

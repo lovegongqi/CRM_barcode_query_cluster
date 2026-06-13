@@ -2792,8 +2792,29 @@ def _positive_int_env(name, default):
 def _runtime_data_base_dir():
     return os.environ.get("CRM_DATA_DIR", RUNTIME_BASE_DIR)
 
+def _runtime_config_dir():
+    return os.path.join(_runtime_data_base_dir(), "config")
+
 def _runtime_config_path():
-    return os.path.join(_runtime_data_base_dir(), "runtime_config.json")
+    return os.path.join(_runtime_config_dir(), "runtime_config.json")
+
+def _migrate_root_config_file(filename):
+    source = os.path.join(_runtime_data_base_dir(), filename)
+    target = os.path.join(_runtime_config_dir(), filename)
+    if os.path.abspath(source) == os.path.abspath(target) or not os.path.exists(source):
+        return target
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        if not os.path.exists(target):
+            shutil.copy2(source, target)
+            message = "已迁移配置文件"
+        else:
+            message = "已清理旧配置文件"
+        os.remove(source)
+        print(f"  [DATA] {message}: {source} -> {target}")
+    except Exception as e:
+        print(f"  [DATA] 根目录配置文件迁移失败: {source} -> {target}: {e}")
+    return target
 
 def _normalize_worker_count(value, default=2):
     try:
@@ -2808,6 +2829,7 @@ def _load_worker_count_config():
         "transfer_workers": _normalize_worker_count(os.environ.get("CRM_TRANSFER_WORKERS"), 2),
     }
     config_path = _runtime_config_path()
+    _migrate_root_config_file("runtime_config.json")
     if os.path.exists(config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
@@ -2828,11 +2850,12 @@ def _crm_session_base_dir():
     except Exception:
         return os.path.join(RUNTIME_BASE_DIR, "session")
 
-CRM_SLOT_STATE_FILE = os.path.join(_runtime_data_base_dir(), "crm_slot_state.json")
+CRM_SLOT_STATE_FILE = os.path.join(_runtime_config_dir(), "crm_slot_state.json")
 crm_slot_state_lock = threading.Lock()
 
 def _load_crm_slot_state():
     try:
+        _migrate_root_config_file("crm_slot_state.json")
         with crm_slot_state_lock:
             if not os.path.exists(CRM_SLOT_STATE_FILE):
                 return {}
@@ -3814,9 +3837,9 @@ app = Flask(
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crm-barcode-query-local-secret")
 
 DATA_BASE_DIR = _runtime_data_base_dir()
+CONFIG_DIR = _runtime_config_dir()
 BARCODE_DIR = os.path.join(DATA_BASE_DIR, "barcode")
 ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
-CONFIG_DIR = os.path.join(DATA_BASE_DIR, "config")
 DATA_FILE = os.path.join(CONFIG_DIR, "barcode_data.json")
 PRODUCT_LIBRARY_FILE = os.path.join(CONFIG_DIR, "product_library.json")
 ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
@@ -3824,7 +3847,7 @@ DISTRIBUTOR_HISTORY_FILE = os.path.join(CONFIG_DIR, "distributor_history.json")
 RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
 TEMP_QUERY_DIR = os.path.join(DATA_BASE_DIR, "temp_queries")
 RUNTIME_CONFIG_FILE = _runtime_config_path()
-CRM_CREDENTIALS_FILE = os.path.join(DATA_BASE_DIR, "crm_credentials.json")
+CRM_CREDENTIALS_FILE = os.path.join(CONFIG_DIR, "crm_credentials.json")
 crm_credentials_lock = threading.Lock()
 DEFAULT_OWN_DEALER_NAME = "江西省天麓工贸有限公司"
 DEFAULT_FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
@@ -3893,6 +3916,12 @@ _migrate_legacy_runtime_data()
 def _migrate_config_files_from_barcode_dir():
     os.makedirs(CONFIG_DIR, exist_ok=True)
     for filename in (
+        "runtime_config.json",
+        "crm_slot_state.json",
+        "crm_credentials.json",
+    ):
+        _migrate_root_config_file(filename)
+    for filename in (
         "barcode_data.json",
         "product_library.json",
         "accounts.json",
@@ -3958,7 +3987,7 @@ def load_runtime_config():
     return defaults
 
 def save_runtime_config(config):
-    os.makedirs(DATA_BASE_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(RUNTIME_CONFIG_FILE), exist_ok=True)
     current = load_runtime_config()
     payload = {
         "query_workers": _normalize_worker_count(config.get("query_workers"), current.get("query_workers", 2)),
