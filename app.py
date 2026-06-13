@@ -4359,15 +4359,15 @@ def update_product_library_from_info(info):
 
 def match_product_library(barcode):
     barcode = _clean_export_value(barcode)
+    prefix = product_prefix_from_barcode(barcode)
     data = load_product_library()
-    for prefix in sorted(data.keys(), key=len, reverse=True):
-        if barcode.startswith(prefix):
-            row = data[prefix] or {}
-            return {
-                'prefix': prefix,
-                'product_code': _clean_export_value(row.get('product_code')),
-                'product_name': _clean_export_value(row.get('product_name')),
-            }
+    row = data.get(prefix) or {}
+    if row:
+        return {
+            'prefix': prefix,
+            'product_code': _clean_export_value(row.get('product_code')),
+            'product_name': _clean_export_value(row.get('product_name')),
+        }
     return None
 
 def lookup_product_by_barcode(barcode):
