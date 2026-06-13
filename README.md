@@ -200,19 +200,21 @@ docker compose up -d
 
 ## 数据持久化
 
-`docker-compose.yml` 已经把这些目录挂载到宿主机：
+`docker-compose.yml` 已经把数据挂载到 Docker 命名卷：
 
 ```text
-./barcode     -> /app/barcode
-./results     -> /app/results
-./session     -> /app/session
+crm_barcode_query_app_data         -> /app/data
+crm_barcode_query_browser_session  -> /app/session
 ```
 
-所以容器重建后：
+所以正常执行 `git pull origin main` 和 `docker compose up -d --build` 后：
 
+- 产品库/条码匹配数据不会丢
+- 移库目标分销商历史不会丢
+- 查询结果和导出文件不会丢
 - 浏览器登录会话不会丢
-- 查询结果不会丢
-- 导出文件不会丢
+
+不要执行 `docker compose down -v` 或删除这两个 Docker 卷，否则会清空持久化数据。
 
 ## 安全建议
 
