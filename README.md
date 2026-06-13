@@ -214,6 +214,17 @@ crm_barcode_query_browser_session  -> /app/session
 - 查询结果和导出文件不会丢
 - 浏览器登录会话不会丢
 
+主要文件位置：
+
+```text
+/app/data/config/product_library.json       # 条码匹配/产品库
+/app/data/config/distributor_history.json   # 移库目标分销商历史
+/app/data/config/barcode_data.json          # 条码备注、归档、本地移库同步状态
+/app/data/config/accounts.json              # 工具账号和权限
+/app/data/barcode/*.html                    # CRM 条码查询结果页面
+/app/data/barcode/archived/*.html           # 已归档查询结果页面
+```
+
 不要执行 `docker compose down -v` 或删除这两个 Docker 卷，否则会清空持久化数据。
 
 ## 安全建议

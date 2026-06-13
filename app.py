@@ -3816,10 +3816,11 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "crm-barcode-query-local-sec
 DATA_BASE_DIR = _runtime_data_base_dir()
 BARCODE_DIR = os.path.join(DATA_BASE_DIR, "barcode")
 ARCHIVE_DIR = os.path.join(BARCODE_DIR, "archived")
-DATA_FILE = os.path.join(BARCODE_DIR, "barcode_data.json")
-PRODUCT_LIBRARY_FILE = os.path.join(BARCODE_DIR, "product_library.json")
-ACCOUNTS_FILE = os.path.join(BARCODE_DIR, "accounts.json")
-DISTRIBUTOR_HISTORY_FILE = os.path.join(BARCODE_DIR, "distributor_history.json")
+CONFIG_DIR = os.path.join(DATA_BASE_DIR, "config")
+DATA_FILE = os.path.join(CONFIG_DIR, "barcode_data.json")
+PRODUCT_LIBRARY_FILE = os.path.join(CONFIG_DIR, "product_library.json")
+ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
+DISTRIBUTOR_HISTORY_FILE = os.path.join(CONFIG_DIR, "distributor_history.json")
 RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
 TEMP_QUERY_DIR = os.path.join(DATA_BASE_DIR, "temp_queries")
 RUNTIME_CONFIG_FILE = _runtime_config_path()
@@ -3888,6 +3889,34 @@ def _migrate_legacy_runtime_data():
                 print(f"  [DATA] 迁移旧数据目录失败: {source} -> {target}: {e}")
 
 _migrate_legacy_runtime_data()
+
+def _migrate_config_files_from_barcode_dir():
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    for filename in (
+        "barcode_data.json",
+        "product_library.json",
+        "accounts.json",
+        "distributor_history.json",
+    ):
+        source = os.path.join(BARCODE_DIR, filename)
+        target = os.path.join(CONFIG_DIR, filename)
+        if not os.path.exists(source):
+            continue
+        if os.path.exists(target):
+            try:
+                os.remove(source)
+                print(f"  [DATA] 已清理旧配置文件: {source}")
+            except Exception as e:
+                print(f"  [DATA] 旧配置文件清理失败: {source}: {e}")
+            continue
+        try:
+            shutil.copy2(source, target)
+            os.remove(source)
+            print(f"  [DATA] 已迁移配置文件: {source} -> {target}")
+        except Exception as e:
+            print(f"  [DATA] 配置文件迁移失败: {source} -> {target}: {e}")
+
+_migrate_config_files_from_barcode_dir()
 
 def _runtime_text_value(value, default):
     value = str(value or "").replace("\xa0", " ").strip()
@@ -4354,7 +4383,7 @@ def load_product_library():
     return {}
 
 def save_product_library(data):
-    os.makedirs(BARCODE_DIR, exist_ok=True)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(PRODUCT_LIBRARY_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -4855,7 +4884,7 @@ def save_distributor_history(distributor):
     if not distributor or distributor == own_dealer:
         return
     rows = [distributor] + [row for row in load_distributor_history() if row != distributor]
-    os.makedirs(BARCODE_DIR, exist_ok=True)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(rows[:100], f, ensure_ascii=False, indent=2)
 
@@ -4869,7 +4898,7 @@ def save_distributor_history_many(distributors):
     for distributor in load_distributor_history():
         if distributor and distributor != own_dealer:
             rows[distributor] = True
-    os.makedirs(BARCODE_DIR, exist_ok=True)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(list(rows.keys())[:100], f, ensure_ascii=False, indent=2)
 
@@ -4893,7 +4922,7 @@ def load_data():
     return {}
 
 def save_data(data):
-    os.makedirs(BARCODE_DIR, exist_ok=True)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -4996,7 +5025,7 @@ def load_accounts():
     return [default_admin]
 
 def save_accounts(accounts):
-    os.makedirs(BARCODE_DIR, exist_ok=True)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
         json.dump(accounts, f, ensure_ascii=False, indent=2)
 

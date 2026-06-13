@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY . .
 
-RUN mkdir -p /app/data/barcode /app/data/results /app/session /app/legacy/barcode /app/legacy/results
+RUN mkdir -p /app/data/barcode /app/data/config /app/data/results /app/session /app/legacy/barcode /app/legacy/results
 
 EXPOSE 5001
 
