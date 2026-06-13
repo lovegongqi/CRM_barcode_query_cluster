@@ -85,7 +85,7 @@
     </div>
 
     <div class="card" id="editCard" style="display:none">
-        <h2>条码匹配规则</h2>
+        <h2>条码匹配规则 <span class="muted" id="libraryCount">已有 0 条</span></h2>
         <div class="note">前缀默认是条码去掉最后 10 位。比如 162501010001 的默认产品前缀是 16。</div>
         <div class="library-form">
             <div><label>条码前缀</label><input id="libPrefix" placeholder="如 16" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div>
@@ -109,6 +109,8 @@ async function loadLibrary() {
     document.getElementById('editCard').style.display = data.can_edit ? '' : 'none';
     const accountStatus = document.getElementById('accountStatus');
     if (accountStatus) accountStatus.textContent = data.account ? `${data.account.username}${data.can_edit ? '（管理员）' : ''}` : '';
+    const libraryCount = document.getElementById('libraryCount');
+    if (libraryCount) libraryCount.textContent = `已有 ${rows.length} 条`;
     document.getElementById('libraryBox').innerHTML = `
         <table>
             <thead><tr><th>前缀</th><th>产品编码</th><th>产品名称</th><th>来源条码</th><th>更新</th><th></th></tr></thead>
