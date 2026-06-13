@@ -3499,6 +3499,28 @@ def _exclude_unmatched_transfer_barcodes(summary):
     summary['excluded_unmatched'] = missing
     return missing
 
+def _log_transfer_summary_products(log, summary):
+    groups = summary.get('groups') or []
+    total = len(groups)
+    for index, group in enumerate(groups, 1):
+        prefixes = "、".join([
+            _clean_export_value(prefix)
+            for prefix in group.get('matched_prefixes', [])
+            if _clean_export_value(prefix)
+        ]) or "-"
+        product_model = _clean_export_value(group.get('product_model')) or _clean_export_value(group.get('product_name')) or "-"
+        product_name = _clean_export_value(group.get('product_name')) or "-"
+        product_code = _clean_export_value(group.get('product_code')) or "-"
+        quantity = group.get('quantity') or 0
+        if product_model and product_model != product_name:
+            label = f"产品型号 {product_model}，产品名称 {product_name}"
+        else:
+            label = f"产品名称 {product_name}"
+        log(
+            f"汇总产品 {index}/{total}：前缀 {prefixes}，{label}，编码 {product_code}，数量 {quantity}",
+            'success'
+        )
+
 def _run_summary_job(job_id, worker, barcodes, transfer_type, distributor, excluded=None):
     def log(message, level='dim'):
         _summary_job_log(job_id, message, level)
@@ -3569,6 +3591,7 @@ def _run_summary_job(job_id, worker, barcodes, transfer_type, distributor, exclu
             finish(False, error, summary)
             return
         log(f"汇总完成：产品 {len(summary.get('groups', []))} 条，条码 {summary.get('total', 0)} 个", 'success')
+        _log_transfer_summary_products(log, summary)
         finish(True, '', summary)
     except Exception as e:
         error = _brief_batch_error(e, 800)
