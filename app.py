@@ -4402,6 +4402,11 @@ def _barcode_product_info(item):
         _clean_export_value(sr1.get('newproductidName1')) or
         _clean_export_value(sr1.get('newproductname1'))
     )
+    product_model = (
+        _clean_export_value(sr10.get('newproductidName1')) or
+        _clean_export_value(sr1.get('newproductidName1')) or
+        product_name
+    )
     current_dealer = (
         _clean_export_value(item.get('currentDealerOverride')) or
         _clean_export_value(sr10.get('dealername1')) or
@@ -4416,11 +4421,13 @@ def _barcode_product_info(item):
         'barcode': _clean_export_value(item.get('barcode')),
         'product_code': product_code,
         'product_name': product_name,
+        'product_model': product_model,
         'current_dealer': current_dealer,
         'service_dealer': service_dealer,
         'installed': installed,
         'product_status': product_status,
         'source': 'query_result',
+        'matched_prefix': product_prefix_from_barcode(item.get('barcode')),
     }
     return info
 
@@ -4448,17 +4455,19 @@ def _barcode_product_info_from_library(barcode):
             'barcode': _clean_export_value(barcode),
             'product_code': '',
             'product_name': '',
-        'current_dealer': '',
-        'service_dealer': '',
-        'installed': '',
-        'product_status': '',
-        'source': 'unmatched',
+            'product_model': '',
+            'current_dealer': '',
+            'service_dealer': '',
+            'installed': '',
+            'product_status': '',
+            'source': 'unmatched',
             'matched_prefix': '',
         }
     return {
         'barcode': _clean_export_value(barcode),
         'product_code': matched['product_code'],
         'product_name': matched['product_name'],
+        'product_model': matched['product_name'],
         'current_dealer': '',
         'service_dealer': '',
         'installed': '',
@@ -4766,13 +4775,18 @@ def build_transfer_summary(selected_barcodes, transfer_type="移出", distributo
             })
 
         key = f"{info['product_code']}|{info['product_name']}"
+        matched_prefix = info.get('matched_prefix') or product_prefix_from_barcode(barcode)
         if key not in grouped:
             grouped[key] = {
                 'product_code': info['product_code'],
                 'product_name': info['product_name'],
+                'product_model': info.get('product_model') or info['product_name'],
+                'matched_prefixes': [],
                 'quantity': 0,
                 'barcodes': [],
             }
+        if matched_prefix and matched_prefix not in grouped[key]['matched_prefixes']:
+            grouped[key]['matched_prefixes'].append(matched_prefix)
         grouped[key]['quantity'] += 1
         grouped[key]['barcodes'].append(barcode)
 

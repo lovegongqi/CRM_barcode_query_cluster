@@ -478,10 +478,10 @@ function renderSummary(summary) {
     mergeDistributorHistory((summary.details || []).flatMap(row => [row.current_dealer, row.service_dealer]));
     const totalQty = (summary.groups || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
     const rows = (summary.groups || []).map(row => `
-        <tr><td>${escapeHtml(row.product_name)}</td><td>${escapeHtml(row.product_code)}</td><td>${row.quantity || 0}</td><td>${(row.barcodes || []).map(escapeHtml).join('<br>')}</td></tr>
+        <tr><td>${(row.matched_prefixes || []).map(escapeHtml).join('<br>') || '-'}</td><td>${escapeHtml(row.product_model || row.product_name || '')}</td><td>${escapeHtml(row.product_name)}</td><td>${escapeHtml(row.product_code)}</td><td>${row.quantity || 0}</td><td>${(row.barcodes || []).map(escapeHtml).join('<br>')}</td></tr>
     `).join('');
     const details = (summary.details || []).map(row => `
-        <tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.product_name || '')}</td><td>${escapeHtml(row.product_code || '')}</td><td>${escapeHtml(row.current_dealer || '未查询，按条码匹配')}</td><td><span class="pill">${escapeHtml(row.source === 'product_library' ? '条码匹配' : row.source === 'query_result' ? '查询结果' : '未匹配')}</span></td></tr>
+        <tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.matched_prefix || '')}</td><td>${escapeHtml(row.product_model || row.product_name || '')}</td><td>${escapeHtml(row.product_name || '')}</td><td>${escapeHtml(row.product_code || '')}</td><td>${escapeHtml(row.current_dealer || '未查询，按条码匹配')}</td><td><span class="pill">${escapeHtml(row.source === 'product_library' ? '条码匹配' : row.source === 'query_result' ? '查询结果' : '未匹配')}</span></td></tr>
     `).join('');
     const blockedRows = (summary.blocked || []).map(row => `<tr><td>${escapeHtml(row.barcode)}</td><td>${escapeHtml(row.reason)}</td></tr>`).join('');
     const missingRows = (summary.missing || []).map(bc => `<tr><td>${escapeHtml(bc)}</td><td>条码匹配未匹配，请先添加前缀规则或查询一次该产品条码</td></tr>`).join('');
@@ -490,9 +490,9 @@ function renderSummary(summary) {
         return `<tr><td>${escapeHtml(bc)}</td><td>${escapeHtml(reason)}</td></tr>`;
     }).join('');
     box.innerHTML = `
-        <table><thead><tr><th>产品名称</th><th>产品编码</th><th>数量</th><th>条码</th></tr></thead><tbody>${rows || '<tr><td colspan="4">无可移库明细</td></tr>'}</tbody></table>
+        <table><thead><tr><th>匹配前缀</th><th>产品型号</th><th>产品名称</th><th>产品编码</th><th>数量</th><th>条码</th></tr></thead><tbody>${rows || '<tr><td colspan="6">无可移库明细</td></tr>'}</tbody></table>
         <div class="note">已选条码 ${summary.total || 0} 个，产品 ${(summary.groups || []).length} 条，数量合计 ${totalQty}。</div>
-        <table><thead><tr><th>条码</th><th>产品名称</th><th>产品编码</th><th>当前所属</th><th>来源</th></tr></thead><tbody>${details}</tbody></table>
+        <table><thead><tr><th>条码</th><th>匹配前缀</th><th>产品型号</th><th>产品名称</th><th>产品编码</th><th>当前所属</th><th>来源</th></tr></thead><tbody>${details}</tbody></table>
         ${blockedRows ? `<div class="note blocked">以下条码方向不匹配，仅提示。确认后仍会提交移库。</div><table><thead><tr><th>条码</th><th>提示</th></tr></thead><tbody>${blockedRows}</tbody></table>` : ''}
         ${missingRows ? `<div class="note blocked">以下条码无法识别产品。</div><table><thead><tr><th>条码</th><th>原因</th></tr></thead><tbody>${missingRows}</tbody></table>` : ''}
         ${excludedRows ? `<div class="note blocked">以下条码不会参与本次移库。</div><table><thead><tr><th>条码</th><th>原因</th></tr></thead><tbody>${excludedRows}</tbody></table>` : ''}
