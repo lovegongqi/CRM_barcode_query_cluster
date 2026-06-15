@@ -3,6 +3,7 @@ accounts.json
 config.json
 runtime_config.json
 crm_credentials.json
+config/
 .env
 
 # Generated query output
