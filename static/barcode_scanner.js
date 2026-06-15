@@ -22,16 +22,31 @@
         return window.isSecureContext || ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
     }
 
-    async function makeDetector() {
-        if (!('BarcodeDetector' in window)) {
-            throw new Error('当前浏览器不支持相机识别条码，请使用安卓 Chrome/Edge，或升级浏览器。');
-        }
+    function hasNativeDetector() {
+        return 'BarcodeDetector' in window;
+    }
+
+    function hasZxingFallback() {
+        return !!(window.ZXing && window.ZXing.BrowserMultiFormatReader);
+    }
+
+    async function makeNativeDetector() {
         if (typeof BarcodeDetector.getSupportedFormats !== 'function') {
             return new BarcodeDetector();
         }
         const supported = await BarcodeDetector.getSupportedFormats();
         const formats = preferredFormats.filter(format => supported.includes(format));
         return formats.length ? new BarcodeDetector({ formats }) : new BarcodeDetector();
+    }
+
+    function isCameraPermissionError(error) {
+        return error && ['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(error.name);
+    }
+
+    function isZxingNotFound(error) {
+        if (!error) return true;
+        const name = error.name || (error.constructor && error.constructor.name) || '';
+        return name === 'NotFoundException' || name === 'ChecksumException' || name === 'FormatException';
     }
 
     function ensureOverlay() {
@@ -101,6 +116,7 @@
         if (!activeScanner) return;
         activeScanner.running = false;
         if (activeScanner.frameId) cancelAnimationFrame(activeScanner.frameId);
+        if (activeScanner.zxingReader) activeScanner.zxingReader.reset();
         stopStream(activeScanner);
         activeScanner.overlay.classList.remove('show');
         activeScanner.video.srcObject = null;
@@ -154,6 +170,58 @@
         scanner.frameId = requestAnimationFrame(() => detectionLoop(scanner));
     }
 
+    async function startNativeScanner(scanner) {
+        scanner.detector = await makeNativeDetector();
+        scanner.stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: { ideal: 'environment' },
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            },
+            audio: false
+        });
+        scanner.video.srcObject = scanner.stream;
+        scanner.video.setAttribute('playsinline', 'true');
+        await scanner.video.play();
+        scanner.running = true;
+        setStatus(scanner, '对准条码即可连续扫描，扫完点右上角关闭。');
+        detectionLoop(scanner);
+    }
+
+    async function startZxingScanner(scanner) {
+        if (!hasZxingFallback()) {
+            throw new Error('当前浏览器不支持原生扫码，兼容扫码库也未加载，请刷新页面后重试。');
+        }
+        const reader = new window.ZXing.BrowserMultiFormatReader(undefined, 350);
+        scanner.zxingReader = reader;
+        scanner.running = true;
+        scanner.video.setAttribute('playsinline', 'true');
+        setStatus(scanner, '当前浏览器不支持原生扫码，已切换兼容模式。正在请求相机权限...');
+        await reader.decodeFromConstraints({
+            video: {
+                facingMode: { ideal: 'environment' },
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            },
+            audio: false
+        }, scanner.video, (result, error) => {
+            if (!scanner.running) return;
+            if (result) {
+                const text = typeof result.getText === 'function' ? result.getText() : result.text;
+                handleDetected(scanner, text);
+                return;
+            }
+            if (error && !isZxingNotFound(error)) {
+                const now = Date.now();
+                if (!scanner.lastErrorAt || now - scanner.lastErrorAt > 2500) {
+                    scanner.lastErrorAt = now;
+                    setStatus(scanner, error.message || '兼容扫码识别失败，正在继续尝试。', 'error');
+                }
+            }
+        });
+        setStatus(scanner, '兼容扫码已启动。对准条码即可连续扫描，扫完点右上角关闭。');
+    }
+
     async function openScanner(options) {
         closeScanner();
         const overlay = ensureOverlay();
@@ -164,10 +232,12 @@
             list: overlay.querySelector('.barcode-scan-list'),
             title: overlay.querySelector('.barcode-scan-title'),
             detector: null,
+            zxingReader: null,
             stream: null,
             running: false,
             frameId: 0,
             lastDetectAt: 0,
+            lastErrorAt: 0,
             lastCode: '',
             lastCodeAt: 0,
             seen: new Set(),
@@ -189,24 +259,23 @@
         }
 
         try {
-            setStatus(scanner, '正在请求相机权限...');
-            scanner.detector = await makeDetector();
-            scanner.stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: 'environment' },
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
-                },
-                audio: false
-            });
-            scanner.video.srcObject = scanner.stream;
-            scanner.video.setAttribute('playsinline', 'true');
-            await scanner.video.play();
-            scanner.running = true;
-            setStatus(scanner, '对准条码即可连续扫描，扫完点右上角关闭。');
-            detectionLoop(scanner);
+            if (hasNativeDetector()) {
+                setStatus(scanner, '正在请求相机权限...');
+                await startNativeScanner(scanner);
+            } else {
+                await startZxingScanner(scanner);
+            }
         } catch (error) {
             stopStream(scanner);
+            if (hasNativeDetector() && hasZxingFallback() && !isCameraPermissionError(error)) {
+                try {
+                    await startZxingScanner(scanner);
+                    return;
+                } catch (fallbackError) {
+                    setStatus(scanner, fallbackError.message || '兼容扫码启动失败，请检查浏览器权限。', 'error');
+                    return;
+                }
+            }
             setStatus(scanner, error.message || '相机启动失败，请检查浏览器权限。', 'error');
         }
     }
