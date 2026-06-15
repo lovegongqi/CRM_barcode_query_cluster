@@ -5,10 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CRM 条码查询</title>
     <link rel="stylesheet" href="/static/log_modal.css">
-    <link rel="stylesheet" href="/static/barcode_scanner.css">
     <script src="/static/log_modal.js"></script>
-    <script src="/static/zxing-library.min.js"></script>
-    <script src="/static/barcode_scanner.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(180deg,#eaf1fb 0,#f7f9fc 320px,#f7f9fc 100%); color: #202938; min-height: 100vh; }
@@ -156,7 +153,6 @@
             <div class="form-row query-actions">
                 <button class="btn btn-success" id="batchQueryBtn" onclick="doBatchQuery()">开始查询</button>
                 <button class="btn btn-danger" id="stopBatchBtn" onclick="stopBatch()" style="display:none">停止当前查询</button>
-                <button class="btn btn-secondary" type="button" onclick="startBarcodeScanForQuery()">扫码输入</button>
                 <button class="btn btn-secondary" type="button" onclick="clearQueryInput()">清空输入框</button>
                 <div class="form-group retry-group">
                     <label>失败重试上限</label>
@@ -533,32 +529,6 @@
             document.getElementById('batchInput').value = '';
             saveQueryInput();
             showToast('已清空输入框');
-        }
-
-        function appendQueryBarcode(barcode) {
-            const input = document.getElementById('batchInput');
-            const value = (window.BarcodeCameraScanner ? window.BarcodeCameraScanner.normalize(barcode) : String(barcode || '').trim());
-            if (!value) return false;
-            const existing = new Set(parseBarcodeText(input.value));
-            if (existing.has(value)) return false;
-            const separator = input.value.trim() ? (input.value.endsWith('\n') ? '' : '\n') : '';
-            input.value += separator + value;
-            saveQueryInput();
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            return true;
-        }
-
-        function startBarcodeScanForQuery() {
-            if (!window.BarcodeCameraScanner) {
-                showToast('扫码组件未加载');
-                return;
-            }
-            window.BarcodeCameraScanner.open({
-                title: '扫码输入条码',
-                onCode: barcode => appendQueryBarcode(barcode)
-                    ? `已添加 ${barcode}，可继续扫码。`
-                    : `${barcode} 已在输入框中，继续扫码。`
-            });
         }
 
         function showToast(msg) {

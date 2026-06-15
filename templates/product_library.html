@@ -5,10 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>条码匹配</title>
     <link rel="stylesheet" href="/static/log_modal.css">
-    <link rel="stylesheet" href="/static/barcode_scanner.css">
     <script src="/static/log_modal.js"></script>
-    <script src="/static/zxing-library.min.js"></script>
-    <script src="/static/barcode_scanner.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f7fb; color: #202938; min-height: 100vh; }
@@ -32,8 +29,6 @@
         input:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
         .note { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#475569; font-size:12px; line-height:1.6; padding:10px 12px; margin-bottom:12px; }
         .library-form { display:grid; grid-template-columns: .7fr 1fr 1.2fr auto; gap:8px; align-items:end; margin-bottom:12px; }
-        .lookup-form { grid-template-columns:minmax(0, 1fr) auto auto auto; }
-        .lookup-input { min-width:0; }
         .auth-form { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
         .auth-form input { width:160px; }
         .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
@@ -80,11 +75,10 @@
 
     <div class="card">
         <h2>条码识别</h2>
-        <div class="library-form lookup-form">
-            <div class="lookup-input"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" oninput="scheduleLookup()"></div>
-            <button class="btn btn-secondary" type="button" onclick="startBarcodeScanForLookup()">扫码</button>
-            <button class="btn btn-primary" type="button" onclick="lookupBarcode()">识别</button>
-            <button class="btn btn-secondary" type="button" onclick="confirmQueryBarcode()">确认查询</button>
+        <div class="library-form">
+            <div style="grid-column:span 2"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" oninput="scheduleLookup()"></div>
+            <button class="btn btn-primary" onclick="lookupBarcode()">识别</button>
+            <button class="btn btn-secondary" onclick="confirmQueryBarcode()">确认查询</button>
         </div>
         <div id="lookupBox" class="note">输入条码后会优先匹配已查询结果和条码匹配前缀。</div>
         <div class="log" id="queryLog" style="display:none"></div>
@@ -169,22 +163,6 @@ function scheduleLookup() {
         const barcode = document.getElementById('lookupBarcode').value.trim();
         if (barcode.length >= 6) lookupBarcode();
     }, 350);
-}
-
-function startBarcodeScanForLookup() {
-    if (!window.BarcodeCameraScanner) {
-        alert('扫码组件未加载');
-        return;
-    }
-    window.BarcodeCameraScanner.open({
-        title: '扫码识别条码',
-        onCode: barcode => {
-            clearTimeout(lookupTimer);
-            document.getElementById('lookupBarcode').value = barcode;
-            lookupBarcode();
-            return `已识别 ${barcode}，可继续扫码。`;
-        }
-    });
 }
 
 async function lookupBarcode() {
