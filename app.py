@@ -3844,6 +3844,7 @@ DATA_FILE = os.path.join(CONFIG_DIR, "barcode_data.json")
 PRODUCT_LIBRARY_FILE = os.path.join(CONFIG_DIR, "product_library.json")
 ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
 DISTRIBUTOR_HISTORY_FILE = os.path.join(CONFIG_DIR, "distributor_history.json")
+DISTRIBUTOR_HISTORY_DELETED_FILE = os.path.join(CONFIG_DIR, "distributor_history_deleted.json")
 RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
 TEMP_QUERY_DIR = os.path.join(DATA_BASE_DIR, "temp_queries")
 RUNTIME_CONFIG_FILE = _runtime_config_path()
@@ -3926,6 +3927,7 @@ def _migrate_config_files_from_barcode_dir():
         "product_library.json",
         "accounts.json",
         "distributor_history.json",
+        "distributor_history_deleted.json",
     ):
         source = os.path.join(BARCODE_DIR, filename)
         target = os.path.join(CONFIG_DIR, filename)
@@ -4907,37 +4909,109 @@ def load_distributor_history():
             pass
     return []
 
+def _save_distributor_history_rows(rows):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(rows[:100], f, ensure_ascii=False, indent=2)
+
+def load_deleted_distributor_history():
+    own_dealer = own_dealer_name()
+    if os.path.exists(DISTRIBUTOR_HISTORY_DELETED_FILE):
+        try:
+            with open(DISTRIBUTOR_HISTORY_DELETED_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return [
+                _clean_export_value(row)
+                for row in (data if isinstance(data, list) else [])
+                if _clean_export_value(row) and _clean_export_value(row) != own_dealer
+            ]
+        except Exception:
+            pass
+    return []
+
+def save_deleted_distributor_history(rows):
+    clean_rows = []
+    seen = set()
+    own_dealer = own_dealer_name()
+    for row in rows:
+        row = _clean_export_value(row)
+        if row and row != own_dealer and row not in seen:
+            clean_rows.append(row)
+            seen.add(row)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(DISTRIBUTOR_HISTORY_DELETED_FILE, 'w', encoding='utf-8') as f:
+        json.dump(clean_rows[:300], f, ensure_ascii=False, indent=2)
+
+def restore_deleted_distributor_history(distributor):
+    distributor = _clean_export_value(distributor)
+    if not distributor:
+        return
+    deleted = [row for row in load_deleted_distributor_history() if row != distributor]
+    save_deleted_distributor_history(deleted)
+
+def import_distributor_history_many(distributors):
+    own_dealer = own_dealer_name()
+    incoming = []
+    seen = set()
+    for distributor in distributors:
+        distributor = _clean_export_value(distributor)
+        if distributor and distributor != own_dealer and distributor not in seen:
+            incoming.append(distributor)
+            seen.add(distributor)
+    if not incoming:
+        return load_distributor_history()
+    deleted = [row for row in load_deleted_distributor_history() if row not in seen]
+    save_deleted_distributor_history(deleted)
+    rows = OrderedDict()
+    for distributor in incoming:
+        rows[distributor] = True
+    for distributor in load_distributor_history():
+        if distributor and distributor != own_dealer:
+            rows[distributor] = True
+    _save_distributor_history_rows(list(rows.keys()))
+    return load_distributor_history()
+
 def save_distributor_history(distributor):
     own_dealer = own_dealer_name()
     distributor = _clean_export_value(distributor)
     if not distributor or distributor == own_dealer:
         return
+    restore_deleted_distributor_history(distributor)
     rows = [distributor] + [row for row in load_distributor_history() if row != distributor]
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(rows[:100], f, ensure_ascii=False, indent=2)
+    _save_distributor_history_rows(rows)
 
 def save_distributor_history_many(distributors):
     own_dealer = own_dealer_name()
+    deleted = set(load_deleted_distributor_history())
     rows = OrderedDict()
     for distributor in distributors:
         distributor = _clean_export_value(distributor)
-        if distributor and distributor != own_dealer:
+        if distributor and distributor != own_dealer and distributor not in deleted:
             rows[distributor] = True
     for distributor in load_distributor_history():
-        if distributor and distributor != own_dealer:
+        if distributor and distributor != own_dealer and distributor not in deleted:
             rows[distributor] = True
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(list(rows.keys())[:100], f, ensure_ascii=False, indent=2)
+    _save_distributor_history_rows(list(rows.keys()))
+
+def delete_distributor_history(distributor):
+    own_dealer = own_dealer_name()
+    distributor = _clean_export_value(distributor)
+    if not distributor or distributor == own_dealer:
+        return False
+    rows = [row for row in load_distributor_history() if row != distributor]
+    _save_distributor_history_rows(rows)
+    deleted = [distributor] + [row for row in load_deleted_distributor_history() if row != distributor]
+    save_deleted_distributor_history(deleted)
+    return True
 
 def combined_distributor_history():
     own_dealer = own_dealer_name()
     save_distributor_history_many(queried_dealer_history())
+    deleted = set(load_deleted_distributor_history())
     dealers = OrderedDict()
     for dealer in load_distributor_history():
         dealer = _clean_export_value(dealer)
-        if dealer and dealer != own_dealer:
+        if dealer and dealer != own_dealer and dealer not in deleted:
             dealers[dealer] = True
     return list(dealers.keys())
 
@@ -5549,15 +5623,38 @@ def api_distributor_history():
     return jsonify({
         'success': True,
         'dealers': combined_distributor_history(),
+        'can_delete': is_admin_account(),
     })
 
 @app.route("/api/distributor-history", methods=["POST"])
 def api_save_distributor_history():
     data = request.get_json() or {}
-    save_distributor_history(data.get('distributor'))
+    distributors = data.get('distributors')
+    if isinstance(distributors, list):
+        if not is_admin_account():
+            return jsonify({'success': False, 'error': '只有管理员可以批量导入目标分销商'}), 403
+        import_distributor_history_many(distributors)
+    else:
+        save_distributor_history(data.get('distributor'))
     return jsonify({
         'success': True,
         'dealers': combined_distributor_history(),
+        'can_delete': is_admin_account(),
+    })
+
+@app.route("/api/distributor-history", methods=["DELETE"])
+def api_delete_distributor_history():
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以删除目标分销商历史'}), 403
+    data = request.get_json(silent=True) or {}
+    distributor = data.get('distributor')
+    if not _clean_export_value(distributor):
+        return jsonify({'success': False, 'error': '目标分销商不能为空'}), 400
+    delete_distributor_history(distributor)
+    return jsonify({
+        'success': True,
+        'dealers': combined_distributor_history(),
+        'can_delete': True,
     })
 
 @app.route("/api/transfer/summary/start", methods=["POST"])
@@ -5811,7 +5908,12 @@ def crm_page():
 
 @app.route("/transfer")
 def transfer_page():
-    return render_template("transfer.html", nav_links=visible_page_links(), business_config=business_config())
+    return render_template(
+        "transfer.html",
+        nav_links=visible_page_links(),
+        business_config=business_config(),
+        account=current_account_public(),
+    )
 
 @app.route("/product-library")
 def product_library_page():

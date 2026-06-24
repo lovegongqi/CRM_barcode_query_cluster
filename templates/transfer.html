@@ -29,6 +29,9 @@
         .crm-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
         .crm-actions .btn { min-height:34px; padding:6px 12px; font-size:12px; white-space:nowrap; }
         label { display:block; font-size:12px; color:#667085; font-weight:700; margin-bottom:6px; }
+        .field-label-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+        .mini-link-btn { min-height:24px; padding:2px 8px; border:1px solid #bfdbfe; border-radius:6px; background:#eff6ff; color:#1d4ed8; font-size:12px; font-weight:800; cursor:pointer; }
+        .mini-link-btn:hover { background:#dbeafe; }
         textarea, input, select { width:100%; border:1px solid #cfd8e3; border-radius:6px; padding:9px 10px; font-size:14px; outline:none; background:#fff; }
         textarea { min-height:150px; font-family:"Courier New", monospace; resize:vertical; }
         textarea:focus, input:focus, select:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
@@ -48,6 +51,7 @@
         .modal-close { border:none; background:transparent; font-size:24px; color:#94a3b8; cursor:pointer; }
         .login-modal-body { padding:18px; }
         .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
+        .import-textarea { min-height:180px; font-family:"Courier New", monospace; }
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th, td { border-bottom:1px solid #e5e7eb; padding:8px 10px; text-align:left; vertical-align:top; }
         th { background:#f8fafc; color:#475569; }
@@ -60,9 +64,12 @@
         .distributor-picker { position:relative; }
         .distributor-dropdown { display:none; position:absolute; z-index:30; top:calc(100% + 4px); left:0; right:0; max-height:220px; overflow:auto; background:#fff; border:1px solid #cfd8e3; border-radius:6px; box-shadow:0 14px 32px rgba(15,23,42,.14); }
         .distributor-dropdown.open { display:block; }
-        .distributor-option { padding:9px 10px; font-size:14px; cursor:pointer; border-bottom:1px solid #eef2f7; }
+        .distributor-option { display:flex; align-items:center; gap:8px; font-size:14px; cursor:pointer; border-bottom:1px solid #eef2f7; }
         .distributor-option:last-child { border-bottom:none; }
         .distributor-option:hover, .distributor-option.active { background:#eef4ff; color:#1d4ed8; }
+        .distributor-option-label { flex:1; min-width:0; padding:9px 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .distributor-delete { flex:0 0 auto; margin-right:6px; min-height:26px; padding:3px 8px; border:1px solid #fecaca; border-radius:6px; background:#fff1f2; color:#b91c1c; font-size:12px; font-weight:800; cursor:pointer; }
+        .distributor-delete:hover { background:#fee2e2; }
         .distributor-empty { padding:9px 10px; font-size:13px; color:#94a3b8; }
         .slot-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
         .slot-tab { flex:0 0 auto; min-width:96px; min-height:34px; padding:7px 10px; border:1px solid #cfd8e3; border-radius:8px; background:#fff; color:#334155; font-size:13px; line-height:1.15; font-weight:800; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -115,7 +122,12 @@
                         </select>
                     </div>
                     <div>
-                        <label>目标分销商</label>
+                        <label class="field-label-row">
+                            <span>目标分销商</span>
+                            {% if account and account.is_admin %}
+                            <button class="mini-link-btn" type="button" onclick="openDistributorImportModal()">批量导入</button>
+                            {% endif %}
+                        </label>
                         <div class="distributor-picker">
                             <input id="transferDistributor" placeholder="输入分销商名称" autocomplete="off" onfocus="showDistributorDropdown()" oninput="saveTransferInput();showDistributorDropdown()" onkeydown="handleDistributorKeydown(event)" onblur="hideDistributorDropdownSoon()">
                             <div id="distributorHistoryDropdown" class="distributor-dropdown"></div>
@@ -176,6 +188,24 @@
     </div>
 </div>
 
+<div class="modal-overlay" id="distributorImportModal" onclick="if(event.target.id==='distributorImportModal')closeDistributorImportModal()">
+    <div class="login-modal">
+        <div class="login-modal-head">
+            <h3>批量导入目标分销商</h3>
+            <button class="modal-close" onclick="closeDistributorImportModal()">×</button>
+        </div>
+        <div class="login-modal-body">
+            <label>分销商名称</label>
+            <textarea class="import-textarea" id="distributorImportText" placeholder="一行一个，也可以用逗号、分号分隔"></textarea>
+            <div class="note">导入后会加入目标分销商下拉历史。已经删除过的同名分销商会恢复。</div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" type="button" onclick="closeDistributorImportModal()">取消</button>
+                <button class="btn btn-primary" type="button" id="distributorImportBtn" onclick="importDistributorHistory()">导入</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 let lastSummary = null;
 let pollTimer = null;
@@ -193,6 +223,7 @@ let loginPollTimer = null;
 let lastLoginLogSeq = 0;
 const BUSINESS_CONFIG = {{ business_config|tojson }};
 const OWN_DEALER_NAME = BUSINESS_CONFIG.own_dealer_name || '江西省天麓工贸有限公司';
+let canDeleteDistributorHistory = {{ 'true' if account and account.is_admin else 'false' }};
 
 function applyCrmCredentialValues(remember, username='', password='', usernameId='loginUsername', passwordId='loginPassword', rememberId='rememberCrmLogin') {
     const rememberEl = document.getElementById(rememberId);
@@ -411,7 +442,12 @@ function renderDistributorHistory(open = false) {
     const rows = filteredDistributorHistory();
     if (highlightedDistributorIndex >= rows.length) highlightedDistributorIndex = rows.length ? rows.length - 1 : -1;
     dropdown.innerHTML = rows.length
-        ? rows.map((name, index) => `<div class="distributor-option ${index === highlightedDistributorIndex ? 'active' : ''}" data-name="${escapeHtml(name)}" onmousedown="selectDistributorHistory(this.dataset.name)">${escapeHtml(name)}</div>`).join('')
+        ? rows.map((name, index) => `
+            <div class="distributor-option ${index === highlightedDistributorIndex ? 'active' : ''}">
+                <span class="distributor-option-label" data-name="${escapeHtml(name)}" onmousedown="selectDistributorHistory(this.dataset.name)">${escapeHtml(name)}</span>
+                ${canDeleteDistributorHistory ? `<button class="distributor-delete" type="button" data-name="${escapeHtml(name)}" onmousedown="event.preventDefault();event.stopPropagation()" onclick="deleteDistributorHistory(this.dataset.name)">删除</button>` : ''}
+            </div>
+        `).join('')
         : '<div class="distributor-empty">没有匹配的历史分销商</div>';
     dropdown.classList.toggle('open', Boolean(open || document.activeElement === input));
 }
@@ -434,6 +470,92 @@ function selectDistributorHistory(name) {
     saveDistributorHistory(name);
     const dropdown = document.getElementById('distributorHistoryDropdown');
     if (dropdown) dropdown.classList.remove('open');
+}
+
+async function deleteDistributorHistory(name) {
+    name = String(name || '').trim();
+    if (!name) return;
+    if (!canDeleteDistributorHistory) {
+        alert('只有管理员可以删除目标分销商历史');
+        return;
+    }
+    if (!confirm(`确定删除目标分销商历史：${name}？`)) return;
+    const localRows = loadDistributorHistory().filter(row => row !== name);
+    localStorage.setItem('transferDistributorHistory', JSON.stringify(localRows));
+    renderDistributorHistory(true);
+    const data = await fetch('/api/distributor-history', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({distributor: name})
+    }).then(res => res.json()).catch(() => ({success: false, error: '删除请求失败'}));
+    if (!data.success) {
+        alert(data.error || '删除失败');
+        loadQueriedDealerHistory();
+        return;
+    }
+    canDeleteDistributorHistory = !!data.can_delete;
+    localStorage.setItem('transferDistributorHistory', JSON.stringify(data.dealers || []));
+    appendLog(`已删除目标分销商历史：${name}`, 'success');
+    renderDistributorHistory(true);
+}
+
+function openDistributorImportModal() {
+    if (!canDeleteDistributorHistory) {
+        alert('只有管理员可以批量导入目标分销商');
+        return;
+    }
+    const modal = document.getElementById('distributorImportModal');
+    const input = document.getElementById('distributorImportText');
+    input.value = '';
+    modal.classList.add('show');
+    setTimeout(() => input.focus(), 50);
+}
+
+function closeDistributorImportModal() {
+    document.getElementById('distributorImportModal').classList.remove('show');
+}
+
+function parseDistributorImportText(text) {
+    const seen = new Set();
+    return String(text || '')
+        .split(/[\r\n,，;；\t]+/)
+        .map(x => x.replace(/\s+/g, ' ').trim())
+        .filter(name => {
+            if (!name || name === OWN_DEALER_NAME || seen.has(name)) return false;
+            seen.add(name);
+            return true;
+        });
+}
+
+async function importDistributorHistory() {
+    if (!canDeleteDistributorHistory) {
+        alert('只有管理员可以批量导入目标分销商');
+        return;
+    }
+    const rows = parseDistributorImportText(document.getElementById('distributorImportText').value);
+    if (!rows.length) {
+        alert('请输入要导入的目标分销商名称');
+        return;
+    }
+    const btn = document.getElementById('distributorImportBtn');
+    btn.disabled = true;
+    btn.textContent = '导入中...';
+    const data = await fetch('/api/distributor-history', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({distributors: rows})
+    }).then(res => res.json()).catch(() => ({success: false, error: '导入请求失败'}));
+    btn.disabled = false;
+    btn.textContent = '导入';
+    if (!data.success) {
+        alert(data.error || '导入失败');
+        return;
+    }
+    canDeleteDistributorHistory = !!data.can_delete;
+    localStorage.setItem('transferDistributorHistory', JSON.stringify(data.dealers || []));
+    closeDistributorImportModal();
+    renderDistributorHistory(true);
+    appendLog(`已导入目标分销商 ${rows.length} 个`, 'success');
 }
 
 function handleDistributorKeydown(event) {
@@ -1079,6 +1201,7 @@ async function refreshCrmStatus() {
 async function loadQueriedDealerHistory() {
     const data = await fetch('/api/distributor-history').then(r => r.json()).catch(() => null);
     if (data && data.success) {
+        canDeleteDistributorHistory = !!data.can_delete;
         mergeDistributorHistory(data.dealers || []);
     }
 }
