@@ -89,10 +89,10 @@
             body.innerHTML = '<div class="dim">等待操作...</div>';
             return;
         }
-        for (const row of logHistory) {
+        for (const row of [...logHistory].reverse()) {
             appendLogLine(row.message, row.level, row.time);
         }
-        body.scrollTop = body.scrollHeight;
+        body.scrollTop = 0;
     }
 
     function appendLogLine(message, level, time) {
@@ -100,11 +100,11 @@
         const line = document.createElement('div');
         line.className = normalizeLevel(level || 'dim');
         line.textContent = `[${time || new Date().toLocaleTimeString()}] ${message || ''}`;
-        body.appendChild(line);
+        body.insertBefore(line, body.firstChild);
         while (body.children.length > 8000) {
-            body.removeChild(body.firstChild);
+            body.removeChild(body.lastChild);
         }
-        body.scrollTop = body.scrollHeight;
+        body.scrollTop = 0;
     }
 
     function appendGlobalLog(message, level, time, key) {
