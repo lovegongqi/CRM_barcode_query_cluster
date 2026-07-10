@@ -75,27 +75,17 @@
     {% endif %}
 
     <div class="card">
-        <h2>条码识别</h2>
-        <div class="library-form">
-            <div style="grid-column:span 2"><label>输入条码</label><input id="lookupBarcode" placeholder="输入条码快速识别机器" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" oninput="scheduleLookup()"></div>
-            <button class="btn btn-primary" onclick="lookupBarcode()">识别</button>
-            <button class="btn btn-secondary" onclick="confirmQueryBarcode()">确认查询</button>
-        </div>
-        <div id="lookupBox" class="note">输入条码后会优先匹配已查询结果和条码匹配前缀。</div>
-        <div class="log" id="queryLog" style="display:none"></div>
-    </div>
-
-    <div class="card">
-        <h2>型号查编码</h2>
+        <h2>条码/型号搜索</h2>
         <div class="search-form">
             <div>
-                <label>型号关键字</label>
-                <input id="modelKeyword" placeholder="如 818ECD、800GPRO、EWD600S" autocomplete="off" oninput="scheduleProductCodeSearch()" onkeydown="if(event.key==='Enter')searchProductCode()">
+                <label>条码、型号或产品名称</label>
+                <input id="lookupInput" placeholder="输入条码、818ECD、800GPRO、EWD600S" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" oninput="scheduleLookup()" onkeydown="if(event.key==='Enter')unifiedSearch()">
             </div>
-            <button class="btn btn-primary" onclick="searchProductCode()">搜索</button>
-            <button class="btn btn-secondary" onclick="clearProductCodeSearch()">清空</button>
+            <button class="btn btn-primary" onclick="unifiedSearch()">搜索</button>
+            <button class="btn btn-secondary" onclick="clearUnifiedSearch()">清空</button>
         </div>
-        <div id="codeSearchBox" class="note">输入型号或产品名称关键字，可从已有条码匹配规则里查产品编码。</div>
+        <div id="lookupBox" class="note">输入条码可识别机器；输入型号、产品名称或产品编码可从已有条码匹配规则里查编码。</div>
+        <div class="log" id="queryLog" style="display:none"></div>
     </div>
 
     <div class="card" id="editCard" style="display:none">
@@ -117,7 +107,6 @@ function escapeHtml(text) {
 }
 
 let productLibraryRows = [];
-let productCodeSearchTimer = null;
 
 async function loadLibrary() {
     const res = await fetch('/api/product-library');
@@ -143,7 +132,7 @@ async function loadLibrary() {
                 </tr>
             `).join('') || '<tr><td colspan="6">暂无条码匹配规则</td></tr>'}</tbody>
         </table>`;
-    if (document.getElementById('modelKeyword')?.value.trim()) searchProductCode();
+    if (document.getElementById('lookupInput')?.value.trim()) unifiedSearch(false);
 }
 
 async function saveLibrary() {
@@ -181,21 +170,22 @@ function normalizeSearchText(text) {
     return String(text || '').toLowerCase().replace(/\s+/g, '');
 }
 
-function scheduleProductCodeSearch() {
-    clearTimeout(productCodeSearchTimer);
-    productCodeSearchTimer = setTimeout(searchProductCode, 200);
+function isLikelyBarcode(value) {
+    const text = String(value || '').trim();
+    const compact = text.replace(/[\s-]+/g, '');
+    const digitCount = (compact.match(/\d/g) || []).length;
+    return /^[A-Za-z0-9]+$/.test(compact) && compact.length >= 10 && digitCount >= 8;
 }
 
-function clearProductCodeSearch() {
-    document.getElementById('modelKeyword').value = '';
-    document.getElementById('codeSearchBox').innerHTML = '输入型号或产品名称关键字，可从已有条码匹配规则里查产品编码。';
+function clearUnifiedSearch() {
+    document.getElementById('lookupInput').value = '';
+    document.getElementById('lookupBox').innerHTML = '输入条码可识别机器；输入型号、产品名称或产品编码可从已有条码匹配规则里查编码。';
 }
 
-function searchProductCode() {
-    const keyword = document.getElementById('modelKeyword').value.trim();
-    const box = document.getElementById('codeSearchBox');
+function searchProductCode(keyword) {
+    const box = document.getElementById('lookupBox');
     if (!keyword) {
-        box.innerHTML = '输入型号或产品名称关键字，可从已有条码匹配规则里查产品编码。';
+        box.innerHTML = '输入条码可识别机器；输入型号、产品名称或产品编码可从已有条码匹配规则里查编码。';
         return;
     }
     if (!productLibraryRows.length) {
@@ -205,7 +195,7 @@ function searchProductCode() {
     const needle = normalizeSearchText(keyword);
     const grouped = new Map();
     for (const row of productLibraryRows) {
-        const haystack = normalizeSearchText(`${row.product_name || ''} ${row.product_code || ''} ${row.prefix || ''}`);
+        const haystack = normalizeSearchText(`${row.product_name || ''} ${row.product_code || ''} ${row.prefix || ''} ${row.source_barcode || ''}`);
         if (!haystack.includes(needle)) continue;
         const key = `${row.product_code || ''}|${row.product_name || ''}`;
         if (!grouped.has(key)) {
@@ -246,13 +236,26 @@ function searchProductCode() {
 function scheduleLookup() {
     clearTimeout(lookupTimer);
     lookupTimer = setTimeout(() => {
-        const barcode = document.getElementById('lookupBarcode').value.trim();
-        if (barcode.length >= 6) lookupBarcode();
+        const text = document.getElementById('lookupInput').value.trim();
+        if (text.length >= 2) unifiedSearch(false);
     }, 350);
 }
 
-async function lookupBarcode() {
-    const barcode = document.getElementById('lookupBarcode').value.trim();
+function unifiedSearch(showAlert = true) {
+    const text = document.getElementById('lookupInput').value.trim();
+    if (!text) {
+        if (showAlert) alert('请输入条码、型号或产品名称');
+        return;
+    }
+    if (isLikelyBarcode(text)) {
+        lookupBarcode(text);
+    } else {
+        searchProductCode(text);
+    }
+}
+
+async function lookupBarcode(barcodeValue = '') {
+    const barcode = (barcodeValue || document.getElementById('lookupInput').value).trim();
     if (!barcode) return alert('请输入条码');
     const res = await fetch('/api/product-library/lookup?barcode=' + encodeURIComponent(barcode));
     const data = await res.json();
@@ -266,7 +269,7 @@ async function lookupBarcode() {
 }
 
 async function confirmQueryBarcode() {
-    const barcode = document.getElementById('lookupBarcode').value.trim();
+    const barcode = document.getElementById('lookupInput').value.trim();
     if (!barcode) return alert('请输入条码');
     appendQueryLog('准备启动 CRM 查询...', 'info');
     const data = await fetch('/api/product-library/query/start', {
