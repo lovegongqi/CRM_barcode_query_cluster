@@ -29,6 +29,7 @@
         input:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
         .note { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#475569; font-size:12px; line-height:1.6; padding:10px 12px; margin-bottom:12px; }
         .library-form { display:grid; grid-template-columns: .7fr 1fr 1.2fr auto; gap:8px; align-items:end; margin-bottom:12px; }
+        .search-form { display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:end; margin-bottom:12px; }
         .auth-form { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
         .auth-form input { width:160px; }
         .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
@@ -42,7 +43,7 @@
         th { background:#f8fafc; color:#475569; }
         .header-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
         .header-actions .btn { text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
-        @media (max-width: 860px) { .container { padding:14px; } .library-form { grid-template-columns:1fr; } }
+        @media (max-width: 860px) { .container { padding:14px; } .library-form, .search-form { grid-template-columns:1fr; } }
     </style>
     <link rel="stylesheet" href="/static/app_layout.css">
 </head>
@@ -84,6 +85,19 @@
         <div class="log" id="queryLog" style="display:none"></div>
     </div>
 
+    <div class="card">
+        <h2>型号查编码</h2>
+        <div class="search-form">
+            <div>
+                <label>型号关键字</label>
+                <input id="modelKeyword" placeholder="如 818ECD、800GPRO、EWD600S" autocomplete="off" oninput="scheduleProductCodeSearch()" onkeydown="if(event.key==='Enter')searchProductCode()">
+            </div>
+            <button class="btn btn-primary" onclick="searchProductCode()">搜索</button>
+            <button class="btn btn-secondary" onclick="clearProductCodeSearch()">清空</button>
+        </div>
+        <div id="codeSearchBox" class="note">输入型号或产品名称关键字，可从已有条码匹配规则里查产品编码。</div>
+    </div>
+
     <div class="card" id="editCard" style="display:none">
         <h2>条码匹配规则 <span class="muted" id="libraryCount">已有 0 条</span></h2>
         <div class="note">前缀默认是条码去掉最后 10 位。比如 162501010001 的默认产品前缀是 16。</div>
@@ -102,10 +116,14 @@ function escapeHtml(text) {
     return String(text || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
+let productLibraryRows = [];
+let productCodeSearchTimer = null;
+
 async function loadLibrary() {
     const res = await fetch('/api/product-library');
     const data = await res.json();
     const rows = data.products || [];
+    productLibraryRows = rows;
     document.getElementById('editCard').style.display = data.can_edit ? '' : 'none';
     const accountStatus = document.getElementById('accountStatus');
     if (accountStatus) accountStatus.textContent = data.account ? `${data.account.username}${data.can_edit ? '（管理员）' : ''}` : '';
@@ -125,6 +143,7 @@ async function loadLibrary() {
                 </tr>
             `).join('') || '<tr><td colspan="6">暂无条码匹配规则</td></tr>'}</tbody>
         </table>`;
+    if (document.getElementById('modelKeyword')?.value.trim()) searchProductCode();
 }
 
 async function saveLibrary() {
@@ -157,6 +176,73 @@ loadLibrary();
 
 let lookupTimer = null;
 let queryTimer = null;
+
+function normalizeSearchText(text) {
+    return String(text || '').toLowerCase().replace(/\s+/g, '');
+}
+
+function scheduleProductCodeSearch() {
+    clearTimeout(productCodeSearchTimer);
+    productCodeSearchTimer = setTimeout(searchProductCode, 200);
+}
+
+function clearProductCodeSearch() {
+    document.getElementById('modelKeyword').value = '';
+    document.getElementById('codeSearchBox').innerHTML = '输入型号或产品名称关键字，可从已有条码匹配规则里查产品编码。';
+}
+
+function searchProductCode() {
+    const keyword = document.getElementById('modelKeyword').value.trim();
+    const box = document.getElementById('codeSearchBox');
+    if (!keyword) {
+        box.innerHTML = '输入型号或产品名称关键字，可从已有条码匹配规则里查产品编码。';
+        return;
+    }
+    if (!productLibraryRows.length) {
+        box.innerHTML = '暂无条码匹配规则，无法查询产品编码。';
+        return;
+    }
+    const needle = normalizeSearchText(keyword);
+    const grouped = new Map();
+    for (const row of productLibraryRows) {
+        const haystack = normalizeSearchText(`${row.product_name || ''} ${row.product_code || ''} ${row.prefix || ''}`);
+        if (!haystack.includes(needle)) continue;
+        const key = `${row.product_code || ''}|${row.product_name || ''}`;
+        if (!grouped.has(key)) {
+            grouped.set(key, {
+                product_code: row.product_code || '',
+                product_name: row.product_name || '',
+                prefixes: [],
+                source_barcodes: [],
+                updated_at: row.updated_at || ''
+            });
+        }
+        const item = grouped.get(key);
+        if (row.prefix && !item.prefixes.includes(row.prefix)) item.prefixes.push(row.prefix);
+        if (row.source_barcode && !item.source_barcodes.includes(row.source_barcode)) item.source_barcodes.push(row.source_barcode);
+        if (row.updated_at && row.updated_at > item.updated_at) item.updated_at = row.updated_at;
+    }
+    const results = Array.from(grouped.values()).sort((a, b) => String(a.product_name).localeCompare(String(b.product_name), 'zh-CN'));
+    if (!results.length) {
+        box.innerHTML = `没有找到包含 <strong>${escapeHtml(keyword)}</strong> 的型号或产品名称。`;
+        return;
+    }
+    box.innerHTML = `
+        <div style="margin-bottom:8px;">找到 <strong>${results.length}</strong> 个匹配产品。</div>
+        <table>
+            <thead><tr><th>产品编码</th><th>产品名称/型号</th><th>匹配前缀</th><th>来源条码</th><th>更新</th></tr></thead>
+            <tbody>${results.map(row => `
+                <tr>
+                    <td><strong>${escapeHtml(row.product_code)}</strong></td>
+                    <td>${escapeHtml(row.product_name)}</td>
+                    <td>${escapeHtml(row.prefixes.join('、'))}</td>
+                    <td>${escapeHtml(row.source_barcodes.slice(0, 3).join('、'))}${row.source_barcodes.length > 3 ? '...' : ''}</td>
+                    <td>${escapeHtml(row.updated_at)}</td>
+                </tr>
+            `).join('')}</tbody>
+        </table>`;
+}
+
 function scheduleLookup() {
     clearTimeout(lookupTimer);
     lookupTimer = setTimeout(() => {
