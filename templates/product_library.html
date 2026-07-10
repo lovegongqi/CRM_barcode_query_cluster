@@ -257,9 +257,16 @@ function unifiedSearch(showAlert = true) {
 async function lookupBarcode(barcodeValue = '') {
     const barcode = (barcodeValue || document.getElementById('lookupInput').value).trim();
     if (!barcode) return alert('请输入条码');
-    const res = await fetch('/api/product-library/lookup?barcode=' + encodeURIComponent(barcode));
-    const data = await res.json();
     const box = document.getElementById('lookupBox');
+    box.innerHTML = `正在识别条码 <strong>${escapeHtml(barcode)}</strong>...`;
+    let data = null;
+    try {
+        const res = await fetch('/api/product-library/lookup?barcode=' + encodeURIComponent(barcode));
+        data = await res.json();
+    } catch (e) {
+        box.innerHTML = '条码识别请求失败，请确认应用服务正在运行后重试。';
+        return;
+    }
     if (data.success) {
         const info = data.info || {};
         box.innerHTML = `产品名称：<strong>${escapeHtml(info.product_name)}</strong><br>产品编码：<strong>${escapeHtml(info.product_code)}</strong><br>匹配来源：${escapeHtml(info.source === 'query_result' ? '查询结果' : '条码匹配')} ${info.matched_prefix ? '，前缀 ' + escapeHtml(info.matched_prefix) : ''}`;
@@ -276,7 +283,7 @@ async function confirmQueryBarcode() {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({barcode})
-    }).then(res => res.json());
+    }).then(res => res.json()).catch(() => ({success: false, error: '查询请求失败，请确认应用服务正在运行后重试'}));
     if (!data.success) {
         appendQueryLog(data.error || '查询启动失败', 'error');
         return;
