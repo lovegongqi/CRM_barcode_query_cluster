@@ -29,7 +29,7 @@
         input:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
         .note { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#475569; font-size:12px; line-height:1.6; padding:10px 12px; margin-bottom:12px; }
         .library-form { display:grid; grid-template-columns: .7fr 1fr 1.2fr auto; gap:8px; align-items:end; margin-bottom:12px; }
-        .search-form { display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:end; margin-bottom:12px; }
+        .search-form { display:grid; grid-template-columns: 1fr auto auto auto; gap:8px; align-items:end; margin-bottom:12px; }
         .auth-form { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
         .auth-form input { width:160px; }
         .btn { min-height:38px; padding:8px 16px; border:none; border-radius:8px; font-weight:800; cursor:pointer; }
@@ -82,9 +82,10 @@
                 <input id="lookupInput" placeholder="输入条码、818ECD、800GPRO、EWD600S" inputmode="latin" lang="en" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="ime-mode:inactive" oninput="scheduleLookup()" onkeydown="if(event.key==='Enter')unifiedSearch()">
             </div>
             <button class="btn btn-primary" onclick="unifiedSearch()">搜索</button>
+            <button class="btn btn-secondary" onclick="confirmQueryBarcode()">在线查询</button>
             <button class="btn btn-secondary" onclick="clearUnifiedSearch()">清空</button>
         </div>
-        <div id="lookupBox" class="note">输入条码可识别机器；输入型号、产品名称或产品编码可从已有条码匹配规则里查编码。</div>
+        <div id="lookupBox" class="note">输入条码可识别机器；输入型号、产品名称或产品编码可查编码。在线查询需要输入完整条码。</div>
         <div class="log" id="queryLog" style="display:none"></div>
     </div>
 
@@ -179,13 +180,13 @@ function isLikelyBarcode(value) {
 
 function clearUnifiedSearch() {
     document.getElementById('lookupInput').value = '';
-    document.getElementById('lookupBox').innerHTML = '输入条码可识别机器；输入型号、产品名称或产品编码可从已有条码匹配规则里查编码。';
+    document.getElementById('lookupBox').innerHTML = '输入条码可识别机器；输入型号、产品名称或产品编码可查编码。在线查询需要输入完整条码。';
 }
 
 function searchProductCode(keyword) {
     const box = document.getElementById('lookupBox');
     if (!keyword) {
-        box.innerHTML = '输入条码可识别机器；输入型号、产品名称或产品编码可从已有条码匹配规则里查编码。';
+        box.innerHTML = '输入条码可识别机器；输入型号、产品名称或产品编码可查编码。在线查询需要输入完整条码。';
         return;
     }
     if (!productLibraryRows.length) {
@@ -278,6 +279,12 @@ async function lookupBarcode(barcodeValue = '') {
 async function confirmQueryBarcode() {
     const barcode = document.getElementById('lookupInput').value.trim();
     if (!barcode) return alert('请输入条码');
+    if (!isLikelyBarcode(barcode)) {
+        const message = '在线查询需要输入完整条码，型号关键字只能本地查编码。';
+        document.getElementById('lookupBox').innerHTML = message;
+        appendQueryLog(message, 'warn');
+        return;
+    }
     appendQueryLog('准备启动 CRM 查询...', 'info');
     const data = await fetch('/api/product-library/query/start', {
         method:'POST',
