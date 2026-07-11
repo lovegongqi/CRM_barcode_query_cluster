@@ -27,7 +27,13 @@
         label { display:block; font-size:12px; color:#667085; font-weight:700; margin-bottom:6px; }
         input { width:100%; border:1px solid #cfd8e3; border-radius:6px; padding:9px 10px; font-size:14px; outline:none; background:#fff; }
         input:focus { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); }
-        .note { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#475569; font-size:12px; line-height:1.6; padding:10px 12px; margin-bottom:12px; }
+        .note { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#475569; font-size:12px; line-height:1.6; padding:10px 12px; margin-bottom:12px; overflow-wrap:anywhere; }
+        .lookup-result { display:grid; gap:8px; max-width:100%; }
+        .lookup-line { display:grid; grid-template-columns:74px minmax(0,1fr); gap:8px; align-items:start; }
+        .lookup-label { color:#667085; font-weight:800; }
+        .lookup-value { min-width:0; overflow-wrap:anywhere; word-break:break-word; }
+        .lookup-result-table { table-layout:fixed; width:100%; }
+        .lookup-result-table th, .lookup-result-table td { overflow-wrap:anywhere; word-break:break-word; }
         .library-form { display:grid; grid-template-columns: .7fr 1fr 1.2fr auto; gap:8px; align-items:end; margin-bottom:12px; }
         .search-form { display:grid; grid-template-columns: 1fr auto auto auto; gap:8px; align-items:end; margin-bottom:12px; }
         .auth-form { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
@@ -44,6 +50,14 @@
         .header-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
         .header-actions .btn { text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
         @media (max-width: 860px) { .container { padding:14px; } .library-form, .search-form { grid-template-columns:1fr; } }
+        @media (max-width: 640px) {
+            .lookup-line { grid-template-columns:68px minmax(0,1fr); }
+            .lookup-result-table, .lookup-result-table tbody, .lookup-result-table tr, .lookup-result-table td { display:block; width:100%; }
+            .lookup-result-table thead { display:none; }
+            .lookup-result-table tr { border:1px solid #e2e8f0; border-radius:8px; padding:8px 10px; margin-bottom:8px; background:#fff; }
+            .lookup-result-table td { border-bottom:none !important; padding:4px 0; }
+            .lookup-result-table td::before { content:attr(data-label); display:block; color:#667085; font-size:11px; font-weight:800; margin-bottom:2px; }
+        }
     </style>
     <link rel="stylesheet" href="/static/app_layout.css">
 </head>
@@ -220,15 +234,15 @@ function searchProductCode(keyword) {
     }
     box.innerHTML = `
         <div style="margin-bottom:8px;">找到 <strong>${results.length}</strong> 个匹配产品。</div>
-        <table>
+        <table class="lookup-result-table">
             <thead><tr><th>产品编码</th><th>产品名称/型号</th><th>匹配前缀</th><th>来源条码</th><th>更新</th></tr></thead>
             <tbody>${results.map(row => `
                 <tr>
-                    <td><strong>${escapeHtml(row.product_code)}</strong></td>
-                    <td>${escapeHtml(row.product_name)}</td>
-                    <td>${escapeHtml(row.prefixes.join('、'))}</td>
-                    <td>${escapeHtml(row.source_barcodes.slice(0, 3).join('、'))}${row.source_barcodes.length > 3 ? '...' : ''}</td>
-                    <td>${escapeHtml(row.updated_at)}</td>
+                    <td data-label="产品编码"><strong>${escapeHtml(row.product_code)}</strong></td>
+                    <td data-label="产品名称/型号">${escapeHtml(row.product_name)}</td>
+                    <td data-label="匹配前缀">${escapeHtml(row.prefixes.join('、'))}</td>
+                    <td data-label="来源条码">${escapeHtml(row.source_barcodes.slice(0, 3).join('、'))}${row.source_barcodes.length > 3 ? '...' : ''}</td>
+                    <td data-label="更新">${escapeHtml(row.updated_at)}</td>
                 </tr>
             `).join('')}</tbody>
         </table>`;
@@ -270,7 +284,12 @@ async function lookupBarcode(barcodeValue = '') {
     }
     if (data.success) {
         const info = data.info || {};
-        box.innerHTML = `产品名称：<strong>${escapeHtml(info.product_name)}</strong><br>产品编码：<strong>${escapeHtml(info.product_code)}</strong><br>匹配来源：${escapeHtml(info.source === 'query_result' ? '查询结果' : '条码匹配')} ${info.matched_prefix ? '，前缀 ' + escapeHtml(info.matched_prefix) : ''}`;
+        box.innerHTML = `
+            <div class="lookup-result">
+                <div class="lookup-line"><span class="lookup-label">产品名称</span><strong class="lookup-value">${escapeHtml(info.product_name)}</strong></div>
+                <div class="lookup-line"><span class="lookup-label">产品编码</span><strong class="lookup-value">${escapeHtml(info.product_code)}</strong></div>
+                <div class="lookup-line"><span class="lookup-label">匹配来源</span><span class="lookup-value">${escapeHtml(info.source === 'query_result' ? '查询结果' : '条码匹配')} ${info.matched_prefix ? '，前缀 ' + escapeHtml(info.matched_prefix) : ''}</span></div>
+            </div>`;
         return;
     }
     box.innerHTML = `没有匹配到前缀 <strong>${escapeHtml(data.prefix || '')}</strong>。是否立即查询该条码并自动补充条码匹配？ <button class="btn btn-primary" onclick="confirmQueryBarcode()">确认查询</button>`;
