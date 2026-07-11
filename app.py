@@ -4197,6 +4197,7 @@ def _run_service_close_job(job_id, worker, orders):
             service_no = _clean_export_value(row.get("service_no"))
             if not service_no:
                 continue
+            row["barcodes"] = list((order_map.get(service_no) or {}).get("barcodes") or [])
             if row.get("success"):
                 if row.get("status") == "already_closed":
                     already_closed_count += 1
@@ -5334,6 +5335,49 @@ def _replace_html_field_values(html, field_ids, value):
             return match.group(1) + escaped_value + match.group(3)
 
         html = pattern.sub(repl, html)
+    return html, changed
+
+def _replace_closed_service_html(html, info):
+    closed_map = (info or {}).get("closedServiceNos") or {}
+    if not isinstance(closed_map, dict) or not closed_map:
+        return html, False
+    closed_set = {_clean_export_value(key) for key in closed_map if _clean_export_value(key)}
+    if not closed_set:
+        return html, False
+    row_classes = set()
+    serv_pattern = re.compile(
+        r'(<div\s+id="servno1"\s+class="([^"]+)"[^>]*>.*?<span[^>]*>)([^<]*)(</span>)',
+        re.DOTALL
+    )
+    for match in serv_pattern.finditer(html):
+        if _clean_export_value(html_mod.unescape(match.group(3))) in closed_set:
+            row_classes.add(match.group(2))
+    if not row_classes:
+        return html, False
+    changed = False
+    escaped_value = html_mod.escape("已结单", quote=False)
+    for row_class in row_classes:
+        status_pattern = re.compile(
+            rf'(<div\s+id="newisclosed1"\s+class="{re.escape(row_class)}"[^>]*>.*?<span[^>]*>)([^<]*)(</span>)',
+            re.DOTALL
+        )
+
+        def repl(match):
+            nonlocal changed
+            changed = True
+            return match.group(1) + escaped_value + match.group(3)
+
+        html = status_pattern.sub(repl, html)
+    return html, changed
+
+def _apply_barcode_html_overrides(html, info):
+    changed = False
+    dealer = _clean_export_value((info or {}).get('currentDealerOverride'))
+    if dealer:
+        html, dealer_changed = _replace_html_field_values(html, ["myproductdealer1", "dealername1"], dealer)
+        changed = changed or dealer_changed
+    html, service_changed = _replace_closed_service_html(html, info)
+    changed = changed or service_changed
     return html, changed
 
 def _apply_dealer_to_fields(fields, dealer):
@@ -6641,20 +6685,21 @@ def api_crm_transfer_status():
 def serve_barcode(filename):
     barcode = filename.rsplit('.', 1)[0]
     info = get_barcode_info(barcode)
-    dealer = _clean_export_value(info.get('currentDealerOverride'))
     filepath = os.path.join(BARCODE_DIR, filename)
     if os.path.exists(filepath):
-        if dealer:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                html = f.read()
-            html, _ = _replace_html_field_values(html, ["myproductdealer1", "dealername1"], dealer)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            html = f.read()
+        html, changed = _apply_barcode_html_overrides(html, info)
+        if changed:
             return Response(html, mimetype='text/html')
         return send_from_directory(BARCODE_DIR, filename)
     filepath = os.path.join(ARCHIVE_DIR, filename)
-    if dealer and os.path.exists(filepath):
+    if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             html = f.read()
-        html, _ = _replace_html_field_values(html, ["myproductdealer1", "dealername1"], dealer)
+        html, changed = _apply_barcode_html_overrides(html, info)
+        if not changed:
+            return send_from_directory(ARCHIVE_DIR, filename)
         return Response(html, mimetype='text/html')
     return send_from_directory(ARCHIVE_DIR, filename)
 
@@ -6662,12 +6707,13 @@ def serve_barcode(filename):
 def serve_archived(filename):
     barcode = filename.rsplit('.', 1)[0]
     info = get_barcode_info(barcode)
-    dealer = _clean_export_value(info.get('currentDealerOverride'))
     filepath = os.path.join(ARCHIVE_DIR, filename)
-    if dealer and os.path.exists(filepath):
+    if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             html = f.read()
-        html, _ = _replace_html_field_values(html, ["myproductdealer1", "dealername1"], dealer)
+        html, changed = _apply_barcode_html_overrides(html, info)
+        if not changed:
+            return send_from_directory(ARCHIVE_DIR, filename)
         return Response(html, mimetype='text/html')
     return send_from_directory(ARCHIVE_DIR, filename)
 

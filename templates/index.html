@@ -1971,6 +1971,50 @@
             });
         }
 
+        function markServiceClosedLocally(barcodes, serviceNo) {
+            const barcodeSet = new Set((barcodes || []).map(String));
+            if (!barcodeSet.size || !serviceNo) return 0;
+            let changed = 0;
+            allBarcodes.forEach(item => {
+                if (!item || !barcodeSet.has(String(item.barcode))) return;
+                const fields = item.fields || {};
+                const sr2 = fields['sr2'];
+                const rows = Array.isArray(sr2) ? sr2 : (sr2 ? [sr2] : []);
+                rows.forEach(row => {
+                    if (row && String(row['servno1'] || '').trim() === String(serviceNo).trim()) {
+                        if (row['newisclosed1'] !== '已结单') changed += 1;
+                        row['newisclosed1'] = '已结单';
+                    }
+                });
+            });
+            return changed;
+        }
+
+        function applyServiceCloseResults(results) {
+            if (!results || !results.length) return;
+            let changed = 0;
+            const failed = [];
+            results.forEach(row => {
+                if (!row) return;
+                const serviceNo = row.service_no || '';
+                if (row.success) {
+                    changed += markServiceClosedLocally(row.barcodes || [], serviceNo);
+                } else {
+                    failed.push(row);
+                }
+            });
+            if (changed) {
+                rebuildFilterDropdowns();
+                applyFilters();
+            }
+            if (failed.length) {
+                serviceCloseLog('结单失败明细：', 'warn');
+                failed.forEach(row => {
+                    serviceCloseLog(`${row.service_no || '未知服务单'}：${row.message || '未知原因'}`, 'error');
+                });
+            }
+        }
+
         async function pollServiceCloseStatus() {
             if (!serviceCloseJobId) return true;
             const url = `/api/service-close/status?job_id=${encodeURIComponent(serviceCloseJobId)}&slot_id=${encodeURIComponent(serviceCloseSlotId || '')}&since=${encodeURIComponent(lastServiceCloseLogSeq)}`;
@@ -1984,6 +2028,7 @@
                     btn.disabled = false;
                     btn.textContent = '批量结单';
                 }
+                applyServiceCloseResults(data.results || []);
                 loadAllData(false);
                 if (serviceCloseStartAtMs) {
                     serviceCloseLog(`批量结单总耗时：${formatDuration((Date.now() - serviceCloseStartAtMs) / 1000)}`, data.close_success ? 'success' : 'warn');
