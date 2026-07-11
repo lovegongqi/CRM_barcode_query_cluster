@@ -2010,9 +2010,31 @@
             if (failed.length) {
                 serviceCloseLog('结单失败明细：', 'warn');
                 failed.forEach(row => {
-                    serviceCloseLog(`${row.service_no || '未知服务单'}：${row.message || '未知原因'}`, 'error');
+                    serviceCloseLog(`${formatServiceCloseDisplay(row)}：${row.message || '未知原因'}`, 'error');
                 });
             }
+        }
+
+        function formatServiceCloseValues(values, limit=4) {
+            const cleaned = [];
+            (values || []).forEach(value => {
+                const text = String(value || '').trim();
+                if (text && !cleaned.includes(text)) cleaned.push(text);
+            });
+            if (!cleaned.length) return '';
+            const shown = cleaned.slice(0, limit).join('、');
+            return cleaned.length > limit ? `${shown}等${cleaned.length}个` : shown;
+        }
+
+        function formatServiceCloseDisplay(row) {
+            if (row && row.display_label) return row.display_label;
+            const parts = [];
+            const barcodeText = formatServiceCloseValues(row?.barcodes || [], 4);
+            const customerText = formatServiceCloseValues(row?.customer_names || row?.customers || [], 2);
+            if (barcodeText) parts.push(`条码 ${barcodeText}`);
+            if (customerText) parts.push(`客户 ${customerText}`);
+            if (row?.service_no) parts.push(`服务单 ${row.service_no}`);
+            return parts.join(' / ') || row?.service_no || '未知服务单';
         }
 
         async function pollServiceCloseStatus() {

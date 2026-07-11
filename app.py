@@ -1982,17 +1982,22 @@ class CRMSession:
                     service_no = _clean_export_value(row.get("service_no") if isinstance(row, dict) else row)
                     if not service_no:
                         continue
-                    emit(f"处理服务单 {index}/{total}：{service_no}", "info")
+                    display_label = _service_order_display(row if isinstance(row, dict) else {"service_no": service_no})
+                    emit(f"处理服务单 {index}/{total}：{display_label}", "info")
                     last_error = ""
                     result_row = {
                         "service_no": service_no,
+                        "barcodes": list(row.get("barcodes") or []) if isinstance(row, dict) else [],
+                        "customer_names": list(row.get("customer_names") or []) if isinstance(row, dict) else [],
+                        "product_names": list(row.get("product_names") or []) if isinstance(row, dict) else [],
+                        "display_label": display_label,
                         "success": False,
                         "status": "failed",
                         "message": "",
                     }
                     for attempt in range(1, 3):
                         if attempt > 1:
-                            emit(f"{service_no} 准备重试 {attempt}/2", "warn")
+                            emit(f"{display_label} 准备重试 {attempt}/2", "warn")
                         ok, message = self._open_service_order_list(emit)
                         if not ok:
                             last_error = message
@@ -2013,12 +2018,12 @@ class CRMSession:
                                 "message": message or ("已结单" if status == "closed" else "原本已结单"),
                             })
                             level = "success" if status == "closed" else "dim"
-                            emit(f"{service_no} {'结单成功' if status == 'closed' else '已是结单状态'}", level)
+                            emit(f"{display_label} {'结单成功' if status == 'closed' else '已是结单状态'}", level)
                             break
                         last_error = message
                     if not result_row["success"]:
                         result_row["message"] = last_error or "服务单结单失败"
-                        emit(f"{service_no} 结单失败：{result_row['message']}", "error")
+                        emit(f"{display_label} 结单失败：{result_row['message']}", "error")
                     results.append(result_row)
                 success_count = sum(1 for row in results if row.get("success"))
                 failed_count = len(results) - success_count
@@ -4316,7 +4321,8 @@ def _run_service_close_job(job_id, workers, orders):
                     return
                 service_no = _clean_export_value(row.get("service_no") if isinstance(row, dict) else row)
                 try:
-                    log(f"{slot_label} 处理服务单 {index}/{total}：{service_no}", "info")
+                    display_label = _service_order_display(row if isinstance(row, dict) else {"service_no": service_no})
+                    log(f"{slot_label} 处理服务单 {index}/{total}：{display_label}", "info")
 
                     def worker_log(message, level='dim'):
                         text = str(message or "")
@@ -4335,6 +4341,12 @@ def _run_service_close_job(job_id, workers, orders):
                         "status": "failed",
                         "message": result.get("error") or "服务单结单失败",
                     }
+                    if isinstance(row, dict):
+                        for key in ("barcodes", "customer_names", "product_names"):
+                            if row.get(key) and not result_row.get(key):
+                                result_row[key] = list(row.get(key) or [])
+                        if not result_row.get("display_label"):
+                            result_row["display_label"] = _service_order_display(result_row or row)
                     if not ok and result.get("error") and not result_row.get("message"):
                         result_row["message"] = result.get("error")
                     with result_lock:
@@ -4376,7 +4388,11 @@ def _run_service_close_job(job_id, workers, orders):
             service_no = _clean_export_value(row.get("service_no"))
             if not service_no:
                 continue
-            row["barcodes"] = list((order_map.get(service_no) or {}).get("barcodes") or [])
+            source_row = order_map.get(service_no) or {}
+            row["barcodes"] = list(source_row.get("barcodes") or row.get("barcodes") or [])
+            row["customer_names"] = list(source_row.get("customer_names") or row.get("customer_names") or [])
+            row["product_names"] = list(source_row.get("product_names") or row.get("product_names") or [])
+            row["display_label"] = _service_order_display(row)
             if row.get("success"):
                 if row.get("status") == "already_closed":
                     already_closed_count += 1
@@ -5815,16 +5831,52 @@ def selected_latest_service_orders(selected_barcodes):
             service_orders[service_no] = {
                 "service_no": service_no,
                 "barcodes": [],
+                "customer_names": [],
+                "product_names": [],
                 "local_closed": _service_row_is_closed(row),
             }
         service_orders[service_no]["barcodes"].append(barcode)
+        customer_name = _clean_export_value(row.get("name1") or row.get("customer1"))
+        if customer_name and customer_name not in service_orders[service_no]["customer_names"]:
+            service_orders[service_no]["customer_names"].append(customer_name)
+        product_name = _clean_export_value(row.get("newproductidName1") or row.get("newproductname1"))
+        if product_name and product_name not in service_orders[service_no]["product_names"]:
+            service_orders[service_no]["product_names"].append(product_name)
         if not _service_row_is_closed(row):
             service_orders[service_no]["local_closed"] = False
+    for row in service_orders.values():
+        row["display_label"] = _service_order_display(row)
     return {
         "orders": list(service_orders.values()),
         "missing": missing,
         "no_service": no_service,
     }
+
+def _format_limited_values(values, limit=3):
+    cleaned = []
+    for value in values or []:
+        text = _clean_export_value(value)
+        if text and text not in cleaned:
+            cleaned.append(text)
+    if not cleaned:
+        return ""
+    shown = cleaned[:limit]
+    suffix = f"等{len(cleaned)}个" if len(cleaned) > limit else ""
+    return "、".join(shown) + suffix
+
+def _service_order_display(row):
+    row = row or {}
+    service_no = _clean_export_value(row.get("service_no"))
+    barcode_text = _format_limited_values(row.get("barcodes"), 4)
+    customer_text = _format_limited_values(row.get("customer_names") or row.get("customers"), 2)
+    parts = []
+    if barcode_text:
+        parts.append(f"条码 {barcode_text}")
+    if customer_text:
+        parts.append(f"客户 {customer_text}")
+    if service_no:
+        parts.append(f"服务单 {service_no}")
+    return " / ".join(parts) or service_no or "未知服务单"
 
 def queried_dealer_history():
     own_dealer = own_dealer_name()
