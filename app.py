@@ -1876,23 +1876,51 @@ class CRMSession:
         if closed:
             return True, "already_closed", value or "已结单"
         if not (self._click_top_button("结单确认") or self._click_top_button("确认结单")):
-            return False, "failed", "未找到右上方结单确认按钮"
-        for _ in range(4):
-            time.sleep(0.8)
             msg = self._visible_message()
-            if msg and any(key in msg for key in ["失败", "错误", "不能", "不可"]):
-                return False, "failed", msg
-            self._click_dialog_button("确定")
-            self._click_dialog_button("确认")
-        for _ in range(16):
-            time.sleep(0.8)
+            return False, "failed", msg or "未找到右上方结单确认按钮"
+        return self._wait_service_close_result(log)
+
+    def _wait_service_close_result(self, log=None, timeout=60):
+        started = time.time()
+        last_message = ""
+        last_progress = 0
+        confirmed_dialog = False
+        failure_words = [
+            "失败", "错误", "不能", "不可", "不存在", "异常", "无权限",
+            "必填", "请选择", "未找到", "不允许", "无法",
+        ]
+        while time.time() - started < timeout:
+            elapsed = int(time.time() - started)
+            msg = self._visible_message()
+            if msg:
+                last_message = msg
+                if any(word in msg for word in failure_words):
+                    return False, "failed", msg
+
+            clicked = self._click_dialog_button("确定") or self._click_dialog_button("确认")
+            if clicked:
+                confirmed_dialog = True
+                msg = self._visible_message()
+                if msg:
+                    last_message = msg
+                    if any(word in msg for word in failure_words):
+                        return False, "failed", msg
+
             closed, value = self._service_detail_closed_state()
             if closed:
                 return True, "closed", value or "已结单"
-            msg = self._visible_message()
-            if msg and any(key in msg for key in ["失败", "错误", "不能", "不可"]):
-                return False, "failed", msg
-        return False, "failed", "结单确认后未检测到是否结单=是"
+
+            if log and elapsed >= last_progress + 10:
+                last_progress = elapsed
+                if confirmed_dialog:
+                    log(f"等待 CRM 结单结果，已等待 {elapsed} 秒", "dim")
+                else:
+                    log(f"等待 CRM 结单确认弹窗，已等待 {elapsed} 秒", "dim")
+            time.sleep(1)
+
+        if last_message:
+            return False, "failed", last_message
+        return False, "failed", f"结单确认后 {timeout} 秒内未收到 CRM 成功或失败提示"
 
     def close_service_orders(self, service_orders, log=None):
         def emit(message, level='info'):
@@ -2816,12 +2844,55 @@ class CRMSession:
     def _visible_message(self):
         try:
             text = self.page.evaluate("""() => {
-                const selectors = ['.el-message', '.el-notification', '.el-form-item__error', '.el-dialog', '.toast'];
-                return selectors.flatMap(sel => Array.from(document.querySelectorAll(sel)))
-                    .filter(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length))
-                    .map(el => (el.innerText || el.textContent || '').trim())
-                    .filter(Boolean)
-                    .join(' | ');
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                const selectors = [
+                    '.el-message',
+                    '.el-notification',
+                    '.el-message-box',
+                    '.el-dialog',
+                    '.el-form-item__error',
+                    '.toast',
+                    '.ant-message',
+                    '.ant-notification',
+                    '.ant-modal',
+                    '.ivu-message',
+                    '.ivu-notice',
+                    '.ivu-modal',
+                    '[role="alert"]',
+                    '[role="alertdialog"]',
+                    '[role="dialog"]'
+                ];
+                const values = [];
+                const pushText = (value) => {
+                    let text = clean(value)
+                        .replace(/^(提示|系统提示)\\s*/, '')
+                        .replace(/\\s*(确定|确认|取消|关闭)\\s*$/g, '')
+                        .trim();
+                    if (!text || text.length < 2) return;
+                    if (text.length > 500) text = text.slice(0, 500);
+                    if (!values.includes(text)) values.push(text);
+                };
+                for (const sel of selectors) {
+                    for (const el of Array.from(document.querySelectorAll(sel)).filter(visible)) {
+                        pushText(el.innerText || el.textContent || '');
+                    }
+                }
+                const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+                    .filter(visible)
+                    .filter(el => /^(确定|确认|取消|关闭)$/.test(clean(el.innerText || el.textContent || '')));
+                for (const btn of buttons) {
+                    let root = btn.parentElement;
+                    for (let i = 0; i < 5 && root; i++, root = root.parentElement) {
+                        if (!visible(root)) continue;
+                        const text = clean(root.innerText || root.textContent || '');
+                        if (text && text.length < 500 && /结单|失败|错误|不能|不可|不存在|异常|提示|确认|确定/.test(text)) {
+                            pushText(text);
+                            break;
+                        }
+                    }
+                }
+                return values.join(' | ');
             }""")
             return re.sub(r"\s+", " ", text or "").strip()
         except Exception:
@@ -4169,22 +4240,92 @@ def _run_transfer_job(job_id, worker, summary, distributor, transfer_type, remar
                 job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log(f"移库出错：{e}", 'error')
 
-def _run_service_close_job(job_id, worker, orders):
+def _run_service_close_job(job_id, workers, orders):
     def log(message, level='dim'):
-        match = re.search(r"处理服务单\s+(\d+)/", str(message or ""))
-        if match:
+        _service_close_job_log(job_id, message, level)
+
+    worker_entries = workers if isinstance(workers, list) else [workers]
+    normalized_workers = []
+    for entry in worker_entries:
+        if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+            normalized_workers.append((entry[0], entry[1], entry[2]))
+        else:
+            slot_id = getattr(entry, "slot_id", "") or ""
+            normalized_workers.append((entry, slot_id, _query_slot_label(slot_id) if slot_id else "查询通道"))
+
+    started = time.time()
+    log(f"开始批量结单：共 {len(orders or [])} 个服务单，使用 {len(normalized_workers)} 个查询通道", "info")
+    try:
+        total = len(orders or [])
+        order_queue = queue.Queue()
+        for index, row in enumerate(orders or [], 1):
+            order_queue.put((index, row))
+        rows_by_index = [None] * total
+        worker_errors = []
+        result_lock = threading.Lock()
+
+        def mark_processed():
             with service_close_job_lock:
                 job = service_close_jobs.get(job_id)
                 if job:
-                    job['current'] = max(int(job.get('current') or 0), int(match.group(1)))
-        _service_close_job_log(job_id, message, level)
+                    job['current'] = min(int(job.get('total') or total), int(job.get('current') or 0) + 1)
 
-    started = time.time()
-    log(f"开始批量结单：共 {len(orders or [])} 个服务单", "info")
-    try:
-        success, result = worker.close_service_orders(orders, log)
-        result = result if isinstance(result, dict) else {"error": str(result), "results": []}
-        rows = result.get("results") or []
+        def run_worker(worker, slot_id, slot_label):
+            while True:
+                try:
+                    index, row = order_queue.get_nowait()
+                except queue.Empty:
+                    return
+                service_no = _clean_export_value(row.get("service_no") if isinstance(row, dict) else row)
+                try:
+                    log(f"{slot_label} 处理服务单 {index}/{total}：{service_no}", "info")
+
+                    def worker_log(message, level='dim'):
+                        text = str(message or "")
+                        if text.startswith("处理服务单 1/1"):
+                            return
+                        if text.startswith("CRM 服务单结单任务已加入队列"):
+                            return
+                        log(f"{slot_label} {text}", level)
+
+                    ok, result = worker.close_service_orders([row], worker_log)
+                    result = result if isinstance(result, dict) else {"error": str(result), "results": []}
+                    result_rows = result.get("results") or []
+                    result_row = result_rows[0] if result_rows else {
+                        "service_no": service_no,
+                        "success": False,
+                        "status": "failed",
+                        "message": result.get("error") or "服务单结单失败",
+                    }
+                    if not ok and result.get("error") and not result_row.get("message"):
+                        result_row["message"] = result.get("error")
+                    with result_lock:
+                        rows_by_index[index - 1] = result_row
+                except Exception as e:
+                    error = _brief_batch_error(e, 800)
+                    with result_lock:
+                        rows_by_index[index - 1] = {
+                            "service_no": service_no,
+                            "success": False,
+                            "status": "failed",
+                            "message": error,
+                        }
+                        worker_errors.append(error)
+                    log(f"{slot_label} {service_no} 结单出错：{error}", "error")
+                finally:
+                    mark_processed()
+                    order_queue.task_done()
+
+        threads = [
+            threading.Thread(target=run_worker, args=(worker, slot_id, slot_label), daemon=True)
+            for worker, slot_id, slot_label in normalized_workers
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        rows = [row for row in rows_by_index if row]
         closed_count = 0
         already_closed_count = 0
         failed_count = 0
@@ -4207,16 +4348,17 @@ def _run_service_close_job(job_id, worker, orders):
             else:
                 failed_count += 1
 
+        general_error = "; ".join(worker_errors[:3])
         with service_close_job_lock:
             job = service_close_jobs.get(job_id)
             if not job:
                 return
             job['running'] = False
             job['done'] = True
-            job['success'] = bool(success and failed_count == 0)
-            job['error'] = _brief_batch_error(result.get("error"), 800) if failed_count or result.get("error") else ''
+            job['success'] = bool(failed_count == 0 and not general_error)
+            job['error'] = _brief_batch_error(general_error, 800) if general_error else ''
             job['results'] = rows
-            job['current'] = len(rows)
+            job['current'] = total
             job['closed_count'] = closed_count
             job['already_closed_count'] = already_closed_count
             job['failed_count'] = failed_count
@@ -5263,10 +5405,11 @@ def _query_slot_cooldown_message(slot_id):
         reason = row.get('reason') or '上次查询失败'
         return f"{reason}，冷却 {remaining} 秒"
 
-def _select_idle_query_worker_desc(exclude_slot_ids=None):
+def _select_idle_query_workers_desc(exclude_slot_ids=None):
     exclude_slot_ids = set(exclude_slot_ids or [])
     with crm_pool.pool_lock:
         slots = list(crm_pool.query_slots)
+    workers = []
     logged_in_count = 0
     busy_count = 0
     skipped_cooldown = 0
@@ -5292,14 +5435,23 @@ def _select_idle_query_worker_desc(exclude_slot_ids=None):
             continue
         if _query_slot_has_running_service_close(slot_id):
             continue
-        return worker, slot_id, _query_slot_label(slot_id), ""
+        workers.append((worker, slot_id, _query_slot_label(slot_id)))
+    if workers:
+        return workers, ""
     if logged_in_count == 0:
         if busy_count:
-            return None, "", "", "所有已登录查询通道都在查询中，请稍后再试"
-        return None, "", "", "没有已登录的查询通道，请先到在线查询页登录 CRM"
+            return [], "所有已登录查询通道都在查询中，请稍后再试"
+        return [], "没有已登录的查询通道，请先到在线查询页登录 CRM"
     if skipped_cooldown:
-        return None, "", "", "已登录查询通道刚查询失败正在冷却，请稍后再试，或到在线查询页重新登录对应通道"
-    return None, "", "", "所有已登录查询通道都在查询中，请稍后再试"
+        return [], "已登录查询通道刚查询失败正在冷却，请稍后再试，或到在线查询页重新登录对应通道"
+    return [], "所有已登录查询通道都在查询中，请稍后再试"
+
+def _select_idle_query_worker_desc(exclude_slot_ids=None):
+    workers, error = _select_idle_query_workers_desc(exclude_slot_ids)
+    if workers:
+        worker, slot_id, slot_label = workers[0]
+        return worker, slot_id, slot_label, ""
+    return None, "", "", error
 
 def _request_slot_id(kind="query"):
     data = request.get_json(silent=True) or {}
@@ -6349,15 +6501,14 @@ def api_service_close_start():
             reason += f"，未找到结果 {len(missing)} 个"
         return jsonify({'success': False, 'error': reason, **prepared})
 
-    worker, slot_id, slot_label, error = _select_idle_query_worker_desc()
+    workers, error = _select_idle_query_workers_desc()
     if error:
         return jsonify({'success': False, 'error': error})
+    slot_id, slot_label = workers[0][1], workers[0][2]
+    slot_ids = [row[1] for row in workers]
+    slot_label_text = "、".join(row[2] for row in workers)
 
     with service_close_job_lock:
-        running_job_id = latest_service_close_job_by_slot.get(slot_id)
-        running_job = service_close_jobs.get(running_job_id)
-        if running_job and running_job.get('running'):
-            return jsonify({'success': False, 'error': f'{slot_label} 已有批量结单正在执行，请等待完成'})
         job = _empty_service_close_job(slot_id, orders)
         job.update({
             'running': True,
@@ -6373,16 +6524,19 @@ def api_service_close_start():
             _append_job_log_unlocked(job, f"已跳过未找到结果的条码 {len(job['missing'])} 个：{', '.join(job['missing'][:10])}", "warn", 1000)
         if job['no_service']:
             _append_job_log_unlocked(job, f"已跳过无服务单条码 {len(job['no_service'])} 个：{', '.join(job['no_service'][:10])}", "warn", 1000)
-        _append_job_log_unlocked(job, f"已分配查询通道：{slot_label}", "info", 1000)
+        job['slot_ids'] = slot_ids
+        _append_job_log_unlocked(job, f"已分配查询通道：{slot_label_text}", "info", 1000)
         service_close_jobs[job['job_id']] = job
-        latest_service_close_job_by_slot[slot_id] = job['job_id']
+        for selected_slot_id in slot_ids:
+            latest_service_close_job_by_slot[selected_slot_id] = job['job_id']
 
-    threading.Thread(target=_run_service_close_job, args=(job['job_id'], worker, orders), daemon=True).start()
+    threading.Thread(target=_run_service_close_job, args=(job['job_id'], workers, orders), daemon=True).start()
     return jsonify({
         'success': True,
         'job_id': job['job_id'],
         'slot_id': slot_id,
-        'slot_label': slot_label,
+        'slot_ids': slot_ids,
+        'slot_label': slot_label_text,
         'orders': orders,
         'total': len(orders),
         'missing': prepared.get("missing") or [],
@@ -6404,6 +6558,7 @@ def api_service_close_status():
             'success': True,
             'job_id': job.get('job_id') or '',
             'slot_id': job.get('slot_id') or slot_id,
+            'slot_ids': job.get('slot_ids') or [job.get('slot_id') or slot_id],
             'running': job['running'],
             'done': job['done'],
             'close_success': job['success'],
