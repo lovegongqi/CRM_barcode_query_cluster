@@ -1526,6 +1526,445 @@ class CRMSession:
             finally:
                 self.report_last_used_at = time.time()
 
+    def _click_visible_crm_text(self, text, exact=False):
+        try:
+            clicked = self.page.evaluate("""({ text, exact }) => {
+                const clean = (value) => (value || '').replace(/\\s+/g, '').trim();
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const wanted = clean(text);
+                const nodes = Array.from(document.querySelectorAll('a,button,[role="menuitem"],li,span,div'))
+                    .filter(visible)
+                    .map(node => {
+                        const nodeText = clean(node.innerText || node.textContent || '');
+                        if (!nodeText) return null;
+                        const matched = exact ? nodeText === wanted : nodeText.includes(wanted);
+                        if (!matched) return null;
+                        const clickable = node.closest('a,button,[role="menuitem"],li') || node;
+                        const tag = clickable.tagName || '';
+                        const href = clickable.getAttribute?.('href') || '';
+                        let score = 0;
+                        if (['A', 'BUTTON', 'LI'].includes(tag)) score += 4;
+                        if (/menu|nav|sidebar|item/i.test(clickable.className || '')) score += 2;
+                        if (/service|serve|serv|服务/i.test(href + ' ' + (clickable.className || ''))) score += 2;
+                        score -= Math.min(nodeText.length / 20, 5);
+                        return { node, clickable, score };
+                    })
+                    .filter(Boolean)
+                    .sort((a, b) => b.score - a.score);
+                const target = nodes[0]?.clickable || nodes[0]?.node;
+                if (!target) return false;
+                target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                target.click();
+                return true;
+            }""", {"text": text, "exact": bool(exact)})
+            if clicked:
+                time.sleep(1.2)
+            return bool(clicked)
+        except Exception:
+            return False
+
+    def _service_order_list_ready(self):
+        try:
+            body_text = self.page.inner_text("body", timeout=3000)
+            compact = re.sub(r"\s+", "", body_text or "")
+            return "服务单" in compact and "服务单号" in compact and any(
+                word in compact for word in ["批量结单", "更多筛选", "请输入单号", "客户名称"]
+            )
+        except Exception:
+            return False
+
+    def _service_order_list_url(self):
+        cfg = load_crm_config()
+        return f"{cfg['website']['url'].rstrip('/')}/#/workOrder/list"
+
+    def _open_service_order_list(self, emit):
+        emit("打开 CRM 服务单列表...")
+        if not self.is_alive():
+            if not self._ensure_browser():
+                return False, "浏览器未启动"
+        self._close_query_report_pages_locked()
+        target_url = self._service_order_list_url()
+        if "#/workOrder/list" not in (self.page.url or "") or not self._service_order_list_ready():
+            ok, message = self._goto(target_url, timeout=60000)
+            if not ok:
+                return False, message
+        for _ in range(15):
+            time.sleep(0.8)
+            if self._service_order_list_ready():
+                return True, ""
+        if not self._is_current_page_logged_in():
+            return False, "CRM 当前未登录，请先登录 CRM"
+        body = ""
+        try:
+            body = re.sub(r"\s+", " ", self.page.inner_text("body", timeout=2000))[:240]
+        except Exception:
+            pass
+        return False, f"未进入服务单列表，当前页面：{body or self.page.url}"
+
+    def _set_service_search_keyword(self, service_no):
+        return self.page.evaluate("""(serviceNo) => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const clean = (text) => (text || '').replace(/\\s+/g, '').trim();
+            const setValue = (input, value) => {
+                const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                input.focus();
+                if (setter) setter.call(input, value);
+                else input.value = value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+            let target = Array.from(document.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
+                .filter(visible)
+                .find(input => /请输入单号|服务单号|平台订单号|联系人|联系电话/.test(input.getAttribute('placeholder') || ''));
+            if (target) {
+                target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                setValue(target, serviceNo);
+                target.setAttribute('data-codex-service-search', '1');
+                return true;
+            }
+            const formItems = Array.from(document.querySelectorAll('.el-form-item, .ant-form-item, .form-group, tr, div'))
+                .filter(visible);
+            const scored = [];
+            for (const item of formItems) {
+                const text = clean(item.innerText || item.textContent || '');
+                const inputs = Array.from(item.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
+                    .filter(visible)
+                    .filter(input => !['hidden', 'checkbox', 'radio'].includes((input.getAttribute('type') || 'text').toLowerCase()));
+                for (const input of inputs) {
+                    const attrs = clean([
+                        input.getAttribute('placeholder') || '',
+                        input.getAttribute('name') || '',
+                        input.getAttribute('id') || '',
+                    ].join(' '));
+                    let score = 0;
+                    if (text.includes('服务单号')) score += 8;
+                    if (text.includes('服务单')) score += 5;
+                    if (attrs.includes('服务单号')) score += 8;
+                    if (attrs.includes('服务单')) score += 5;
+                    if (attrs.includes('搜索') || attrs.includes('查询') || attrs.includes('请输入')) score += 2;
+                    if (score) scored.push({ input, score });
+                }
+            }
+            target = scored.sort((a, b) => b.score - a.score)[0]?.input;
+            if (!target) {
+                target = Array.from(document.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
+                    .filter(visible)
+                    .filter(input => !['hidden', 'checkbox', 'radio'].includes((input.getAttribute('type') || 'text').toLowerCase()))
+                    .find(input => /服务单|搜索|查询|请输入/i.test([
+                        input.getAttribute('placeholder') || '',
+                        input.getAttribute('name') || '',
+                        input.getAttribute('id') || '',
+                    ].join(' ')));
+            }
+            if (!target) return false;
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
+            setValue(target, serviceNo);
+            target.setAttribute('data-codex-service-search', '1');
+            return true;
+        }""", str(service_no))
+
+    def _click_service_search_button(self):
+        clicked = self.page.evaluate("""() => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const input = document.querySelector('[data-codex-service-search="1"]')
+                || Array.from(document.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
+                    .filter(visible)
+                    .find(el => /请输入单号|服务单号|平台订单号|联系人|联系电话/.test(el.getAttribute('placeholder') || ''));
+            if (input) {
+                const roots = [];
+                for (let root = input; root && roots.length < 8; root = root.parentElement) roots.push(root);
+                for (const root of roots) {
+                    const buttons = Array.from(root.querySelectorAll('button:not([disabled]), a, .el-button'))
+                        .filter(visible);
+                    if (buttons.length) {
+                        buttons[buttons.length - 1].click();
+                        return true;
+                    }
+                }
+                const rect = input.getBoundingClientRect();
+                const near = Array.from(document.querySelectorAll('button:not([disabled]), a, .el-button'))
+                    .filter(visible)
+                    .map(btn => ({ btn, rect: btn.getBoundingClientRect() }))
+                    .filter(row => Math.abs(row.rect.top - rect.top) < 80 && row.rect.left > rect.left)
+                    .sort((a, b) => a.rect.left - b.rect.left)[0]?.btn;
+                if (near) {
+                    near.click();
+                    return true;
+                }
+            }
+            const buttons = Array.from(document.querySelectorAll('button:not([disabled]), a, .el-button'))
+                .filter(visible);
+            const target = buttons.find(btn => {
+                const text = (btn.innerText || btn.textContent || '').replace(/\\s+/g, '');
+                return text.includes('查询') || text.includes('搜索');
+            });
+            if (!target) return false;
+            target.click();
+            return true;
+        }""")
+        if clicked:
+            time.sleep(1.5)
+            return True
+        try:
+            self.page.keyboard.press("Enter")
+            time.sleep(1.5)
+            return True
+        except Exception:
+            return False
+
+    def _search_service_order(self, service_no):
+        if not self._set_service_search_keyword(service_no):
+            return False, "未找到服务单搜索输入框"
+        if not self._click_service_search_button():
+            return False, "未找到服务单查询按钮"
+        for _ in range(10):
+            time.sleep(0.8)
+            try:
+                body_text = self.page.inner_text("body", timeout=2000)
+                if service_no in body_text:
+                    return True, ""
+                if "暂无数据" in body_text or "无数据" in body_text:
+                    return False, "服务单列表没有搜索结果"
+            except Exception:
+                pass
+        return False, "服务单搜索后未找到结果"
+
+    def _open_service_order_detail(self, service_no):
+        pages_before = len(self.context.pages) if self.context else 0
+        clicked = self.page.evaluate("""(serviceNo) => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const clean = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+            const candidates = Array.from(document.querySelectorAll('a,button,span,td,div'))
+                .filter(visible)
+                .filter(el => clean(el.innerText || el.textContent || '') === serviceNo || clean(el.innerText || el.textContent || '').includes(serviceNo))
+                .map(el => {
+                    const clickable = el.closest('a,button') || el;
+                    const style = getComputedStyle(el);
+                    let score = 0;
+                    if (clickable.tagName === 'A' || clickable.tagName === 'BUTTON') score += 5;
+                    if (/rgb\\(.*(37|64|68|83|96|112|196)|blue/i.test(style.color || '')) score += 2;
+                    score -= Math.min(clean(el.innerText || el.textContent || '').length / 20, 5);
+                    return { el, clickable, score };
+                })
+                .sort((a, b) => b.score - a.score);
+            const target = candidates[0]?.clickable || candidates[0]?.el;
+            if (!target) return false;
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
+            target.click();
+            return true;
+        }""", str(service_no))
+        if not clicked:
+            return False, "未找到可点击的蓝色服务单号"
+        for _ in range(15):
+            time.sleep(0.8)
+            try:
+                if len(self.context.pages) > pages_before:
+                    self.page = self.context.pages[-1]
+                    self.page.bring_to_front()
+                body_text = self.page.inner_text("body", timeout=2000)
+                current_url = self.page.url or ""
+                compact = re.sub(r"\s+", "", body_text or "")
+                if "#/workOrder/edit/" in current_url:
+                    ready = self.page.evaluate("""(serviceNo) => {
+                        const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                        const clean = (text) => (text || '').replace(/\\s+/g, '').trim();
+                        const values = Array.from(document.querySelectorAll('input, textarea'))
+                            .filter(visible)
+                            .map(el => clean(el.value || el.innerText || el.textContent || ''));
+                        const labels = Array.from(document.querySelectorAll('.el-form-item__label, .ivu-form-item-label, .ant-form-item-label, label, td, th, div'))
+                            .filter(visible)
+                            .map(el => clean(el.innerText || el.textContent || ''));
+                        const hasServiceNo = values.includes(clean(serviceNo)) || clean(document.body.innerText || '').includes(clean(serviceNo));
+                        const hasCloseStatus = labels.some(text => text === '结单状态' || text.includes('结单状态'))
+                            && values.some(value => value === '已结单' || value === '未结单');
+                        return { hasServiceNo, hasCloseStatus };
+                    }""", str(service_no))
+                    if (ready or {}).get("hasServiceNo") and (ready or {}).get("hasCloseStatus"):
+                        return True, ""
+                if ("服务工单" in compact and "结单确认" in compact) or ("服务工单号" in compact and "结单状态" in compact):
+                    return True, ""
+            except Exception:
+                pass
+        return False, "点击服务单号后未进入服务单详情"
+
+    def _service_detail_closed_state(self):
+        try:
+            result = self.page.evaluate("""() => {
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const clean = (text) => (text || '').replace(/\\s+/g, '').trim();
+                const readFieldValue = (node) => {
+                    const checked = node.querySelector('input[type="radio"]:checked, input[type="checkbox"]:checked');
+                    if (checked) {
+                        const label = checked.closest('label, .el-radio, .ant-radio-wrapper') || checked.parentElement;
+                        const picked = clean((label && (label.innerText || label.textContent || '')) || checked.value || '');
+                        if (picked) return picked;
+                    }
+                    const selected = Array.from(node.querySelectorAll('.is-checked, .is-active, .active, .selected, [aria-checked="true"]'))
+                        .find(visible);
+                    if (selected) {
+                        const picked = clean(selected.innerText || selected.textContent || selected.getAttribute('aria-label') || '');
+                        if (picked) return picked;
+                    }
+                    const input = node.querySelector('input:not([type="hidden"]), textarea');
+                    if (input) return clean(input.value || input.innerText || input.textContent || '');
+                    const content = node.querySelector('.el-form-item__content, .ivu-form-item-content, .ant-form-item-control, td:last-child, .value');
+                    if (content) return clean(content.innerText || content.textContent || '');
+                    return '';
+                };
+                const readNearLabelValue = (label, item) => {
+                    const direct = readFieldValue(item);
+                    if (direct && direct !== '结单状态' && direct !== '是否结单') return direct;
+                    const labelRect = label.getBoundingClientRect();
+                    const candidates = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea'))
+                        .filter(visible)
+                        .map(el => ({ el, rect: el.getBoundingClientRect(), value: clean(el.value || el.innerText || el.textContent || '') }))
+                        .filter(row => row.value && Math.abs(row.rect.top - labelRect.top) < 60 && row.rect.left > labelRect.left)
+                        .sort((a, b) => (Math.abs(a.rect.top - labelRect.top) - Math.abs(b.rect.top - labelRect.top)) || (a.rect.left - b.rect.left));
+                    return candidates[0]?.value || direct || '';
+                };
+                const decide = (value, text) => {
+                    const raw = clean(value || '');
+                    const full = clean(text || '');
+                    const normalized = raw.replace('是否结单', '').replace('结单状态', '');
+                    if (normalized.includes('未结单') || normalized === '否') return { found: true, closed: false, value: normalized || full };
+                    if (normalized.includes('已结单') || normalized === '是') return { found: true, closed: true, value: normalized || full };
+                    if (full.includes('未结单') || /结单状态.{0,12}否/.test(full)) return { found: true, closed: false, value: normalized || full };
+                    if (full.includes('已结单') || /结单状态.{0,12}是/.test(full)) return { found: true, closed: true, value: normalized || full };
+                    return { found: false, closed: false, value: normalized || full };
+                };
+                const labelNodes = Array.from(document.querySelectorAll('.el-form-item__label, .ivu-form-item-label, .ant-form-item-label, label, td, th'))
+                    .filter(visible)
+                    .filter(el => {
+                        const text = clean(el.innerText || el.textContent || '');
+                        return text === '结单状态' || text === '是否结单' || text.includes('结单状态') || text.includes('是否结单');
+                    });
+                for (const label of labelNodes) {
+                    const item = label.closest('.el-form-item, .ivu-form-item, .ant-form-item, tr, .form-group') || label.parentElement;
+                    if (!item || !visible(item)) continue;
+                    const state = decide(readNearLabelValue(label, item), item.innerText || item.textContent || '');
+                    if (state.found) return { closed: state.closed, value: state.value };
+                }
+                const nodes = Array.from(document.querySelectorAll('.el-form-item, .ivu-form-item, .ant-form-item, .form-group, tr'))
+                    .filter(visible);
+                for (const node of nodes) {
+                    const text = clean(node.innerText || node.textContent || '');
+                    if (!text.includes('是否结单') && !text.includes('结单状态')) continue;
+                    const state = decide(readFieldValue(node), text);
+                    if (state.found) return { closed: state.closed, value: state.value };
+                }
+                const body = clean(document.body.innerText || '');
+                if (/(是否结单|结单状态).{0,12}(已结单|是)/.test(body) && !/(是否结单|结单状态).{0,12}(否|未结单)/.test(body)) {
+                    return { closed: true, value: '是' };
+                }
+                return { closed: false, value: '' };
+            }""")
+            return bool((result or {}).get("closed")), _clean_export_value((result or {}).get("value"))
+        except Exception:
+            return False, ""
+
+    def _close_current_service_order(self, log=None):
+        closed = False
+        value = ""
+        for _ in range(12):
+            closed, value = self._service_detail_closed_state()
+            if value:
+                break
+            time.sleep(0.5)
+        if log:
+            log(f"详情页结单状态：{value or '未识别'}", "dim")
+        if closed:
+            return True, "already_closed", value or "已结单"
+        if not (self._click_top_button("结单确认") or self._click_top_button("确认结单")):
+            return False, "failed", "未找到右上方结单确认按钮"
+        for _ in range(4):
+            time.sleep(0.8)
+            msg = self._visible_message()
+            if msg and any(key in msg for key in ["失败", "错误", "不能", "不可"]):
+                return False, "failed", msg
+            self._click_dialog_button("确定")
+            self._click_dialog_button("确认")
+        for _ in range(16):
+            time.sleep(0.8)
+            closed, value = self._service_detail_closed_state()
+            if closed:
+                return True, "closed", value or "已结单"
+            msg = self._visible_message()
+            if msg and any(key in msg for key in ["失败", "错误", "不能", "不可"]):
+                return False, "failed", msg
+        return False, "failed", "结单确认后未检测到是否结单=是"
+
+    def close_service_orders(self, service_orders, log=None):
+        def emit(message, level='info'):
+            if log:
+                log(message, level)
+
+        with self.lock:
+            if not self.is_alive():
+                emit("正在恢复 CRM 浏览器会话", "info")
+                if not self._ensure_browser():
+                    return False, {"error": "浏览器未启动，请先登录 CRM", "results": []}
+            if not self.logged_in and not self._is_current_page_logged_in():
+                return False, {"error": "CRM 当前未登录，请先登录 CRM", "results": []}
+            results = []
+            try:
+                ok, message = self._open_service_order_list(emit)
+                if not ok:
+                    return False, {"error": message, "results": results}
+                total = len(service_orders or [])
+                for index, row in enumerate(service_orders or [], 1):
+                    service_no = _clean_export_value(row.get("service_no") if isinstance(row, dict) else row)
+                    if not service_no:
+                        continue
+                    emit(f"处理服务单 {index}/{total}：{service_no}", "info")
+                    last_error = ""
+                    result_row = {
+                        "service_no": service_no,
+                        "success": False,
+                        "status": "failed",
+                        "message": "",
+                    }
+                    for attempt in range(1, 3):
+                        if attempt > 1:
+                            emit(f"{service_no} 准备重试 {attempt}/2", "warn")
+                        ok, message = self._open_service_order_list(emit)
+                        if not ok:
+                            last_error = message
+                            continue
+                        ok, message = self._search_service_order(service_no)
+                        if not ok:
+                            last_error = message
+                            continue
+                        ok, message = self._open_service_order_detail(service_no)
+                        if not ok:
+                            last_error = message
+                            continue
+                        ok, status, message = self._close_current_service_order(emit)
+                        if ok:
+                            result_row.update({
+                                "success": True,
+                                "status": status,
+                                "message": message or ("已结单" if status == "closed" else "原本已结单"),
+                            })
+                            level = "success" if status == "closed" else "dim"
+                            emit(f"{service_no} {'结单成功' if status == 'closed' else '已是结单状态'}", level)
+                            break
+                        last_error = message
+                    if not result_row["success"]:
+                        result_row["message"] = last_error or "服务单结单失败"
+                        emit(f"{service_no} 结单失败：{result_row['message']}", "error")
+                    results.append(result_row)
+                success_count = sum(1 for row in results if row.get("success"))
+                failed_count = len(results) - success_count
+                return failed_count == 0, {
+                    "results": results,
+                    "success_count": success_count,
+                    "failed_count": failed_count,
+                }
+            except Exception as e:
+                crash_message = self._handle_browser_exception(e)
+                return False, {"error": crash_message or str(e), "results": results}
+
     def _move_create_url(self):
         cfg = load_crm_config()
         base = cfg["website"]["url"].rstrip("/")
@@ -2184,22 +2623,42 @@ class CRMSession:
 
     def _click_top_button(self, text):
         try:
-            btn = self.page.get_by_text(text, exact=True).first
-            btn.click(timeout=5000)
+            clicked = self.page.evaluate("""(text) => {
+            const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const clean = (value) => (value || '').replace(/\\s+/g, '').trim();
+            const wanted = clean(text);
+            const candidates = Array.from(document.querySelectorAll('button:not([disabled]), a, [role="button"]:not([disabled])'))
+                .filter(visible)
+                .filter(el => clean(el.innerText || el.textContent || el.getAttribute('aria-label') || '').includes(wanted))
+                .map(el => {
+                    const rect = el.getBoundingClientRect();
+                    let score = 0;
+                    const value = clean(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
+                    if (value === wanted) score += 10;
+                    if (rect.top < 260) score += 4;
+                    if ((el.tagName || '').toUpperCase() === 'BUTTON') score += 3;
+                    if (/toolbar|top|header|operate|button/i.test(el.className || '')) score += 1;
+                    return { el, score };
+                })
+                .sort((a, b) => b.score - a.score);
+            const target = candidates[0]?.el;
+            if (!target) return false;
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
+            target.click();
+            return true;
+            }""", text)
+            if clicked:
+                time.sleep(1)
+                return True
+        except Exception:
+            pass
+        try:
+            btn = self.page.locator("button, a, [role='button']").filter(has_text=text).first
+            btn.click(timeout=5000, force=True)
             time.sleep(1)
             return True
         except Exception:
-            pass
-        return self.page.evaluate("""(text) => {
-            const nodes = Array.from(document.querySelectorAll('button, a, span'));
-            const target = nodes.find(el => {
-                const visible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                return visible && (el.innerText || el.textContent || '').trim().includes(text);
-            });
-            if (!target) return false;
-            target.click();
-            return true;
-        }""", text)
+            return False
 
     def _has_top_button(self, text):
         try:
@@ -2766,6 +3225,11 @@ class CRMWorker:
             log(f"CRM 查询任务已加入队列：{barcode}", "dim")
         return self._call("query_barcode", barcode, log, output_dir)
 
+    def close_service_orders(self, service_orders, log=None):
+        if log:
+            log(f"CRM 服务单结单任务已加入队列：{len(service_orders or [])} 个服务单", "dim")
+        return self._call("close_service_orders", service_orders, log)
+
     def close_idle_report_tabs(self, idle_seconds=REPORT_IDLE_TIMEOUT_SECONDS):
         return self._call("close_idle_report_tabs", idle_seconds)
 
@@ -3055,6 +3519,10 @@ transfer_job_lock = threading.Lock()
 transfer_jobs = {}
 latest_transfer_job_by_slot = {}
 
+service_close_job_lock = threading.Lock()
+service_close_jobs = {}
+latest_service_close_job_by_slot = {}
+
 summary_job_lock = threading.Lock()
 summary_jobs = {}
 latest_summary_job_by_slot = {}
@@ -3116,6 +3584,30 @@ def _empty_summary_job(slot_id=None):
         'finished_at': '',
     }
 
+def _empty_service_close_job(slot_id=None, orders=None):
+    orders = list(orders or [])
+    return {
+        'job_id': uuid.uuid4().hex,
+        'slot_id': slot_id or crm_pool.default_slot("query"),
+        'running': False,
+        'done': False,
+        'success': False,
+        'error': '',
+        'orders': orders,
+        'total': len(orders),
+        'current': 0,
+        'closed_count': 0,
+        'already_closed_count': 0,
+        'failed_count': 0,
+        'results': [],
+        'missing': [],
+        'no_service': [],
+        'log_seq': 0,
+        'logs': [],
+        'started_at': '',
+        'finished_at': '',
+    }
+
 def _empty_bulk_login_job(scope, slots=None):
     return {
         'job_id': uuid.uuid4().hex,
@@ -3148,6 +3640,7 @@ def _empty_bulk_login_job(scope, slots=None):
 batch_job = _empty_batch_job()
 transfer_job = _empty_transfer_job()
 summary_job = _empty_summary_job()
+service_close_job = _empty_service_close_job()
 
 def _normalize_retry_limit(value):
     try:
@@ -3164,6 +3657,17 @@ def _brief_batch_error(error, limit=240):
 
 def _safe_log_text(message):
     return str(message or '').replace('\xa0', ' ')
+
+def format_duration_seconds(seconds):
+    seconds = max(0, int(seconds or 0))
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours:
+        return f"{hours}小时{minutes}分{secs}秒"
+    if minutes:
+        return f"{minutes}分{secs}秒"
+    return f"{secs}秒"
 
 def _append_job_log_unlocked(job, message, level='dim', limit=300):
     job['log_seq'] = int(job.get('log_seq') or 0) + 1
@@ -3196,6 +3700,9 @@ def _summary_job_log(job_id, message, level='dim'):
 
 def _transfer_job_log(job_id, message, level='dim'):
     _job_log(transfer_job_lock, transfer_jobs, job_id, message, level, 500)
+
+def _service_close_job_log(job_id, message, level='dim'):
+    _job_log(service_close_job_lock, service_close_jobs, job_id, message, level, 1000)
 
 def _bulk_login_job_log(job_id, message, level='dim'):
     _job_log(bulk_login_job_lock, bulk_login_jobs, job_id, message, level, 1000)
@@ -3661,6 +4168,74 @@ def _run_transfer_job(job_id, worker, summary, distributor, transfer_type, remar
                 job['error'] = _brief_batch_error(e, 800)
                 job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log(f"移库出错：{e}", 'error')
+
+def _run_service_close_job(job_id, worker, orders):
+    def log(message, level='dim'):
+        match = re.search(r"处理服务单\s+(\d+)/", str(message or ""))
+        if match:
+            with service_close_job_lock:
+                job = service_close_jobs.get(job_id)
+                if job:
+                    job['current'] = max(int(job.get('current') or 0), int(match.group(1)))
+        _service_close_job_log(job_id, message, level)
+
+    started = time.time()
+    log(f"开始批量结单：共 {len(orders or [])} 个服务单", "info")
+    try:
+        success, result = worker.close_service_orders(orders, log)
+        result = result if isinstance(result, dict) else {"error": str(result), "results": []}
+        rows = result.get("results") or []
+        closed_count = 0
+        already_closed_count = 0
+        failed_count = 0
+        order_map = {
+            _clean_export_value(row.get("service_no")): row
+            for row in (orders or [])
+            if isinstance(row, dict)
+        }
+        for row in rows:
+            service_no = _clean_export_value(row.get("service_no"))
+            if not service_no:
+                continue
+            if row.get("success"):
+                if row.get("status") == "already_closed":
+                    already_closed_count += 1
+                else:
+                    closed_count += 1
+                _record_service_closed_for_barcodes(service_no, (order_map.get(service_no) or {}).get("barcodes") or [])
+            else:
+                failed_count += 1
+
+        with service_close_job_lock:
+            job = service_close_jobs.get(job_id)
+            if not job:
+                return
+            job['running'] = False
+            job['done'] = True
+            job['success'] = bool(success and failed_count == 0)
+            job['error'] = _brief_batch_error(result.get("error"), 800) if failed_count or result.get("error") else ''
+            job['results'] = rows
+            job['current'] = len(rows)
+            job['closed_count'] = closed_count
+            job['already_closed_count'] = already_closed_count
+            job['failed_count'] = failed_count
+            job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        elapsed = format_duration_seconds(time.time() - started)
+        if failed_count:
+            log(f"批量结单完成：新结单 {closed_count} 个，原本已结单 {already_closed_count} 个，失败 {failed_count} 个，总耗时 {elapsed}", "warn")
+        else:
+            log(f"批量结单完成：新结单 {closed_count} 个，原本已结单 {already_closed_count} 个，总耗时 {elapsed}", "success")
+    except Exception as e:
+        error = _brief_batch_error(e, 800)
+        with service_close_job_lock:
+            job = service_close_jobs.get(job_id)
+            if job:
+                job['running'] = False
+                job['done'] = True
+                job['success'] = False
+                job['error'] = error
+                job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log(f"批量结单出错：{error}", "error")
 
 def _batch_stop_requested(job_id, idx):
     with batch_job_lock:
@@ -4651,6 +5226,12 @@ def _query_slot_has_running_batch(slot_id):
         job = batch_jobs.get(job_id)
         return bool(job and job.get('running'))
 
+def _query_slot_has_running_service_close(slot_id):
+    with service_close_job_lock:
+        job_id = latest_service_close_job_by_slot.get(slot_id)
+        job = service_close_jobs.get(job_id)
+        return bool(job and job.get('running'))
+
 query_slot_cooldown_lock = threading.Lock()
 query_slot_cooldowns = {}
 
@@ -4708,6 +5289,8 @@ def _select_idle_query_worker_desc(exclude_slot_ids=None):
             continue
         if _query_slot_has_running_batch(slot_id):
             continue
+        if _query_slot_has_running_service_close(slot_id):
+            continue
         return worker, slot_id, _query_slot_label(slot_id), ""
     if logged_in_count == 0:
         if busy_count:
@@ -4762,6 +5345,100 @@ def _apply_dealer_to_fields(fields, dealer):
     if isinstance(fields.get('sr10'), dict):
         fields['sr10']['dealername1'] = dealer
     return fields
+
+def _service_rows(fields):
+    sub = (fields or {}).get('sr2')
+    if isinstance(sub, list):
+        return [row for row in sub if isinstance(row, dict)]
+    if isinstance(sub, dict):
+        return [sub]
+    return []
+
+def _parse_service_date(value):
+    text = _clean_export_value(value)
+    if not text:
+        return 0
+    normalized = (
+        text.replace("年", "-")
+        .replace("月", "-")
+        .replace("日", "")
+        .replace("/", "-")
+        .replace(".", "-")
+    )
+    match = re.search(r"(20\d{2})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?", normalized)
+    if not match:
+        return 0
+    year, month, day, hour, minute, second = match.groups()
+    try:
+        return datetime(
+            int(year),
+            int(month),
+            int(day),
+            int(hour or 0),
+            int(minute or 0),
+            int(second or 0),
+        ).timestamp()
+    except Exception:
+        return 0
+
+def _parse_service_date_from_no(service_no):
+    text = _clean_export_value(service_no)
+    match = re.search(r"(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])", text)
+    if not match:
+        return 0
+    try:
+        year, month, day = match.groups()
+        return datetime(int(year), int(month), int(day)).timestamp()
+    except Exception:
+        return 0
+
+def _latest_service_record(fields):
+    latest = None
+    for index, row in enumerate(_service_rows(fields)):
+        service_no = _clean_export_value(row.get("servno1"))
+        if not service_no:
+            continue
+        score = _parse_service_date(row.get("servdate1")) or _parse_service_date_from_no(service_no) or (index + 1)
+        if latest is None or score >= latest["score"]:
+            latest = {"service_no": service_no, "row": row, "score": score}
+    return latest
+
+def _service_row_is_closed(row):
+    text = _clean_export_value((row or {}).get("newisclosed1"))
+    return text in {"已结单", "是", "已关闭", "关闭"}
+
+def _apply_service_close_overrides(fields, info):
+    closed_map = (info or {}).get("closedServiceNos") or {}
+    if not isinstance(closed_map, dict) or not closed_map:
+        return fields
+    closed_set = {_clean_export_value(key) for key in closed_map if _clean_export_value(key)}
+    if not closed_set:
+        return fields
+    for row in _service_rows(fields):
+        if _clean_export_value(row.get("servno1")) in closed_set:
+            row["newisclosed1"] = "已结单"
+    return fields
+
+def _record_service_closed_for_barcodes(service_no, barcodes):
+    service_no = _clean_export_value(service_no)
+    if not service_no:
+        return 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data = load_data()
+    changed = 0
+    for barcode in normalize_input_barcodes(barcodes):
+        info = data.get(barcode, {'remark': '', 'archived': False, 'archiveTime': '', 'archivedBy': ''})
+        closed_map = info.get("closedServiceNos")
+        if not isinstance(closed_map, dict):
+            closed_map = {}
+        closed_map[service_no] = now
+        info["closedServiceNos"] = closed_map
+        info["serviceCloseUpdatedAt"] = now
+        data[barcode] = info
+        changed += 1
+    if changed:
+        save_data(data)
+    return changed
 
 def _barcode_html_path(barcode):
     filename = barcode + '.html'
@@ -4881,6 +5558,38 @@ def build_transfer_summary(selected_barcodes, transfer_type="移出", distributo
         'incomplete': incomplete,
         'blocked': blocked,
         'excluded': excluded,
+    }
+
+def selected_latest_service_orders(selected_barcodes):
+    wanted = normalize_input_barcodes(selected_barcodes)
+    all_items = {item['barcode']: item for item in scan_barcodes()}
+    service_orders = OrderedDict()
+    missing = []
+    no_service = []
+    for barcode in wanted:
+        item = all_items.get(barcode)
+        if not item:
+            missing.append(barcode)
+            continue
+        latest = _latest_service_record(item.get('fields') or {})
+        if not latest or not latest.get("service_no"):
+            no_service.append(barcode)
+            continue
+        service_no = latest["service_no"]
+        row = latest.get("row") or {}
+        if service_no not in service_orders:
+            service_orders[service_no] = {
+                "service_no": service_no,
+                "barcodes": [],
+                "local_closed": _service_row_is_closed(row),
+            }
+        service_orders[service_no]["barcodes"].append(barcode)
+        if not _service_row_is_closed(row):
+            service_orders[service_no]["local_closed"] = False
+    return {
+        "orders": list(service_orders.values()),
+        "missing": missing,
+        "no_service": no_service,
     }
 
 def queried_dealer_history():
@@ -5272,6 +5981,8 @@ def required_permission_for_path(path):
         return "account-self"
     if path.startswith("/api/barcodes") or path.startswith("/api/filter-options") or path.startswith("/api/export"):
         return "results"
+    if path.startswith("/api/service-close"):
+        return "results"
     if path == "/api/crm/credentials":
         return "account-self"
     if path.startswith("/api/crm"):
@@ -5365,6 +6076,7 @@ def scan_barcodes():
         fields = extract_fields_from_html(filepath)
         info = get_barcode_info(barcode)
         fields = _apply_dealer_to_fields(fields, info.get('currentDealerOverride', ''))
+        fields = _apply_service_close_overrides(fields, info)
         barcodes.append({
             'barcode': barcode,
             'filename': filename,
@@ -5403,6 +6115,7 @@ def scan_archived():
             time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
             fields = extract_fields_from_html(filepath)
             info = get_barcode_info(barcode)
+            fields = _apply_service_close_overrides(fields, info)
             barcodes.append({
                 'barcode': barcode,
                 'filename': filename,
@@ -5484,6 +6197,7 @@ def api_get_barcode_detail(barcode):
     fields = extract_fields_from_html(filepath)
     info = get_barcode_info(barcode)
     fields = _apply_dealer_to_fields(fields, info.get('currentDealerOverride', ''))
+    fields = _apply_service_close_overrides(fields, info)
     
     mtime = os.path.getmtime(filepath)
     time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
@@ -5571,6 +6285,99 @@ def api_export_xlsx():
         'message': f'已导出 {len(selected_barcodes)} 条记录',
         'filename': 'export_result.xlsx'
     })
+
+@app.route("/api/service-close/start", methods=["POST"])
+def api_service_close_start():
+    data = request.get_json() or {}
+    barcodes = normalize_input_barcodes(data.get("barcodes") or [])
+    if not barcodes:
+        return jsonify({'success': False, 'error': '请先选择要结单的条码'})
+
+    prepared = selected_latest_service_orders(barcodes)
+    orders = prepared.get("orders") or []
+    if not orders:
+        no_service = prepared.get("no_service") or []
+        missing = prepared.get("missing") or []
+        reason = "所选条码没有可结单的服务单号"
+        if no_service:
+            reason += f"，无服务单 {len(no_service)} 个"
+        if missing:
+            reason += f"，未找到结果 {len(missing)} 个"
+        return jsonify({'success': False, 'error': reason, **prepared})
+
+    worker, slot_id, slot_label, error = _select_idle_query_worker_desc()
+    if error:
+        return jsonify({'success': False, 'error': error})
+
+    with service_close_job_lock:
+        running_job_id = latest_service_close_job_by_slot.get(slot_id)
+        running_job = service_close_jobs.get(running_job_id)
+        if running_job and running_job.get('running'):
+            return jsonify({'success': False, 'error': f'{slot_label} 已有批量结单正在执行，请等待完成'})
+        job = _empty_service_close_job(slot_id, orders)
+        job.update({
+            'running': True,
+            'done': False,
+            'success': False,
+            'error': '',
+            'missing': prepared.get("missing") or [],
+            'no_service': prepared.get("no_service") or [],
+            'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'finished_at': '',
+        })
+        if job['missing']:
+            _append_job_log_unlocked(job, f"已跳过未找到结果的条码 {len(job['missing'])} 个：{', '.join(job['missing'][:10])}", "warn", 1000)
+        if job['no_service']:
+            _append_job_log_unlocked(job, f"已跳过无服务单条码 {len(job['no_service'])} 个：{', '.join(job['no_service'][:10])}", "warn", 1000)
+        _append_job_log_unlocked(job, f"已分配查询通道：{slot_label}", "info", 1000)
+        service_close_jobs[job['job_id']] = job
+        latest_service_close_job_by_slot[slot_id] = job['job_id']
+
+    threading.Thread(target=_run_service_close_job, args=(job['job_id'], worker, orders), daemon=True).start()
+    return jsonify({
+        'success': True,
+        'job_id': job['job_id'],
+        'slot_id': slot_id,
+        'slot_label': slot_label,
+        'orders': orders,
+        'total': len(orders),
+        'missing': prepared.get("missing") or [],
+        'no_service': prepared.get("no_service") or [],
+        'message': f'批量结单已开始，共 {len(orders)} 个服务单',
+    })
+
+@app.route("/api/service-close/status", methods=["GET"])
+def api_service_close_status():
+    try:
+        since = int(request.args.get('since') or 0)
+    except (TypeError, ValueError):
+        since = 0
+    slot_id = crm_pool.normalize_slot(request.args.get("slot_id"), "query")
+    job_id = request.args.get("job_id") or _latest_job_id(latest_service_close_job_by_slot, slot_id)
+    with service_close_job_lock:
+        job = service_close_jobs.get(job_id) or _empty_service_close_job(slot_id)
+        return jsonify({
+            'success': True,
+            'job_id': job.get('job_id') or '',
+            'slot_id': job.get('slot_id') or slot_id,
+            'running': job['running'],
+            'done': job['done'],
+            'close_success': job['success'],
+            'error': job['error'],
+            'total': job['total'],
+            'current': job['current'],
+            'closed_count': job.get('closed_count') or 0,
+            'already_closed_count': job.get('already_closed_count') or 0,
+            'failed_count': job.get('failed_count') or 0,
+            'orders': job.get('orders') or [],
+            'results': job.get('results') or [],
+            'missing': job.get('missing') or [],
+            'no_service': job.get('no_service') or [],
+            'logs': _job_logs_since(job, since),
+            'log_seq': job.get('log_seq') or 0,
+            'started_at': job['started_at'],
+            'finished_at': job['finished_at'],
+        })
 
 @app.route("/api/transfer/summary", methods=["POST"])
 def api_transfer_summary():

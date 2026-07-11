@@ -202,6 +202,8 @@
         .btn-export:hover { background: #e06b0c; }
         .btn-transfer { background: #0f766e; color: #fff; }
         .btn-transfer:hover { background: #115e59; }
+        .btn-service-close { background: #7c3aed; color: #fff; }
+        .btn-service-close:hover { background: #6d28d9; }
         .btn-clear { background: #6c757d; color: #fff; }
         .btn-clear:hover { background: #5a6268; }
         .btn.copied { background: #28a745 !important; }
@@ -673,6 +675,8 @@
         }
         .btn-transfer { background: #0f766e; }
         .btn-transfer:hover { background: #115e59; }
+        .btn-service-close { background: #7c3aed; }
+        .btn-service-close:hover { background: #6d28d9; }
         .btn-export { background: var(--warn); }
         .btn-export:hover { background: #b45309; }
         .btn-clear, .btn-q-danger, .delete-btn { background: var(--danger) !important; }
@@ -1233,6 +1237,7 @@
                     <button class="btn btn-copy" onclick="copyAllBarcodes()">复制全部</button>
                     <button class="btn btn-export" onclick="exportXlsx()">导出 XLSX</button>
                     <button class="btn btn-transfer" onclick="goSelectedTransfer()">选中条码移库</button>
+                    <button class="btn btn-service-close" id="serviceCloseBtn" onclick="batchCloseServiceOrders()">批量结单</button>
                     <button class="btn btn-secondary-soft" onclick="clearAllFilters()">清空筛选</button>
                 </div>
             </div>
@@ -1318,6 +1323,11 @@
         var selectedBarcodes = new Set();
         var filterConfigs = [];
         var activeFilters = {};
+        let serviceCloseTimer = null;
+        let serviceCloseJobId = '';
+        let serviceCloseSlotId = '';
+        let lastServiceCloseLogSeq = 0;
+        let serviceCloseStartAtMs = 0;
 
         function showToast(msg) {
             const t = document.getElementById('toast');
@@ -1939,6 +1949,111 @@
             const transferType = uniqueTypes[0] || '移出';
             const transferDistributor = hasMissingDistributor ? '' : (uniqueDistributors[0] || '');
             chooseTransferSlotAndGo({barcodes, transferType, transferDistributor});
+        }
+
+        function serviceCloseLog(message, level='dim', time='') {
+            const area = document.getElementById('transferLogMain');
+            area.style.display = 'block';
+            const line = document.createElement('div');
+            line.className = level;
+            line.textContent = `[${time || new Date().toLocaleTimeString()}] ${message}`;
+            area.appendChild(line);
+            while (area.children.length > 1000) area.removeChild(area.firstChild);
+            area.scrollTop = area.scrollHeight;
+            if (window.globalLogAppend) window.globalLogAppend(message, level, time || '');
+        }
+
+        function appendServiceCloseLogs(logs) {
+            if (!logs || logs.length === 0) return;
+            logs.forEach(row => {
+                serviceCloseLog(row.message || '', row.level || 'dim', row.time || '');
+                lastServiceCloseLogSeq = Math.max(lastServiceCloseLogSeq, Number(row.id || 0));
+            });
+        }
+
+        async function pollServiceCloseStatus() {
+            if (!serviceCloseJobId) return true;
+            const url = `/api/service-close/status?job_id=${encodeURIComponent(serviceCloseJobId)}&slot_id=${encodeURIComponent(serviceCloseSlotId || '')}&since=${encodeURIComponent(lastServiceCloseLogSeq)}`;
+            const data = await fetch(url).then(r => r.json());
+            appendServiceCloseLogs(data.logs || []);
+            if (!data.running) {
+                if (serviceCloseTimer) clearInterval(serviceCloseTimer);
+                serviceCloseTimer = null;
+                const btn = document.getElementById('serviceCloseBtn');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '批量结单';
+                }
+                loadAllData(false);
+                if (serviceCloseStartAtMs) {
+                    serviceCloseLog(`批量结单总耗时：${formatDuration((Date.now() - serviceCloseStartAtMs) / 1000)}`, data.close_success ? 'success' : 'warn');
+                }
+                if (data.close_success) {
+                    showToast(`批量结单完成，新结单 ${data.closed_count || 0} 个，原本已结单 ${data.already_closed_count || 0} 个`);
+                } else if (data.error) {
+                    showToast(`批量结单失败：${data.error}`);
+                } else {
+                    showToast(`批量结单完成，失败 ${data.failed_count || 0} 个`);
+                }
+                return true;
+            }
+            return false;
+        }
+
+        async function batchCloseServiceOrders() {
+            const barcodes = getSelectedBarcodeArray();
+            if (barcodes.length === 0) { showToast('请先选择要结单的条码'); return; }
+            if (!confirm(`确定对选中的 ${barcodes.length} 个条码执行批量结单？\n同一个服务单号只会结单一次。`)) return;
+            const btn = document.getElementById('serviceCloseBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '结单中...';
+            }
+            const area = document.getElementById('transferLogMain');
+            area.style.display = 'block';
+            area.innerHTML = '';
+            lastServiceCloseLogSeq = 0;
+            serviceCloseJobId = '';
+            serviceCloseSlotId = '';
+            serviceCloseStartAtMs = Date.now();
+            serviceCloseLog(`提交批量结单任务：${barcodes.length} 个条码`, 'info');
+            try {
+                const data = await fetch('/api/service-close/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({barcodes})
+                }).then(r => r.json());
+                if (!data.success) {
+                    serviceCloseLog(data.error || '批量结单启动失败', 'error');
+                    showToast(data.error || '批量结单启动失败');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = '批量结单';
+                    }
+                    return;
+                }
+                serviceCloseJobId = data.job_id || '';
+                serviceCloseSlotId = data.slot_id || '';
+                serviceCloseLog(`${data.message || '批量结单已开始'}，使用 ${data.slot_label || '查询通道'}`, 'success');
+                if ((data.no_service || []).length) {
+                    serviceCloseLog(`已跳过无服务单条码 ${data.no_service.length} 个`, 'warn');
+                }
+                if ((data.missing || []).length) {
+                    serviceCloseLog(`已跳过未找到结果条码 ${data.missing.length} 个`, 'warn');
+                }
+                if (serviceCloseTimer) clearInterval(serviceCloseTimer);
+                serviceCloseTimer = setInterval(() => {
+                    pollServiceCloseStatus().catch(e => serviceCloseLog(`读取结单状态失败：${e.message || e}`, 'error'));
+                }, 1200);
+                pollServiceCloseStatus().catch(e => serviceCloseLog(`读取结单状态失败：${e.message || e}`, 'error'));
+            } catch (e) {
+                serviceCloseLog(`批量结单出错：${e.message || e}`, 'error');
+                showToast('批量结单出错');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '批量结单';
+                }
+            }
         }
 
         function showDetail(barcode) {
