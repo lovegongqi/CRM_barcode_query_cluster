@@ -1667,41 +1667,57 @@ class CRMSession:
     def _click_service_search_button(self):
         clicked = self.page.evaluate("""() => {
             const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+            const clean = (text) => (text || '').replace(/\\s+/g, '').trim();
             const input = document.querySelector('[data-codex-service-search="1"]')
                 || Array.from(document.querySelectorAll('input:not([disabled]), textarea:not([disabled])'))
                     .filter(visible)
                     .find(el => /请输入单号|服务单号|平台订单号|联系人|联系电话/.test(el.getAttribute('placeholder') || ''));
-            if (input) {
-                const roots = [];
-                for (let root = input; root && roots.length < 8; root = root.parentElement) roots.push(root);
-                for (const root of roots) {
-                    const buttons = Array.from(root.querySelectorAll('button:not([disabled]), a, .el-button'))
-                        .filter(visible);
-                    if (buttons.length) {
-                        buttons[buttons.length - 1].click();
-                        return true;
-                    }
-                }
-                const rect = input.getBoundingClientRect();
-                const near = Array.from(document.querySelectorAll('button:not([disabled]), a, .el-button'))
-                    .filter(visible)
-                    .map(btn => ({ btn, rect: btn.getBoundingClientRect() }))
-                    .filter(row => Math.abs(row.rect.top - rect.top) < 80 && row.rect.left > rect.left)
-                    .sort((a, b) => a.rect.left - b.rect.left)[0]?.btn;
-                if (near) {
-                    near.click();
-                    return true;
-                }
-            }
+            const buttonText = (btn) => clean([
+                btn.innerText || btn.textContent || '',
+                btn.getAttribute('title') || '',
+                btn.getAttribute('aria-label') || '',
+                btn.getAttribute('class') || '',
+            ].join(' '));
+            const badButton = /重置|清空|更多|新增|删除|导出|导入|下载|返回|取消/;
+            const goodButton = /查询|搜索|search|query/i;
             const buttons = Array.from(document.querySelectorAll('button:not([disabled]), a, .el-button'))
-                .filter(visible);
-            const target = buttons.find(btn => {
-                const text = (btn.innerText || btn.textContent || '').replace(/\\s+/g, '');
-                return text.includes('查询') || text.includes('搜索');
-            });
-            if (!target) return false;
-            target.click();
-            return true;
+                .filter(visible)
+                .map(btn => {
+                    const text = buttonText(btn);
+                    const rect = btn.getBoundingClientRect();
+                    const inputRect = input ? input.getBoundingClientRect() : null;
+                    let score = 0;
+                    if (goodButton.test(text)) score += 100;
+                    if (badButton.test(text)) score -= 100;
+                    if (inputRect) {
+                        const sameRow = Math.abs(rect.top - inputRect.top) < 90;
+                        if (sameRow) score += 30;
+                        if (sameRow && rect.left > inputRect.left) score += 20;
+                        const distance = Math.abs(rect.top - inputRect.top) + Math.abs(rect.left - inputRect.right);
+                        score -= Math.min(distance / 80, 30);
+                        for (let root = input; root; root = root.parentElement) {
+                            if (root === btn || root.contains(btn)) {
+                                score += 10;
+                                break;
+                            }
+                        }
+                    }
+                    return { btn, text, score };
+                })
+                .sort((a, b) => b.score - a.score);
+            const target = buttons.find(row => row.score > 0)?.btn;
+            if (target) {
+                target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                target.click();
+                return true;
+            }
+            if (input) {
+                input.focus();
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+                return true;
+            }
+            return false;
         }""")
         if clicked:
             time.sleep(1.5)
@@ -1713,21 +1729,48 @@ class CRMSession:
         except Exception:
             return False
 
+    def _service_order_search_snapshot(self, service_no):
+        try:
+            return self.page.evaluate("""(serviceNo) => {
+                const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                const text = document.body ? (document.body.innerText || '') : '';
+                const compact = text.replace(/\\s+/g, '');
+                const loading = Array.from(document.querySelectorAll(
+                    '.el-loading-mask,.el-loading-spinner,.ivu-spin,.ant-spin,.ant-spin-spinning,[aria-busy="true"],[class*="loading"],[class*="Loading"],img'
+                )).some(el => {
+                    if (!visible(el)) return false;
+                    const src = el.getAttribute('src') || '';
+                    const cls = el.getAttribute('class') || '';
+                    const alt = el.getAttribute('alt') || '';
+                    return /wait|loading|load/i.test(src + ' ' + cls + ' ' + alt);
+                });
+                const noData = /暂无数据|无数据|暂无记录|没有数据|NoData/i.test(compact);
+                const found = compact.includes(String(serviceNo).replace(/\\s+/g, ''));
+                return { found, loading, noData };
+            }""", str(service_no))
+        except Exception:
+            return {}
+
     def _search_service_order(self, service_no):
         if not self._set_service_search_keyword(service_no):
             return False, "未找到服务单搜索输入框"
         if not self._click_service_search_button():
             return False, "未找到服务单查询按钮"
-        for _ in range(10):
+        stable_empty = 0
+        for _ in range(35):
             time.sleep(0.8)
-            try:
-                body_text = self.page.inner_text("body", timeout=2000)
-                if service_no in body_text:
-                    return True, ""
-                if "暂无数据" in body_text or "无数据" in body_text:
+            snapshot = self._service_order_search_snapshot(service_no)
+            if snapshot.get("found"):
+                return True, ""
+            if snapshot.get("loading"):
+                stable_empty = 0
+                continue
+            if snapshot.get("noData"):
+                stable_empty += 1
+                if stable_empty >= 4:
                     return False, "服务单列表没有搜索结果"
-            except Exception:
-                pass
+            else:
+                stable_empty = 0
         return False, "服务单搜索后未找到结果"
 
     def _open_service_order_detail(self, service_no):
