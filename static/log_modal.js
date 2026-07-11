@@ -1,5 +1,5 @@
 (function () {
-    const STORAGE_KEY = 'crm_global_log_history';
+    const STORAGE_KEY_PREFIX = 'crm_page_log_history';
     const MAX_HISTORY = 8000;
     let button = null;
     let overlay = null;
@@ -7,6 +7,16 @@
     let historyLoaded = false;
     let logHistory = [];
     let seenKeys = new Set();
+
+    function currentLogScope() {
+        const path = window.location.pathname || '/';
+        if (path === '/' || path === '/index.html') return '/';
+        return path.replace(/\/+$/, '') || '/';
+    }
+
+    function storageKey() {
+        return `${STORAGE_KEY_PREFIX}:${currentLogScope()}`;
+    }
 
     function ensureLogModal() {
         if (button && overlay && body) return;
@@ -68,7 +78,7 @@
         if (historyLoaded) return;
         historyLoaded = true;
         try {
-            const rows = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '[]');
+            const rows = JSON.parse(sessionStorage.getItem(storageKey()) || '[]');
             logHistory = Array.isArray(rows) ? rows.slice(-MAX_HISTORY) : [];
         } catch (e) {
             logHistory = [];
@@ -78,7 +88,7 @@
 
     function persistHistory() {
         try {
-            sessionStorage.setItem(STORAGE_KEY, JSON.stringify(logHistory.slice(-MAX_HISTORY)));
+            sessionStorage.setItem(storageKey(), JSON.stringify(logHistory.slice(-MAX_HISTORY)));
         } catch (e) {}
     }
 
