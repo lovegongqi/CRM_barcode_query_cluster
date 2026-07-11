@@ -1794,20 +1794,17 @@ class CRMSession:
                 const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
                 const clean = (text) => (text || '').replace(/\\s+/g, '').trim();
                 const readFieldValue = (node) => {
-                    const checked = node.querySelector('input[type="radio"]:checked, input[type="checkbox"]:checked');
-                    if (checked) {
-                        const label = checked.closest('label, .el-radio, .ant-radio-wrapper') || checked.parentElement;
-                        const picked = clean((label && (label.innerText || label.textContent || '')) || checked.value || '');
-                        if (picked) return picked;
-                    }
-                    const selected = Array.from(node.querySelectorAll('.is-checked, .is-active, .active, .selected, [aria-checked="true"]'))
-                        .find(visible);
-                    if (selected) {
-                        const picked = clean(selected.innerText || selected.textContent || selected.getAttribute('aria-label') || '');
-                        if (picked) return picked;
-                    }
                     const input = node.querySelector('input:not([type="hidden"]), textarea');
-                    if (input) return clean(input.value || input.innerText || input.textContent || '');
+                    if (input) {
+                        return clean(
+                            input.value
+                            || input.getAttribute('value')
+                            || input.getAttribute('placeholder')
+                            || input.innerText
+                            || input.textContent
+                            || ''
+                        );
+                    }
                     const content = node.querySelector('.el-form-item__content, .ivu-form-item-content, .ant-form-item-control, td:last-child, .value');
                     if (content) return clean(content.innerText || content.textContent || '');
                     return '';
@@ -1826,18 +1823,18 @@ class CRMSession:
                 const decide = (value, text) => {
                     const raw = clean(value || '');
                     const full = clean(text || '');
-                    const normalized = raw.replace('是否结单', '').replace('结单状态', '');
-                    if (normalized.includes('未结单') || normalized === '否') return { found: true, closed: false, value: normalized || full };
-                    if (normalized.includes('已结单') || normalized === '是') return { found: true, closed: true, value: normalized || full };
-                    if (full.includes('未结单') || /结单状态.{0,12}否/.test(full)) return { found: true, closed: false, value: normalized || full };
-                    if (full.includes('已结单') || /结单状态.{0,12}是/.test(full)) return { found: true, closed: true, value: normalized || full };
+                    const normalized = raw.replace('结单状态', '');
+                    if (normalized.includes('未结单')) return { found: true, closed: false, value: '未结单' };
+                    if (normalized.includes('已结单')) return { found: true, closed: true, value: '已结单' };
+                    if (full.includes('未结单')) return { found: true, closed: false, value: '未结单' };
+                    if (full.includes('已结单')) return { found: true, closed: true, value: '已结单' };
                     return { found: false, closed: false, value: normalized || full };
                 };
                 const labelNodes = Array.from(document.querySelectorAll('.el-form-item__label, .ivu-form-item-label, .ant-form-item-label, label, td, th'))
                     .filter(visible)
                     .filter(el => {
                         const text = clean(el.innerText || el.textContent || '');
-                        return text === '结单状态' || text === '是否结单' || text.includes('结单状态') || text.includes('是否结单');
+                        return text === '结单状态';
                     });
                 for (const label of labelNodes) {
                     const item = label.closest('.el-form-item, .ivu-form-item, .ant-form-item, tr, .form-group') || label.parentElement;
@@ -1845,17 +1842,15 @@ class CRMSession:
                     const state = decide(readNearLabelValue(label, item), item.innerText || item.textContent || '');
                     if (state.found) return { closed: state.closed, value: state.value };
                 }
-                const nodes = Array.from(document.querySelectorAll('.el-form-item, .ivu-form-item, .ant-form-item, .form-group, tr'))
+                const nodes = Array.from(document.querySelectorAll('.el-form-item, .ivu-form-item, .ant-form-item, tr'))
                     .filter(visible);
                 for (const node of nodes) {
                     const text = clean(node.innerText || node.textContent || '');
-                    if (!text.includes('是否结单') && !text.includes('结单状态')) continue;
+                    const label = node.querySelector('.el-form-item__label, .ivu-form-item-label, .ant-form-item-label, label, td:first-child, th:first-child');
+                    const labelText = clean((label && (label.innerText || label.textContent || '')) || '');
+                    if (labelText !== '结单状态' && text !== '结单状态已结单' && text !== '结单状态未结单') continue;
                     const state = decide(readFieldValue(node), text);
                     if (state.found) return { closed: state.closed, value: state.value };
-                }
-                const body = clean(document.body.innerText || '');
-                if (/(是否结单|结单状态).{0,12}(已结单|是)/.test(body) && !/(是否结单|结单状态).{0,12}(否|未结单)/.test(body)) {
-                    return { closed: true, value: '是' };
                 }
                 return { closed: false, value: '' };
             }""")
@@ -5601,7 +5596,7 @@ def _latest_service_record(fields):
 
 def _service_row_is_closed(row):
     text = _clean_export_value((row or {}).get("newisclosed1"))
-    return text in {"已结单", "是", "已关闭", "关闭"}
+    return text == "已结单"
 
 def _apply_service_close_overrides(fields, info):
     closed_map = (info or {}).get("closedServiceNos") or {}
