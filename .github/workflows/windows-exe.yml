@@ -51,7 +51,11 @@ jobs:
       - name: Zip package
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\CRM条码查询\*" -DestinationPath "CRM-barcode-query-Windows-${{ matrix.arch }}.zip" -Force
+          if (!(Test-Path "dist\CRMBarcodeQuery")) {
+            Get-ChildItem -Recurse dist | Select-Object FullName
+            throw "Windows build output not found: dist\CRMBarcodeQuery"
+          }
+          Compress-Archive -Path "dist\CRMBarcodeQuery\*" -DestinationPath "CRM-barcode-query-Windows-${{ matrix.arch }}.zip" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
