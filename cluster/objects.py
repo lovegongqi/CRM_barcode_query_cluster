@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import boto3
+from botocore.exceptions import ClientError
 
 from cluster.config import ClusterConfig
 from cluster.db import Database
@@ -87,6 +88,24 @@ class R2ObjectStore:
     def get_bytes(self, object_key: str) -> bytes:
         response = self.client.get_object(Bucket=self.bucket, Key=object_key)
         return response["Body"].read()
+
+    def head(self, object_key: str):
+        try:
+            response = self.client.head_object(Bucket=self.bucket, Key=object_key)
+        except ClientError as error:
+            code = str(error.response.get("Error", {}).get("Code", ""))
+            if code in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise
+        metadata = response.get("Metadata") or {}
+        category = object_key.split("/", 1)[0] if "/" in object_key else ""
+        return ObjectRecord(
+            object_key=object_key,
+            category=category,
+            sha256=str(metadata.get("sha256") or ""),
+            size_bytes=int(response.get("ContentLength") or 0),
+            content_type=str(response.get("ContentType") or "application/octet-stream"),
+        )
 
     def cache_file(
         self,
