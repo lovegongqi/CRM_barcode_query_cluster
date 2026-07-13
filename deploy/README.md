@@ -11,13 +11,15 @@
 
 本阶段先完成“可部署、可健康检查、可识别节点”的基础设施：
 
-- Docker 镜像由 GitHub Actions 构建并推送到 `ghcr.io/lovegongqi/crm_barcode_query:latest`
+- Docker 镜像由 GitHub Actions 构建并推送到 `ghcr.io/lovegongqi/crm_barcode_query_cluster:latest`
 - 应用新增：
   - `/healthz`：进程存活检查
   - `/readyz`：配置、数据目录、session 目录、通道池可用检查
   - `/api/node/status`：节点身份、存储配置、CRM 通道状态
+  - `/api/cluster/nodes`：设置页读取所有服务器状态和通道数量
 - NAS compose 包含 PostgreSQL，先准备长期架构。
 - 数据迁移到 PostgreSQL/R2 是第二阶段，不会在第一阶段改动现有 JSON 数据。
+- NAS 是动态公网 IP，节点地址和 worker 数据库连接只写域名，例如 `mlmll.cn:5011` 和 `mlmll.cn:15432`。
 
 ## 群晖 NAS 部署
 
@@ -47,7 +49,9 @@
    ```text
    CRM_NODE_ID=nas-1
    CRM_NODE_NAME=群晖NAS
+   CRM_PUBLIC_URL=http://mlmll.cn:5011
    POSTGRES_PASSWORD=一个强密码
+   POSTGRES_PUBLIC_PORT=15432
    ```
 
 4. 启动：
@@ -92,8 +96,10 @@ vi .env
 每台服务器必须改成不同节点名：
 
 ```text
-CRM_NODE_ID=worker-1
-CRM_NODE_NAME=云服务器1
+CRM_NODE_ID=hk-1
+CRM_NODE_NAME=核云香港
+CRM_PUBLIC_URL=http://hk.mlmll.cn:5012
+DATABASE_URL=postgresql://crm:强密码@mlmll.cn:15432/crm_barcode
 ```
 
 启动：

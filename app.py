@@ -18,8 +18,10 @@ import threading
 import queue
 import uuid
 import shutil
+import hmac
 from collections import OrderedDict
-from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session, redirect
+from urllib import request as urlrequest, error as urlerror
+from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session, redirect, has_request_context
 from datetime import datetime
 
 try:
@@ -4623,6 +4625,7 @@ DISTRIBUTOR_HISTORY_DELETED_FILE = os.path.join(CONFIG_DIR, "distributor_history
 RESULTS_DIR = os.path.join(DATA_BASE_DIR, "results")
 TEMP_QUERY_DIR = os.path.join(DATA_BASE_DIR, "temp_queries")
 RUNTIME_CONFIG_FILE = _runtime_config_path()
+CLUSTER_NODES_FILE = os.path.join(CONFIG_DIR, "cluster_nodes.json")
 CRM_CREDENTIALS_FILE = os.path.join(CONFIG_DIR, "crm_credentials.json")
 crm_credentials_lock = threading.Lock()
 DEFAULT_OWN_DEALER_NAME = "江西省天麓工贸有限公司"
@@ -4872,6 +4875,140 @@ def save_runtime_config(config):
 
 def business_config():
     return load_runtime_config()
+
+def _cluster_admin_token():
+    return str(os.environ.get("CRM_CLUSTER_ADMIN_TOKEN") or "").strip()
+
+def _cluster_admin_authorized():
+    token = _cluster_admin_token()
+    if not token:
+        return False
+    provided = (request.headers.get("X-CRM-Cluster-Token") or "").strip()
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    if not provided and auth_header.lower().startswith("bearer "):
+        provided = auth_header[7:].strip()
+    return bool(provided and hmac.compare_digest(provided, token))
+
+def _normalize_node_url(url):
+    text = str(url or "").strip()
+    return text.rstrip("/")
+
+def _public_node_url():
+    explicit = _normalize_node_url(os.environ.get("CRM_PUBLIC_URL"))
+    if explicit:
+        return explicit
+    if has_request_context():
+        return request.host_url.rstrip("/")
+    return ""
+
+def _sanitize_cluster_node(row):
+    if not isinstance(row, dict):
+        return None
+    node_id = str(row.get("id") or "").strip()
+    url = _normalize_node_url(row.get("url"))
+    if not node_id or not url:
+        return None
+    return {
+        "id": node_id,
+        "name": str(row.get("name") or node_id).strip(),
+        "url": url,
+        "role": str(row.get("role") or "").strip(),
+    }
+
+def _env_cluster_nodes():
+    raw = os.environ.get("CRM_CLUSTER_NODES") or ""
+    if raw.strip():
+        try:
+            data = json.loads(raw)
+            nodes = [_sanitize_cluster_node(row) for row in (data if isinstance(data, list) else [])]
+            return [row for row in nodes if row]
+        except Exception:
+            return []
+    identity = _node_identity()
+    url = _public_node_url()
+    if not url:
+        return []
+    return [{
+        "id": identity["id"],
+        "name": identity["name"],
+        "role": identity["role"],
+        "url": url,
+    }]
+
+def load_cluster_nodes():
+    if os.path.exists(CLUSTER_NODES_FILE):
+        try:
+            with open(CLUSTER_NODES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            nodes = [_sanitize_cluster_node(row) for row in (data if isinstance(data, list) else [])]
+            nodes = [row for row in nodes if row]
+            if nodes:
+                return nodes
+        except Exception:
+            pass
+    return _env_cluster_nodes()
+
+def _cluster_node_status(node):
+    local_id = _node_identity().get("id")
+    if node.get("id") == local_id:
+        payload = _node_status_payload(include_checks=False)
+        return {**node, "online": True, "status": payload}
+    try:
+        req = urlrequest.Request(node["url"] + "/api/node/status", headers={"Accept": "application/json"})
+        with urlrequest.urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return {**node, "online": True, "status": payload}
+    except Exception as e:
+        return {**node, "online": False, "error": str(e)}
+
+def _save_local_runtime_config_from_payload(data):
+    current = load_runtime_config()
+    config = save_runtime_config({
+        'query_workers': data.get('query_workers', current.get('query_workers', 2)),
+        'transfer_workers': data.get('transfer_workers', current.get('transfer_workers', 2)),
+        'own_dealer_name': data.get('own_dealer_name', current.get('own_dealer_name', DEFAULT_OWN_DEALER_NAME)),
+        'frozen_warehouse_name': data.get('frozen_warehouse_name', current.get('frozen_warehouse_name', DEFAULT_FROZEN_WAREHOUSE_NAME)),
+        'frozen_warehouse_save_only': data.get('frozen_warehouse_save_only', current.get('frozen_warehouse_save_only', True)),
+    })
+    slots = crm_pool.resize(config['query_workers'], config['transfer_workers'])
+    return config, slots
+
+def _post_node_runtime_config(node, data):
+    token = _cluster_admin_token()
+    if not token:
+        return False, "未配置 CRM_CLUSTER_ADMIN_TOKEN，不能远程修改节点", None
+    payload = json.dumps({
+        "query_workers": data.get("query_workers"),
+        "transfer_workers": data.get("transfer_workers"),
+    }).encode("utf-8")
+    req = urlrequest.Request(
+        node["url"] + "/api/runtime-config",
+        data=payload,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-CRM-Cluster-Token": token,
+        },
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=12) as resp:
+            result = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urlerror.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return False, body or str(e), None
+    except Exception as e:
+        return False, str(e), None
+    if not result.get("success"):
+        return False, result.get("error") or "节点保存失败", result
+    return True, "", result
+
+def _current_cluster_node():
+    local_id = _node_identity().get("id")
+    for node in load_cluster_nodes():
+        if node.get("id") == local_id:
+            return node
+    return None
 
 def own_dealer_name():
     return business_config().get("own_dealer_name") or DEFAULT_OWN_DEALER_NAME
@@ -7298,20 +7435,10 @@ def api_runtime_config():
 
 @app.route("/api/runtime-config", methods=["POST"])
 def api_runtime_config_save():
-    if not is_admin_account():
+    if not (is_admin_account() or _cluster_admin_authorized()):
         return jsonify({'success': False, 'error': '只有管理员可以修改系统配置'})
     data = request.get_json() or {}
-    current = load_runtime_config()
-    query_workers = data.get('query_workers', current.get('query_workers', 2))
-    transfer_workers = data.get('transfer_workers', current.get('transfer_workers', 2))
-    config = save_runtime_config({
-        'query_workers': query_workers,
-        'transfer_workers': transfer_workers,
-        'own_dealer_name': data.get('own_dealer_name', current.get('own_dealer_name', DEFAULT_OWN_DEALER_NAME)),
-        'frozen_warehouse_name': data.get('frozen_warehouse_name', current.get('frozen_warehouse_name', DEFAULT_FROZEN_WAREHOUSE_NAME)),
-        'frozen_warehouse_save_only': data.get('frozen_warehouse_save_only', current.get('frozen_warehouse_save_only', True)),
-    })
-    slots = crm_pool.resize(config['query_workers'], config['transfer_workers'])
+    config, slots = _save_local_runtime_config_from_payload(data)
     return jsonify({
         'success': True,
         'config': config,
@@ -7320,6 +7447,42 @@ def api_runtime_config_save():
             'transfer_workers': len(crm_pool.transfer_slots),
         },
         'slots': slots,
+    })
+
+@app.route("/api/cluster/nodes")
+def api_cluster_nodes():
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以查看服务器配置'}), 403
+    nodes = load_cluster_nodes()
+    return jsonify({
+        'success': True,
+        'local_node_id': _node_identity().get("id"),
+        'nodes': [_cluster_node_status(node) for node in nodes],
+    })
+
+@app.route("/api/cluster/nodes/<node_id>/runtime-config", methods=["POST"])
+def api_cluster_node_runtime_config_save(node_id):
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以修改服务器配置'}), 403
+    data = request.get_json() or {}
+    node = next((row for row in load_cluster_nodes() if row.get("id") == node_id), None)
+    if not node:
+        return jsonify({'success': False, 'error': '未找到这个服务器节点'}), 404
+    if node.get("id") == _node_identity().get("id"):
+        config, slots = _save_local_runtime_config_from_payload(data)
+        return jsonify({
+            'success': True,
+            'node': _cluster_node_status(_current_cluster_node() or node),
+            'config': config,
+            'slots': slots,
+        })
+    ok, error_message, result = _post_node_runtime_config(node, data)
+    if not ok:
+        return jsonify({'success': False, 'error': error_message or '远程服务器保存失败', 'node': node}), 502
+    return jsonify({
+        'success': True,
+        'node': _cluster_node_status(node),
+        'remote': result,
     })
 
 @app.route("/api/app-auth/login", methods=["POST"])

@@ -43,6 +43,11 @@
         .slot-status-list { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
         .slot-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 8px; border:1px solid #d9e1ec; border-radius:999px; background:#f8fafc; color:#475569; font-size:12px; font-weight:800; }
         .slot-pill .dot { margin-right:0; }
+        .node-table-wrap { width:100%; overflow:auto; }
+        .node-table input { width:76px; min-width:76px; text-align:center; font-weight:800; }
+        .node-title { font-weight:900; color:#1f2937; }
+        .node-url { color:#64748b; font-size:12px; word-break:break-all; }
+        .status-chip { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border-radius:999px; background:#f8fafc; border:1px solid #d9e1ec; font-size:12px; font-weight:800; color:#475569; white-space:nowrap; }
         .log-box { background:#0f172a; color:#d4d4d4; border-radius:8px; padding:12px; font-family:"Courier New",monospace; font-size:12px; line-height:1.7; max-height:220px; overflow:auto; }
         .log-box .info { color:#4fc3f7; } .log-box .success { color:#81c784; } .log-box .error { color:#e57373; } .log-box .warn { color:#ffb74d; } .log-box .dim { color:#94a3b8; }
         .actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
@@ -115,6 +120,13 @@
             <div><label>本公司经销商名称</label><input id="ownDealerName" placeholder="例如：江西省天麓工贸有限公司"></div>
             <div><label>冻结仓库名称</label><input id="frozenWarehouseName" placeholder="例如：江西天麓冻结仓库"></div>
             <label class="inline-check"><input id="frozenWarehouseSaveOnly" type="checkbox"> 冻结仓库只保存不确认</label>
+        </div>
+    </div>
+
+    <div class="card" id="clusterConfigCard" style="display:none">
+        <h2>服务器通道配置</h2>
+        <div class="node-table-wrap" id="clusterNodesBox">
+            <div class="muted">正在读取服务器状态...</div>
         </div>
     </div>
 
@@ -191,6 +203,77 @@ let pendingBulkCrmSlots = [];
 let currentBulkCrmLoginJobId = sessionStorage.getItem('crm_bulk_login_job_all') || '';
 let bulkLoginPollTimer = null;
 let lastBulkLoginLogSeq = 0;
+let clusterNodes = [];
+
+function clusterNodeStatusText(node) {
+    if (!node.online) return '离线';
+    const crm = (node.status && node.status.crm) || {};
+    return `在线 · 查询 ${crm.query_logged_in || 0}/${crm.query_total || 0} · 移库 ${crm.transfer_logged_in || 0}/${crm.transfer_total || 0}`;
+}
+
+function renderClusterNodes() {
+    const card = document.getElementById('clusterConfigCard');
+    const box = document.getElementById('clusterNodesBox');
+    if (!card || !box) return;
+    if (!clusterNodes.length) {
+        card.style.display = '';
+        box.innerHTML = '<div class="muted">没有配置集群节点。</div>';
+        return;
+    }
+    card.style.display = '';
+    box.innerHTML = `
+        <table class="node-table">
+            <thead>
+                <tr><th>服务器</th><th>状态</th><th>查询通道</th><th>移库通道</th><th></th></tr>
+            </thead>
+            <tbody>${clusterNodes.map(node => {
+                const crm = (node.status && node.status.crm) || {};
+                const queryTotal = crm.query_total || 1;
+                const transferTotal = crm.transfer_total || 1;
+                const dot = node.online ? 'green' : 'red';
+                return `
+                    <tr>
+                        <td>
+                            <div class="node-title">${escapeHtml(node.name || node.id)}</div>
+                            <div class="node-url">${escapeHtml(node.url || '')}</div>
+                        </td>
+                        <td><span class="status-chip"><span class="dot ${dot}"></span>${escapeHtml(clusterNodeStatusText(node))}</span></td>
+                        <td><input id="nodeQuery_${escapeHtml(node.id)}" type="number" min="1" max="10" value="${queryTotal}"></td>
+                        <td><input id="nodeTransfer_${escapeHtml(node.id)}" type="number" min="1" max="10" value="${transferTotal}"></td>
+                        <td><button class="btn btn-primary" onclick="saveClusterNodeConfig('${escapeHtml(node.id)}')">保存</button></td>
+                    </tr>`;
+            }).join('')}</tbody>
+        </table>`;
+}
+
+async function loadClusterNodes() {
+    const card = document.getElementById('clusterConfigCard');
+    if (!card) return;
+    const data = await fetch('/api/cluster/nodes').then(res => res.json()).catch(() => null);
+    if (!data || !data.success) {
+        card.style.display = 'none';
+        return;
+    }
+    clusterNodes = data.nodes || [];
+    renderClusterNodes();
+}
+
+async function saveClusterNodeConfig(nodeId) {
+    const queryInput = document.getElementById('nodeQuery_' + nodeId);
+    const transferInput = document.getElementById('nodeTransfer_' + nodeId);
+    const queryWorkers = Number.parseInt(queryInput?.value || '0', 10);
+    const transferWorkers = Number.parseInt(transferInput?.value || '0', 10);
+    if (!queryWorkers || !transferWorkers) return alert('请输入正确的通道数量');
+    const data = await fetch('/api/cluster/nodes/' + encodeURIComponent(nodeId) + '/runtime-config', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({query_workers: queryWorkers, transfer_workers: transferWorkers})
+    }).then(res => res.json()).catch(() => null);
+    if (!data || !data.success) return alert((data && data.error) || '保存失败');
+    await loadClusterNodes();
+    await loadBulkCrmSlots();
+    alert('服务器通道配置已更新');
+}
 
 function applyCrmCredentialValues(remember, username='', password='', usernameId='bulkCrmUsername', passwordId='bulkCrmPassword', rememberId='bulkRememberCrmLogin') {
     const rememberEl = document.getElementById(rememberId);
@@ -445,6 +528,7 @@ async function saveRuntimeConfig() {
     document.getElementById('frozenWarehouseName').value = config.frozen_warehouse_name || frozenWarehouseName;
     document.getElementById('frozenWarehouseSaveOnly').checked = config.frozen_warehouse_save_only !== false;
     loadBulkCrmSlots();
+    loadClusterNodes();
     alert('系统配置已更新');
 }
 
@@ -453,6 +537,7 @@ async function loadAccounts() {
         document.getElementById('runtimeConfigCard').style.display = '';
         document.getElementById('bulkCrmLoginCard').style.display = '';
         loadRuntimeConfig();
+        loadClusterNodes();
         loadBulkCrmSlots();
         loadSavedCrmCredentials();
         if (currentBulkCrmLoginJobId) startBulkLoginPolling();
@@ -469,6 +554,7 @@ async function loadAccounts() {
     document.getElementById('bulkCrmLoginCard').style.display = canManage ? '' : 'none';
     if (canManage) {
         loadRuntimeConfig();
+        loadClusterNodes();
         loadBulkCrmSlots();
         loadSavedCrmCredentials();
         if (currentBulkCrmLoginJobId) startBulkLoginPolling();
