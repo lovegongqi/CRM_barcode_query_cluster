@@ -24,6 +24,9 @@ from urllib import request as urlrequest, error as urlerror
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session, redirect, has_request_context
 from datetime import datetime
 
+from cluster.config import ClusterConfig
+from cluster.services import build_cluster_services
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -85,6 +88,9 @@ RUNTIME_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", Fal
 RESOURCE_BASE_DIR = getattr(sys, "_MEIPASS", RUNTIME_BASE_DIR)
 CRM_CONFIG_PATH = os.path.join(RUNTIME_BASE_DIR, "config.json")
 IS_DESKTOP_APP = os.environ.get("CRM_DESKTOP_APP") == "1"
+SERVER_CLUSTER_CONFIG = ClusterConfig.from_env()
+CLUSTER_SERVICES = None
+CLUSTER_SERVICES_LOCK = threading.Lock()
 STARTUP_LOGIN_AUTO_CHECK = os.environ.get("CRM_STARTUP_LOGIN_AUTO_CHECK", "1") != "0"
 try:
     STARTUP_LOGIN_CHECK_DELAY_SECONDS = max(0, int(os.environ.get("CRM_STARTUP_LOGIN_CHECK_DELAY_SECONDS", "2")))
@@ -107,6 +113,17 @@ def load_crm_config():
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
     raise FileNotFoundError("未找到 config.json 或示例配置文件")
+
+
+def _get_cluster_services():
+    global CLUSTER_SERVICES
+    if not SERVER_CLUSTER_CONFIG.enabled:
+        return None
+    if CLUSTER_SERVICES is None:
+        with CLUSTER_SERVICES_LOCK:
+            if CLUSTER_SERVICES is None:
+                CLUSTER_SERVICES = build_cluster_services(SERVER_CLUSTER_CONFIG)
+    return CLUSTER_SERVICES
 
 class CRMSession:
     def __init__(self, session_dir=None):
@@ -4538,6 +4555,9 @@ def _run_batch_job(job_id, worker, barcodes, retry_limit=DEFAULT_BATCH_RETRY_LIM
 
             success, result = worker.query_barcode(barcode, lambda msg, level='dim': _batch_job_log(job_id, msg, level))
             if success:
+                success, publish_error = publish_cluster_query_result(barcode, worker.slot_id)
+                if not success:
+                    result = publish_error
                 break
 
             if attempt <= retry_limit:
@@ -4844,6 +4864,17 @@ def load_runtime_config():
         "frozen_warehouse_name": _runtime_text_value(os.environ.get("CRM_FROZEN_WAREHOUSE_NAME"), DEFAULT_FROZEN_WAREHOUSE_NAME),
         "frozen_warehouse_save_only": _runtime_bool_value(os.environ.get("CRM_FROZEN_WAREHOUSE_SAVE_ONLY"), True),
     }
+    services = _get_cluster_services()
+    if services:
+        data = services.catalog.get_runtime_config(
+            f"node:{SERVER_CLUSTER_CONFIG.node_id}"
+        ) or services.catalog.get_runtime_config("global") or {}
+        defaults["query_workers"] = _normalize_worker_count(data.get("query_workers"), defaults["query_workers"])
+        defaults["transfer_workers"] = _normalize_worker_count(data.get("transfer_workers"), defaults["transfer_workers"])
+        defaults["own_dealer_name"] = _runtime_text_value(data.get("own_dealer_name"), defaults["own_dealer_name"])
+        defaults["frozen_warehouse_name"] = _runtime_text_value(data.get("frozen_warehouse_name"), defaults["frozen_warehouse_name"])
+        defaults["frozen_warehouse_save_only"] = _runtime_bool_value(data.get("frozen_warehouse_save_only"), defaults["frozen_warehouse_save_only"])
+        return defaults
     if os.path.exists(RUNTIME_CONFIG_FILE):
         try:
             with open(RUNTIME_CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -4859,7 +4890,6 @@ def load_runtime_config():
     return defaults
 
 def save_runtime_config(config):
-    os.makedirs(os.path.dirname(RUNTIME_CONFIG_FILE), exist_ok=True)
     current = load_runtime_config()
     payload = {
         "query_workers": _normalize_worker_count(config.get("query_workers"), current.get("query_workers", 2)),
@@ -4869,6 +4899,14 @@ def save_runtime_config(config):
         "frozen_warehouse_save_only": _runtime_bool_value(config.get("frozen_warehouse_save_only"), current.get("frozen_warehouse_save_only", True)),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    services = _get_cluster_services()
+    if services:
+        services.catalog.set_runtime_config(
+            f"node:{SERVER_CLUSTER_CONFIG.node_id}",
+            payload,
+        )
+        return payload
+    os.makedirs(os.path.dirname(RUNTIME_CONFIG_FILE), exist_ok=True)
     with open(RUNTIME_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return payload
@@ -5408,6 +5446,12 @@ def product_prefix_from_barcode(barcode):
     return barcode[:2]
 
 def load_product_library():
+    services = _get_cluster_services()
+    if services:
+        return {
+            row["prefix"]: row
+            for row in services.catalog.list_product_rules()
+        }
     if os.path.exists(PRODUCT_LIBRARY_FILE):
         try:
             with open(PRODUCT_LIBRARY_FILE, 'r', encoding='utf-8') as f:
@@ -5418,6 +5462,10 @@ def load_product_library():
     return {}
 
 def save_product_library(data):
+    services = _get_cluster_services()
+    if services:
+        services.catalog.replace_product_rules(list(data.values()))
+        return
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(PRODUCT_LIBRARY_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -5517,6 +5565,51 @@ def _barcode_product_info(item):
         'matched_prefix': product_prefix_from_barcode(item.get('barcode')),
     }
     return info
+
+
+def publish_cluster_query_result(barcode, slot_id):
+    services = _get_cluster_services()
+    if not services:
+        return True, ""
+    html_path = os.path.join(BARCODE_DIR, f"{barcode}.html")
+    if not os.path.exists(html_path):
+        return False, "查询结果文件不存在，无法发布到共享存储"
+    try:
+        fields = extract_fields_from_html(html_path)
+        info = _barcode_product_info({"barcode": barcode, "fields": fields})
+        existing = services.catalog.get_barcode(barcode) or {}
+        metadata = dict(existing.get("metadata") or {})
+        query_time = datetime.now().astimezone()
+        metadata.update({
+            "querySlotId": slot_id,
+            "querySlotLabel": _query_slot_label(slot_id),
+            "queryUpdatedAt": query_time.isoformat(),
+        })
+        services.publish_barcode_result(
+            barcode,
+            html_path,
+            fields,
+            {
+                "product_name": info.get("product_name") or "",
+                "product_code": info.get("product_code") or "",
+                "current_dealer": info.get("current_dealer") or "",
+                "service_dealer": info.get("service_dealer") or "",
+                "query_node_id": SERVER_CLUSTER_CONFIG.node_id,
+                "query_slot_id": slot_id,
+                "query_updated_at": query_time,
+                "metadata": metadata,
+                "remark": existing.get("remark") or "",
+                "archived": bool(existing.get("archived")),
+                "archive_time": existing.get("archive_time"),
+                "current_dealer_override": existing.get("current_dealer_override") or "",
+                "transfer_updated_at": existing.get("transfer_updated_at"),
+                "service_closed": existing.get("service_closed"),
+                "latest_service_order": existing.get("latest_service_order") or "",
+            },
+        )
+        return True, ""
+    except Exception as error:
+        return False, f"共享查询结果发布失败：{error}"
 
 def refresh_product_library_from_query_fields(barcode, fields, log=None):
     info = _barcode_product_info({
@@ -6123,6 +6216,13 @@ def queried_dealer_history():
 
 def load_distributor_history():
     own_dealer = own_dealer_name()
+    services = _get_cluster_services()
+    if services:
+        return [
+            row["name"]
+            for row in services.catalog.list_distributors()
+            if row["name"] != own_dealer
+        ]
     if os.path.exists(DISTRIBUTOR_HISTORY_FILE):
         try:
             with open(DISTRIBUTOR_HISTORY_FILE, 'r', encoding='utf-8') as f:
@@ -6137,12 +6237,23 @@ def load_distributor_history():
     return []
 
 def _save_distributor_history_rows(rows):
+    services = _get_cluster_services()
+    if services:
+        services.catalog.upsert_distributors(rows[:100])
+        return
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(DISTRIBUTOR_HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(rows[:100], f, ensure_ascii=False, indent=2)
 
 def load_deleted_distributor_history():
     own_dealer = own_dealer_name()
+    services = _get_cluster_services()
+    if services:
+        return [
+            row["name"]
+            for row in services.catalog.list_distributors(include_deleted=True)
+            if row.get("deleted") and row["name"] != own_dealer
+        ]
     if os.path.exists(DISTRIBUTOR_HISTORY_DELETED_FILE):
         try:
             with open(DISTRIBUTOR_HISTORY_DELETED_FILE, 'r', encoding='utf-8') as f:
@@ -6165,6 +6276,10 @@ def save_deleted_distributor_history(rows):
         if row and row != own_dealer and row not in seen:
             clean_rows.append(row)
             seen.add(row)
+    services = _get_cluster_services()
+    if services:
+        services.catalog.set_deleted_distributors(clean_rows[:300])
+        return
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(DISTRIBUTOR_HISTORY_DELETED_FILE, 'w', encoding='utf-8') as f:
         json.dump(clean_rows[:300], f, ensure_ascii=False, indent=2)
@@ -6225,6 +6340,9 @@ def delete_distributor_history(distributor):
     distributor = _clean_export_value(distributor)
     if not distributor or distributor == own_dealer:
         return False
+    services = _get_cluster_services()
+    if services:
+        return services.catalog.delete_distributor(distributor)
     rows = [row for row in load_distributor_history() if row != distributor]
     _save_distributor_history_rows(rows)
     deleted = [distributor] + [row for row in load_deleted_distributor_history() if row != distributor]
@@ -6243,6 +6361,22 @@ def combined_distributor_history():
     return list(dealers.keys())
 
 def load_data():
+    services = _get_cluster_services()
+    if services:
+        result = {}
+        for row in services.catalog.list_barcodes():
+            metadata = dict(row.get("metadata") or {})
+            metadata.update({
+                "remark": row.get("remark") or metadata.get("remark") or "",
+                "archived": bool(row.get("archived")),
+                "archiveTime": row.get("archive_time") or metadata.get("archiveTime") or "",
+                "currentDealerOverride": row.get("current_dealer_override") or metadata.get("currentDealerOverride") or "",
+                "transferUpdatedAt": row.get("transfer_updated_at") or metadata.get("transferUpdatedAt") or "",
+                "querySlotId": row.get("query_slot_id") or metadata.get("querySlotId") or "",
+                "queryUpdatedAt": row.get("query_updated_at") or metadata.get("queryUpdatedAt") or "",
+            })
+            result[row["barcode"]] = metadata
+        return result
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
@@ -6252,6 +6386,11 @@ def load_data():
     return {}
 
 def save_data(data):
+    services = _get_cluster_services()
+    if services:
+        for barcode, metadata in data.items():
+            services.catalog.update_barcode_metadata(barcode, metadata or {})
+        return
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -6312,10 +6451,30 @@ def get_archived_set():
     return {bc for bc, info in data.items() if info.get('archived')}
 
 def get_barcode_info(barcode):
+    services = _get_cluster_services()
+    if services:
+        row = services.catalog.get_barcode(barcode)
+        if not row:
+            return {'remark': '', 'archived': False, 'archiveTime': '', 'archivedBy': ''}
+        metadata = dict(row.get("metadata") or {})
+        metadata.update({
+            "remark": row.get("remark") or metadata.get("remark") or "",
+            "archived": bool(row.get("archived")),
+            "archiveTime": row.get("archive_time") or metadata.get("archiveTime") or "",
+            "currentDealerOverride": row.get("current_dealer_override") or metadata.get("currentDealerOverride") or "",
+            "transferUpdatedAt": row.get("transfer_updated_at") or metadata.get("transferUpdatedAt") or "",
+            "querySlotId": row.get("query_slot_id") or metadata.get("querySlotId") or "",
+            "queryUpdatedAt": row.get("query_updated_at") or metadata.get("queryUpdatedAt") or "",
+        })
+        return metadata
     data = load_data()
     return data.get(barcode, {'remark': '', 'archived': False, 'archiveTime': '', 'archivedBy': ''})
 
 def update_barcode_info(barcode, info):
+    services = _get_cluster_services()
+    if services:
+        services.catalog.update_barcode_metadata(barcode, info)
+        return
     data = load_data()
     data[barcode] = info
     save_data(data)
@@ -6340,6 +6499,13 @@ def load_accounts():
         'permissions': ['crm', 'results', 'transfer', 'accounts', 'product-library'],
         'updated_at': '',
     }
+    services = _get_cluster_services()
+    if services:
+        accounts = services.catalog.list_accounts()
+        if not accounts:
+            services.catalog.replace_accounts([default_admin])
+            accounts = services.catalog.list_accounts()
+        return accounts
     if os.path.exists(ACCOUNTS_FILE):
         try:
             with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
@@ -6355,6 +6521,10 @@ def load_accounts():
     return [default_admin]
 
 def save_accounts(accounts):
+    services = _get_cluster_services()
+    if services:
+        services.catalog.replace_accounts(accounts)
+        return
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
         json.dump(accounts, f, ensure_ascii=False, indent=2)
@@ -6419,6 +6589,9 @@ def get_remembered_crm_credentials():
     key = crm_credentials_owner_key()
     if not key:
         return {"remember": False, "username": "", "password": ""}
+    services = _get_cluster_services()
+    if services:
+        return services.catalog.get_credentials(key)
     row = load_crm_credentials_store().get(key) or {}
     if not isinstance(row, dict) or not row.get("remember"):
         return {"remember": False, "username": "", "password": ""}
@@ -6432,6 +6605,10 @@ def save_remembered_crm_credentials(remember, username="", password=""):
     key = crm_credentials_owner_key()
     if not key:
         return False
+    services = _get_cluster_services()
+    if services:
+        services.catalog.save_credentials(key, remember, username, password)
+        return True
     data = load_crm_credentials_store()
     if remember:
         data[key] = {
@@ -6444,6 +6621,16 @@ def save_remembered_crm_credentials(remember, username="", password=""):
         data.pop(key, None)
     save_crm_credentials_store(data)
     return True
+
+
+def authenticate_account(username, password):
+    services = _get_cluster_services()
+    if services:
+        return services.catalog.authenticate_account(username, password)
+    row = next((item for item in load_accounts() if item.get('username') == username), None)
+    if not row or str(row.get('password') or '') != password:
+        return None
+    return row
 
 PAGE_LINKS = [
     {'permission': 'crm', 'label': '在线查询', 'href': '/crm'},
@@ -6550,6 +6737,15 @@ def inject_app_flags():
     return {'is_desktop_app': IS_DESKTOP_APP}
 
 def archive_barcode(barcode):
+    services = _get_cluster_services()
+    if services:
+        if not services.catalog.get_barcode(barcode):
+            return False, '文件不存在'
+        info = get_barcode_info(barcode)
+        info['archived'] = True
+        info['archiveTime'] = datetime.now().astimezone().isoformat()
+        services.catalog.update_barcode_metadata(barcode, info)
+        return True, '归档成功'
     src = os.path.join(BARCODE_DIR, barcode + '.html')
     if not os.path.exists(src):
         return False, '文件不存在'
@@ -6566,6 +6762,16 @@ def archive_barcode(barcode):
         return False, str(e)
 
 def unarchive_barcode(barcode):
+    services = _get_cluster_services()
+    if services:
+        row = services.catalog.get_barcode(barcode)
+        if not row or not row.get("archived"):
+            return False, '归档文件不存在'
+        info = get_barcode_info(barcode)
+        info['archived'] = False
+        info['archiveTime'] = ''
+        services.catalog.update_barcode_metadata(barcode, info)
+        return True, '取消归档成功'
     src = os.path.join(ARCHIVE_DIR, barcode + '.html')
     if not os.path.exists(src):
         return False, '归档文件不存在'
@@ -6580,7 +6786,45 @@ def unarchive_barcode(barcode):
     except Exception as e:
         return False, str(e)
 
+
+def _cluster_barcode_to_legacy(row):
+    metadata = row.get("metadata") or {}
+    time_text = str(row.get("updated_at") or "")
+    try:
+        mtime = datetime.fromisoformat(time_text.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        mtime = 0
+    fields = row.get("fields") or {}
+    current_override = (
+        row.get("current_dealer_override")
+        or metadata.get("currentDealerOverride")
+        or ""
+    )
+    fields = _apply_dealer_to_fields(fields, current_override)
+    fields = _apply_service_close_overrides(fields, metadata)
+    return {
+        "barcode": row["barcode"],
+        "filename": f"{row['barcode']}.html",
+        "time": time_text,
+        "mtime": mtime,
+        "fields": fields,
+        "currentDealerOverride": current_override,
+        "transferUpdatedAt": row.get("transfer_updated_at") or metadata.get("transferUpdatedAt") or "",
+        "querySlotId": row.get("query_slot_id") or metadata.get("querySlotId") or "",
+        "querySlotLabel": metadata.get("querySlotLabel") or "",
+        "queryUpdatedAt": row.get("query_updated_at") or metadata.get("queryUpdatedAt") or "",
+        "remark": row.get("remark") or metadata.get("remark") or "",
+        "archiveTime": row.get("archive_time") or metadata.get("archiveTime") or "",
+    }
+
 def scan_barcodes():
+    services = _get_cluster_services()
+    if services:
+        return [
+            _cluster_barcode_to_legacy(row)
+            for row in services.catalog.list_barcodes()
+        ]
+
     barcodes = []
     seen = set()
 
@@ -6622,6 +6866,14 @@ def scan_barcodes():
     return barcodes
 
 def scan_archived():
+    services = _get_cluster_services()
+    if services:
+        return [
+            _cluster_barcode_to_legacy(row)
+            for row in services.catalog.list_barcodes()
+            if row.get("archived")
+        ]
+
     barcodes = []
     if not os.path.exists(ARCHIVE_DIR):
         return barcodes
@@ -6708,6 +6960,18 @@ def api_get_filter_options():
 
 @app.route("/api/barcodes/<barcode>", methods=["GET"])
 def api_get_barcode_detail(barcode):
+    services = _get_cluster_services()
+    if services:
+        row = services.catalog.get_barcode(barcode)
+        if not row:
+            return jsonify({'success': False, 'error': '文件不存在'})
+        legacy = _cluster_barcode_to_legacy(row)
+        return jsonify({
+            'success': True,
+            'barcode': barcode,
+            'time': legacy['time'],
+            'fields': legacy['fields'],
+        })
     filepath = _barcode_html_path(barcode)
     if not os.path.exists(filepath):
         return jsonify({'success': False, 'error': '文件不存在'})
@@ -7161,6 +7425,16 @@ def api_crm_transfer_status():
 @app.route("/barcode/<filename>")
 def serve_barcode(filename):
     barcode = filename.rsplit('.', 1)[0]
+    services = _get_cluster_services()
+    if services:
+        row = services.catalog.get_barcode(barcode)
+        if not row or not row.get("object_key"):
+            return Response("文件不存在", status=404, mimetype="text/plain")
+        html = services.objects.get_bytes(row["object_key"]).decode("utf-8", errors="replace")
+        info = row.get("metadata") or {}
+        info["currentDealerOverride"] = row.get("current_dealer_override") or info.get("currentDealerOverride", "")
+        html, _changed = _apply_barcode_html_overrides(html, info)
+        return Response(html, mimetype="text/html")
     info = get_barcode_info(barcode)
     filepath = os.path.join(BARCODE_DIR, filename)
     if os.path.exists(filepath):
@@ -7183,6 +7457,16 @@ def serve_barcode(filename):
 @app.route("/barcode/archived/<filename>")
 def serve_archived(filename):
     barcode = filename.rsplit('.', 1)[0]
+    services = _get_cluster_services()
+    if services:
+        row = services.catalog.get_barcode(barcode)
+        if not row or not row.get("archived") or not row.get("object_key"):
+            return Response("文件不存在", status=404, mimetype="text/plain")
+        html = services.objects.get_bytes(row["object_key"]).decode("utf-8", errors="replace")
+        info = row.get("metadata") or {}
+        info["currentDealerOverride"] = row.get("current_dealer_override") or info.get("currentDealerOverride", "")
+        html, _changed = _apply_barcode_html_overrides(html, info)
+        return Response(html, mimetype="text/html")
     info = get_barcode_info(barcode)
     filepath = os.path.join(ARCHIVE_DIR, filename)
     if os.path.exists(filepath):
@@ -7196,6 +7480,19 @@ def serve_archived(filename):
 
 @app.route("/api/barcodes/<barcode>", methods=["DELETE"])
 def api_delete_barcode(barcode):
+    services = _get_cluster_services()
+    if services:
+        row = services.catalog.get_barcode(barcode)
+        if not row:
+            return jsonify({'success': False, 'error': '文件不存在'})
+        try:
+            if row.get("object_key"):
+                services.objects.delete(row["object_key"])
+            services.catalog.delete_barcode(barcode)
+            return jsonify({'success': True, 'message': f'已删除 {barcode}'})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)})
+
     filepath = os.path.join(BARCODE_DIR, barcode + '.html')
     if not os.path.exists(filepath):
         filepath = os.path.join(ARCHIVE_DIR, barcode + '.html')
@@ -7490,8 +7787,8 @@ def api_app_auth_login():
     data = request.get_json() or {}
     username = str(data.get('username') or '').strip()
     password = str(data.get('password') or '')
-    row = next((item for item in load_accounts() if item.get('username') == username), None)
-    if not row or str(row.get('password') or '') != password:
+    row = authenticate_account(username, password)
+    if not row:
         return jsonify({'success': False, 'error': '账号或密码错误'})
     session['account_username'] = username
     return jsonify({'success': True, 'account': account_public(row)})
@@ -7516,7 +7813,7 @@ def api_app_auth_password():
     data = request.get_json() or {}
     old_password = str(data.get('old_password') or '')
     new_password = str(data.get('new_password') or '')
-    if str(row.get('password') or '') != old_password:
+    if not authenticate_account(str(row.get('username') or ''), old_password):
         return jsonify({'success': False, 'error': '原密码不正确'})
     if not new_password:
         return jsonify({'success': False, 'error': '新密码不能为空'})
@@ -7775,6 +8072,9 @@ def api_crm_query():
         return jsonify({'success': False, 'error': '这是拆机条码，CRM 不查询'})
     success, result = worker.query_barcode(barcode)
     if success:
+        success, publish_error = publish_cluster_query_result(barcode, worker.slot_id)
+        if not success:
+            return jsonify({'success': False, 'error': publish_error})
         update_barcode_query_slot(barcode, worker.slot_id)
         return jsonify({
             'success': True,

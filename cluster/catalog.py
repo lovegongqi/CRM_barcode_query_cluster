@@ -184,6 +184,39 @@ class CatalogRepository:
             )
         )
 
+    def update_barcode_metadata(self, barcode: str, metadata: dict) -> bool:
+        archive_time = metadata.get("archiveTime") or None
+        transfer_updated_at = metadata.get("transferUpdatedAt") or None
+        query_updated_at = metadata.get("queryUpdatedAt") or None
+        return bool(
+            self.db.execute(
+                """
+                UPDATE barcode_records SET
+                    metadata_json = %s,
+                    remark = %s,
+                    archived = %s,
+                    archive_time = %s,
+                    current_dealer_override = %s,
+                    transfer_updated_at = %s,
+                    query_slot_id = %s,
+                    query_updated_at = %s,
+                    updated_at = now()
+                WHERE barcode = %s
+                """,
+                (
+                    Jsonb(metadata),
+                    str(metadata.get("remark") or ""),
+                    bool(metadata.get("archived", False)),
+                    archive_time,
+                    str(metadata.get("currentDealerOverride") or ""),
+                    transfer_updated_at,
+                    str(metadata.get("querySlotId") or ""),
+                    query_updated_at,
+                    barcode,
+                ),
+            )
+        )
+
     @staticmethod
     def _barcode_row(row: dict) -> dict:
         result = dict(row)
@@ -230,6 +263,25 @@ class CatalogRepository:
         for row in rows:
             row["updated_at"] = _timestamp(row["updated_at"])
         return rows
+
+    def replace_product_rules(self, rules: list[dict]) -> None:
+        with self.db.transaction() as connection:
+            connection.execute("DELETE FROM product_rules")
+            for rule in rules:
+                connection.execute(
+                    """
+                    INSERT INTO product_rules(
+                        prefix, product_code, product_name,
+                        source_barcode, updated_at
+                    ) VALUES (%s, %s, %s, %s, now())
+                    """,
+                    (
+                        str(rule.get("prefix") or "").strip(),
+                        str(rule.get("product_code") or "").strip(),
+                        str(rule.get("product_name") or "").strip(),
+                        str(rule.get("source_barcode") or "").strip(),
+                    ),
+                )
 
     def delete_product_rule(self, prefix: str) -> bool:
         return bool(
@@ -281,6 +333,24 @@ class CatalogRepository:
                 (name,),
             )
         )
+
+    def set_deleted_distributors(self, names: list[str]) -> None:
+        clean_names = list(dict.fromkeys(str(name).strip() for name in names if str(name).strip()))
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE distributors SET deleted = FALSE, updated_at = now() WHERE deleted = TRUE"
+            )
+            for name in clean_names:
+                connection.execute(
+                    """
+                    INSERT INTO distributors(name, deleted, updated_at)
+                    VALUES (%s, TRUE, now())
+                    ON CONFLICT (name) DO UPDATE SET
+                        deleted = TRUE,
+                        updated_at = now()
+                    """,
+                    (name,),
+                )
 
     def save_credentials(
         self,

@@ -120,3 +120,54 @@ def test_node_and_slot_heartbeats_are_shared(catalog):
 
     assert catalog.list_nodes()[0]["node_id"] == node_id
     assert catalog.list_slots(node_id)[0]["logged_in"] is True
+
+
+def test_product_rule_replacement_and_distributor_deletion(catalog):
+    suffix = uuid.uuid4().hex
+    first_prefix = "a" + suffix[:5]
+    second_prefix = "b" + suffix[:5]
+    distributor = "停用分销商-" + suffix
+    catalog.upsert_product_rule(first_prefix, "1", "旧型号")
+    catalog.replace_product_rules(
+        [
+            {
+                "prefix": second_prefix,
+                "product_code": "2",
+                "product_name": "新型号",
+                "source_barcode": "",
+            }
+        ]
+    )
+    catalog.upsert_distributors([distributor])
+    catalog.set_deleted_distributors([distributor])
+
+    assert catalog.get_product_rule(first_prefix) is None
+    assert catalog.get_product_rule(second_prefix)["product_name"] == "新型号"
+    assert distributor not in {row["name"] for row in catalog.list_distributors()}
+    deleted_row = next(
+        row
+        for row in catalog.list_distributors(include_deleted=True)
+        if row["name"] == distributor
+    )
+    assert deleted_row["deleted"] is True
+
+
+def test_metadata_update_preserves_barcode_fields(catalog):
+    barcode = "metadata-" + uuid.uuid4().hex
+    catalog.upsert_barcode(
+        {
+            "barcode": barcode,
+            "fields": {"sr1": [{"name": "machine"}]},
+            "product_name": "machine",
+        }
+    )
+
+    catalog.update_barcode_metadata(
+        barcode,
+        {"remark": "checked", "archived": True, "archiveTime": "2026-07-13T10:00:00+00:00"},
+    )
+
+    row = catalog.get_barcode(barcode)
+    assert row["fields"] == {"sr1": [{"name": "machine"}]}
+    assert row["remark"] == "checked"
+    assert row["archived"] is True
