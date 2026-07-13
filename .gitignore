@@ -27,6 +27,7 @@ __pycache__/
 .ruff_cache/
 venv/
 .venv/
+.worktrees/
 
 # Packaging/build artifacts
 *.egg-info/
