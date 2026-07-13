@@ -6,6 +6,10 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
+      CRM_CLUSTER_ID: "${CRM_CLUSTER_ID:-crm-local}"
+      CRM_NODE_ID: "${CRM_NODE_ID:-standalone-1}"
+      CRM_NODE_NAME: "${CRM_NODE_NAME:-单机节点}"
+      CRM_NODE_ROLE: "${CRM_NODE_ROLE:-standalone}"
       CRM_QUERY_WORKERS: "${CRM_QUERY_WORKERS:-2}"
       CRM_TRANSFER_WORKERS: "${CRM_TRANSFER_WORKERS:-2}"
       CRM_DATA_DIR: /app/data

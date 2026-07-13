@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: crm-postgres
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      POSTGRES_DB: ${POSTGRES_DB:-crm_barcode}
+      POSTGRES_USER: ${POSTGRES_USER:-crm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
+    volumes:
+      - crm_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crm} -d ${POSTGRES_DB:-crm_barcode}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  crm-barcode-query:
+    image: ghcr.io/lovegongqi/crm_barcode_query:latest
+    container_name: crm-barcode-query
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      CRM_NODE_ROLE: nas
+      CRM_DATA_DIR: /app/data
+      CRM_SESSION_BASE: /app/session
+      DATABASE_URL: postgresql://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-crm_barcode}
+    ports:
+      - "${CRM_HTTP_PORT:-5001}:5001"
+    volumes:
+      - crm_app_data:/app/data
+      - crm_browser_session:/app/session
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/readyz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  crm_postgres_data:
+    name: crm_barcode_query_postgres_data
+  crm_app_data:
+    name: crm_barcode_query_app_data
+  crm_browser_session:
+    name: crm_barcode_query_browser_session

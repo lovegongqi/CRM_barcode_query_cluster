@@ -12,6 +12,8 @@ import json
 import time
 import builtins
 import html as html_mod
+import platform
+import socket
 import threading
 import queue
 import uuid
@@ -76,6 +78,7 @@ try:
 except (TypeError, ValueError):
     LIBRARY_QUERY_SLOT_RETRY_LIMIT = 3
 
+APP_STARTED_AT = time.time()
 RUNTIME_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
 RESOURCE_BASE_DIR = getattr(sys, "_MEIPASS", RUNTIME_BASE_DIR)
 CRM_CONFIG_PATH = os.path.join(RUNTIME_BASE_DIR, "config.json")
@@ -4627,6 +4630,98 @@ DEFAULT_FROZEN_WAREHOUSE_NAME = "江西天麓冻结仓库"
 OWN_DEALER_NAME = DEFAULT_OWN_DEALER_NAME
 FROZEN_WAREHOUSE_NAME = DEFAULT_FROZEN_WAREHOUSE_NAME
 
+def _env_text(name, default=""):
+    return str(os.environ.get(name) or default).strip()
+
+def _node_identity():
+    hostname = socket.gethostname()
+    node_id = _env_text("CRM_NODE_ID", hostname)
+    node_name = _env_text("CRM_NODE_NAME", node_id)
+    return {
+        "id": node_id,
+        "name": node_name,
+        "role": _env_text("CRM_NODE_ROLE", "standalone"),
+        "cluster_id": _env_text("CRM_CLUSTER_ID", "default"),
+        "hostname": hostname,
+        "version": _env_text("CRM_APP_VERSION", _env_text("GITHUB_SHA", "")),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "started_at": datetime.fromtimestamp(APP_STARTED_AT).strftime("%Y-%m-%d %H:%M:%S"),
+        "uptime_seconds": int(time.time() - APP_STARTED_AT),
+    }
+
+def _check_directory_writable(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        marker = os.path.join(path, ".healthcheck-write-test")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(datetime.now().isoformat())
+        os.remove(marker)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+def _readiness_checks():
+    checks = {}
+    config_ok = True
+    config_error = ""
+    try:
+        load_crm_config()
+    except Exception as e:
+        config_ok = False
+        config_error = str(e)
+    checks["config"] = {"ok": config_ok, "message": config_error}
+
+    for key, path in {
+        "data_dir": DATA_BASE_DIR,
+        "config_dir": CONFIG_DIR,
+        "barcode_dir": BARCODE_DIR,
+        "results_dir": RESULTS_DIR,
+        "session_base": _crm_session_base_dir(),
+    }.items():
+        ok, message = _check_directory_writable(path)
+        checks[key] = {"ok": ok, "path": path, "message": message}
+
+    pool_ok = bool(getattr(crm_pool, "query_slots", None) and getattr(crm_pool, "transfer_slots", None))
+    checks["worker_pool"] = {
+        "ok": pool_ok,
+        "query_workers": len(getattr(crm_pool, "query_slots", []) or []),
+        "transfer_workers": len(getattr(crm_pool, "transfer_slots", []) or []),
+    }
+    return checks
+
+def _node_status_payload(include_checks=False):
+    slots = crm_pool.slots_payload()
+    query_slots = slots.get("query") or []
+    transfer_slots = slots.get("transfer") or []
+    payload = {
+        "success": True,
+        "node": _node_identity(),
+        "storage": {
+            "data_dir": DATA_BASE_DIR,
+            "config_dir": CONFIG_DIR,
+            "barcode_dir": BARCODE_DIR,
+            "results_dir": RESULTS_DIR,
+            "session_base": _crm_session_base_dir(),
+            "database_configured": bool(_env_text("DATABASE_URL")),
+            "r2_configured": bool(_env_text("R2_BUCKET") and _env_text("R2_ENDPOINT_URL")),
+        },
+        "crm": {
+            "query_total": len(query_slots),
+            "query_logged_in": sum(1 for row in query_slots if row.get("logged_in")),
+            "query_busy": sum(1 for row in query_slots if row.get("busy")),
+            "transfer_total": len(transfer_slots),
+            "transfer_logged_in": sum(1 for row in transfer_slots if row.get("logged_in")),
+            "transfer_busy": sum(1 for row in transfer_slots if row.get("busy")),
+            "slots": slots,
+        },
+    }
+    if include_checks:
+        checks = _readiness_checks()
+        payload["checks"] = checks
+        payload["ready"] = all((row or {}).get("ok") for row in checks.values())
+    return payload
+
 def _directory_has_files(path):
     if not os.path.isdir(path):
         return False
@@ -7286,6 +7381,24 @@ def api_crm_status():
 @app.route("/api/crm/slots")
 def api_crm_slots():
     return jsonify({'success': True, **crm_pool.slots_payload()})
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({
+        "ok": True,
+        "node": _node_identity(),
+    })
+
+@app.route("/readyz")
+def readyz():
+    payload = _node_status_payload(include_checks=True)
+    status = 200 if payload.get("ready") else 503
+    return jsonify(payload), status
+
+@app.route("/api/node/status")
+def api_node_status():
+    include_checks = request.args.get("checks") in ("1", "true", "yes")
+    return jsonify(_node_status_payload(include_checks=include_checks))
 
 @app.route("/api/crm/credentials", methods=["GET", "POST"])
 def api_crm_credentials():

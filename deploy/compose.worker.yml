@@ -1,0 +1,29 @@
+services:
+  crm-barcode-query:
+    image: ghcr.io/lovegongqi/crm_barcode_query:latest
+    container_name: crm-barcode-query
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      CRM_NODE_ROLE: worker
+      CRM_DATA_DIR: /app/data
+      CRM_SESSION_BASE: /app/session
+    ports:
+      - "${CRM_HTTP_PORT:-5001}:5001"
+    volumes:
+      - crm_app_data:/app/data
+      - crm_browser_session:/app/session
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/readyz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  crm_app_data:
+    name: crm_barcode_query_app_data
+  crm_browser_session:
+    name: crm_barcode_query_browser_session
