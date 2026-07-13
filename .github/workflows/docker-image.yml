@@ -20,7 +20,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/lovegongqi/crm_barcode_query
+  IMAGE_NAME: ghcr.io/lovegongqi/crm_barcode_query_cluster
 
 jobs:
   build:

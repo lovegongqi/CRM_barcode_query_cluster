@@ -17,7 +17,7 @@ services:
       retries: 5
 
   crm-barcode-query:
-    image: ghcr.io/lovegongqi/crm_barcode_query:latest
+    image: ${CRM_IMAGE:-ghcr.io/lovegongqi/crm_barcode_query_cluster:latest}
     container_name: ${CRM_CONTAINER_NAME:-crm-barcode-query}
     restart: unless-stopped
     depends_on:
