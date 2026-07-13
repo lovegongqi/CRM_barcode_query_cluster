@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16
-    container_name: crm-postgres
+    container_name: ${CRM_POSTGRES_CONTAINER_NAME:-crm-postgres}
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
@@ -18,7 +18,7 @@ services:
 
   crm-barcode-query:
     image: ghcr.io/lovegongqi/crm_barcode_query:latest
-    container_name: crm-barcode-query
+    container_name: ${CRM_CONTAINER_NAME:-crm-barcode-query}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -45,8 +45,8 @@ services:
 
 volumes:
   crm_postgres_data:
-    name: crm_barcode_query_postgres_data
+    name: ${CRM_POSTGRES_VOLUME:-crm_barcode_query_postgres_data}
   crm_app_data:
-    name: crm_barcode_query_app_data
+    name: ${CRM_APP_DATA_VOLUME:-crm_barcode_query_app_data}
   crm_browser_session:
-    name: crm_barcode_query_browser_session
+    name: ${CRM_BROWSER_SESSION_VOLUME:-crm_barcode_query_browser_session}

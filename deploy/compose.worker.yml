@@ -1,7 +1,7 @@
 services:
   crm-barcode-query:
     image: ghcr.io/lovegongqi/crm_barcode_query:latest
-    container_name: crm-barcode-query
+    container_name: ${CRM_CONTAINER_NAME:-crm-barcode-query}
     restart: unless-stopped
     env_file:
       - .env
@@ -24,6 +24,6 @@ services:
 
 volumes:
   crm_app_data:
-    name: crm_barcode_query_app_data
+    name: ${CRM_APP_DATA_VOLUME:-crm_barcode_query_app_data}
   crm_browser_session:
-    name: crm_barcode_query_browser_session
+    name: ${CRM_BROWSER_SESSION_VOLUME:-crm_barcode_query_browser_session}
