@@ -23,11 +23,16 @@ gunicorn-*.log
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.coverage
 .mypy_cache/
 .ruff_cache/
 venv/
 .venv/
 .worktrees/
+
+# Cluster-generated secrets and verification reports
+infra/generated/
+migration-reports/
 
 # Packaging/build artifacts
 *.egg-info/
