@@ -49,11 +49,18 @@ issue_leaf() {
   openssl req -new -sha256 -key "${key}" \
     -subj "/O=CRM Barcode Query/OU=${node}/CN=${name}-${node}" \
     -out "${csr}"
+  local subject_alt_name="DNS:${host},DNS:${node}.mlmll.cn"
+  if [[ "${name}" == "postgres-server" ]]; then
+    subject_alt_name="${subject_alt_name},DNS:db.mlmll.cn"
+  fi
+  if [[ "${name}" == "patroni-server" ]]; then
+    subject_alt_name="${subject_alt_name},IP:127.0.0.1"
+  fi
   {
     echo "basicConstraints=critical,CA:FALSE"
     echo "keyUsage=critical,digitalSignature,keyAgreement"
     echo "extendedKeyUsage=${usage}"
-    echo "subjectAltName=DNS:${host},DNS:${node}.mlmll.cn"
+    echo "subjectAltName=${subject_alt_name}"
     echo "subjectKeyIdentifier=hash"
     echo "authorityKeyIdentifier=keyid,issuer"
   } > "${ext}"
@@ -76,6 +83,7 @@ for entry in "hk:hk.mlmll.cn" "sg:sg.mlmll.cn" "us:us.mlmll.cn" "nas:mlmll.cn"; 
   issue_leaf "${node}" "${host}" patroni-client clientAuth
   issue_leaf "${node}" "${host}" haproxy-client clientAuth
   issue_leaf "${node}" "${host}" app-client clientAuth
+  issue_leaf "${node}" "${host}" admin-client clientAuth
   issue_leaf "${node}" "${host}" replica-client clientAuth
   cat "${OUTPUT}/${node}/haproxy-client.crt" "${OUTPUT}/${node}/haproxy-client.key" > "${OUTPUT}/${node}/haproxy-client.pem"
   chmod 600 "${OUTPUT}/${node}/haproxy-client.pem"

@@ -1,130 +1,93 @@
-# 多服务器部署第一阶段
+# PostgreSQL 高可用集群部署
 
-目标：
+生产集群由四个节点组成：
 
-- 群晖 NAS 做主节点和 PostgreSQL 数据库承载机器。
-- 3 台云服务器做 worker 节点，后续用于查询、移库、结单通道扩容。
-- Cloudflare 负责统一域名、健康检查、后续负载均衡/Tunnel。
-- Cloudflare R2 作为后续 HTML、Excel、备份文件对象存储。
+- 香港：初始 PostgreSQL 主库、etcd、Web 主入口、CRM worker
+- 新加坡：同步 PostgreSQL 副本、etcd、Web 备用入口、CRM worker
+- 美国：异步 PostgreSQL 副本、etcd、CRM worker
+- 群晖：异步 PostgreSQL 副本、CRM worker、R2 备份镜像
 
-## 当前阶段说明
+所有节点均运行本机 HAProxy，应用只连接 `db.mlmll.cn:5433`。HAProxy 根据 Patroni 状态把连接发送到当前主库。数据库、Patroni 和 etcd 的公网连接都要求集群私有 CA 签发的客户端证书。
 
-本阶段先完成“可部署、可健康检查、可识别节点”的基础设施：
+## 部署文件
 
-- Docker 镜像由 GitHub Actions 构建并推送到 `ghcr.io/lovegongqi/crm_barcode_query_cluster:latest`
-- 应用新增：
-  - `/healthz`：进程存活检查
-  - `/readyz`：配置、数据目录、session 目录、通道池可用检查
-  - `/api/node/status`：节点身份、存储配置、CRM 通道状态
-  - `/api/cluster/nodes`：设置页读取所有服务器状态和通道数量
-- NAS compose 包含 PostgreSQL，先准备长期架构。
-- 数据迁移到 PostgreSQL/R2 是第二阶段，不会在第一阶段改动现有 JSON 数据。
-- NAS 是动态公网 IP，节点地址和 worker 数据库连接只写域名，例如 `mlmll.cn:5011` 和 `mlmll.cn:15432`。
+- `compose.cluster.yml`：四个节点共用的生产编排
+- `env.cluster.example`：环境变量模板
+- `../infra/pki/generate.sh`：生成私有 CA、节点证书和节点配置
+- `../infra/pgbackrest/`：R2 归档、备份和恢复校验
 
-## 群晖 NAS 部署
+旧的 `compose.nas.yml` 和 `compose.worker.yml` 只保留给原文件模式服务回滚使用，不用于新集群。
 
-1. 在群晖创建目录，例如：
+## 节点配置
 
-   ```bash
-   mkdir -p /volume1/docker/crm-barcode-query
-   cd /volume1/docker/crm-barcode-query
-   ```
-
-2. 上传或复制：
-
-   ```text
-   deploy/compose.nas.yml
-   deploy/env.nas.example
-   ```
-
-3. 创建 `.env`：
-
-   ```bash
-   cp env.nas.example .env
-   vi .env
-   ```
-
-   至少修改：
-
-   ```text
-   CRM_NODE_ID=nas-1
-   CRM_NODE_NAME=群晖NAS
-   CRM_PUBLIC_URL=http://mlmll.cn:5011
-   POSTGRES_PASSWORD=一个强密码
-   POSTGRES_PUBLIC_PORT=15432
-   ```
-
-4. 启动：
-
-   ```bash
-   docker compose -f compose.nas.yml pull
-   docker compose -f compose.nas.yml up -d
-   docker compose -f compose.nas.yml logs -f --tail=100
-   ```
-
-5. 检查：
-
-   ```bash
-   curl http://127.0.0.1:5001/healthz
-   curl http://127.0.0.1:5001/readyz
-   curl http://127.0.0.1:5001/api/node/status
-   ```
-
-## 云服务器 worker 部署
-
-每台云服务器创建一个目录：
-
-```bash
-mkdir -p ~/crm-barcode-query
-cd ~/crm-barcode-query
-```
-
-上传或复制：
+每台机器使用独立 `.env`。默认每节点为 5 个查询通道、2 个移库通道：
 
 ```text
-deploy/compose.worker.yml
-deploy/env.worker.example
+CRM_QUERY_WORKERS=5
+CRM_TRANSFER_WORKERS=2
 ```
 
-创建 `.env`：
-
-```bash
-cp env.worker.example .env
-vi .env
-```
-
-每台服务器必须改成不同节点名：
+节点差异：
 
 ```text
-CRM_NODE_ID=hk-1
-CRM_NODE_NAME=核云香港
-CRM_PUBLIC_URL=http://hk.mlmll.cn:5012
-DATABASE_URL=postgresql://crm:强密码@mlmll.cn:15432/crm_barcode
+# 香港
+COMPOSE_PROFILES=etcd
+CRM_NODE_ID=hk
+CRM_NODE_HOST=hk.mlmll.cn
+CRM_APP_PORT=5012
+
+# 新加坡
+COMPOSE_PROFILES=etcd
+CRM_NODE_ID=sg
+CRM_NODE_HOST=sg.mlmll.cn
+CRM_APP_PORT=5014
+
+# 美国
+COMPOSE_PROFILES=etcd
+CRM_NODE_ID=us
+CRM_NODE_HOST=us.mlmll.cn
+CRM_APP_PORT=5013
+
+# 群晖
+COMPOSE_PROFILES=nas
+CRM_NODE_ID=nas
+CRM_NODE_HOST=mlmll.cn
+CRM_APP_PORT=5011
 ```
 
-启动：
+所有密码、令牌和 R2 密钥只写入服务器 `.env`，不要提交到 Git。
+
+## 安全上线顺序
+
+1. 备份现有 NAS 数据并生成文件清单和 SHA-256 清单。
+2. 生成 PKI，将每个节点自己的 `infra/generated/<node>` 安全传到对应服务器。
+3. 先启动香港、新加坡、美国的 etcd，再启动四节点 Patroni 和 HAProxy。
+4. 验证主从复制、同步副本和自动故障转移。
+5. 创建应用数据库，执行旧数据迁移的 dry-run、apply 和 verify。
+6. 启动四节点应用，验证跨节点任务、日志和通道状态。
+7. 验证 R2 完整备份可恢复后，再切换 Cloudflare 公网入口。
+
+上线过程中不删除原 JSON、HTML、Excel、Docker 卷或旧容器。只有新集群全部验收后才停止旧入口。
+
+## 配置校验
 
 ```bash
-docker compose -f compose.worker.yml pull
-docker compose -f compose.worker.yml up -d
-docker compose -f compose.worker.yml logs -f --tail=100
+docker compose --env-file deploy/env.cluster.example \
+  -f deploy/compose.cluster.yml config --quiet
 ```
 
-## Cloudflare 配置思路
+启动单个云节点：
 
-建议顺序：
+```bash
+docker compose --env-file .env -f deploy/compose.cluster.yml \
+  --profile etcd up -d --build
+```
 
-1. 先用 Cloudflare Tunnel 暴露群晖 NAS 的 `http://127.0.0.1:5001`
-2. 确认域名能访问 NAS 主节点
-3. 3 台云服务器也暴露 `/readyz`
-4. 再配置 Load Balancer：
-   - Health monitor path: `/readyz`
-   - 群晖作为优先池
-   - 云服务器作为备用/扩展池
+启动群晖节点：
 
-## 第二阶段要做
+```bash
+docker compose --env-file .env -f deploy/compose.cluster.yml \
+  --profile nas up -d --build
+```
 
-- 把 `barcode_data.json`、条码匹配、目标分销商、账号、配置迁移到 PostgreSQL。
-- 把 HTML、Excel、备份文件迁移到 R2。
-- 增加集群任务队列，让所有服务器的查询通道动态抢任务。
-- 增加集群状态页面，显示每台服务器和每个通道的登录状态。
+生产切换、故障转移、数据迁移和回滚的逐项命令记录在 `docs/operations/postgresql-cutover.md`。

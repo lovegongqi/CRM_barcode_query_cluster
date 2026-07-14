@@ -1,0 +1,2 @@
+17 2 * * 1-6 root /usr/local/bin/backup-if-primary diff >>/var/log/pgbackrest/cron.log 2>&1
+17 3 * * 0 root /usr/local/bin/backup-if-primary full >>/var/log/pgbackrest/cron.log 2>&1

@@ -1,0 +1,167 @@
+services:
+  etcd:
+    image: ${ETCD_IMAGE}
+    profiles: ["etcd"]
+    restart: unless-stopped
+    environment:
+      ETCD_NAME: ${CRM_NODE_ID}
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: https://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: https://${CRM_NODE_HOST}:2379
+      ETCD_LISTEN_PEER_URLS: https://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: https://${CRM_NODE_HOST}:2380
+      ETCD_INITIAL_CLUSTER: hk=https://hk.mlmll.cn:2380,sg=https://sg.mlmll.cn:2380,us=https://us.mlmll.cn:2380
+      ETCD_INITIAL_CLUSTER_STATE: new
+      ETCD_INITIAL_CLUSTER_TOKEN: crm-barcode-etcd-v1
+      ETCD_CERT_FILE: /run/secrets/etcd-server.crt
+      ETCD_KEY_FILE: /run/secrets/etcd-server.key
+      ETCD_TRUSTED_CA_FILE: /run/secrets/ca.crt
+      ETCD_CLIENT_CERT_AUTH: "true"
+      ETCD_PEER_CERT_FILE: /run/secrets/etcd-peer.crt
+      ETCD_PEER_KEY_FILE: /run/secrets/etcd-peer.key
+      ETCD_PEER_TRUSTED_CA_FILE: /run/secrets/ca.crt
+      ETCD_PEER_CLIENT_CERT_AUTH: "true"
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    volumes:
+      - etcd_data:/etcd-data
+      - ../infra/generated/${CRM_NODE_ID}:/run/secrets:ro
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/run/secrets/ca.crt", "--cert=/run/secrets/etcd-client.crt", "--key=/run/secrets/etcd-client.key", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  patroni:
+    build:
+      context: ..
+      dockerfile: infra/patroni/Dockerfile
+    image: ${PATRONI_IMAGE}
+    restart: unless-stopped
+    environment:
+      CRM_NODE_HOST: ${CRM_NODE_HOST}
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      PATRONI_REPLICATION_USERNAME: crm_replica
+      PATRONI_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD}
+      PATRONI_REPLICATION_SSLMODE: verify-full
+      PATRONI_REPLICATION_SSLROOTCERT: /run/cluster-secrets/ca.crt
+      PATRONI_REPLICATION_SSLCERT: /run/cluster-secrets/replica-client.crt
+      PATRONI_REPLICATION_SSLKEY: /run/cluster-secrets/replica-client.key
+      PATRONI_REWIND_USERNAME: crm_rewind
+      PATRONI_REWIND_PASSWORD: ${POSTGRES_REWIND_PASSWORD}
+      PATRONI_REWIND_SSLMODE: verify-full
+      PATRONI_REWIND_SSLROOTCERT: /run/cluster-secrets/ca.crt
+      PATRONI_REWIND_SSLCERT: /run/cluster-secrets/replica-client.crt
+      PATRONI_REWIND_SSLKEY: /run/cluster-secrets/replica-client.key
+      R2_BUCKET: ${R2_BUCKET}
+      R2_S3_ENDPOINT: ${R2_S3_ENDPOINT}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+    ports:
+      - "5432:5432"
+      - "8008:8008"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_socket:/var/run/postgresql
+      - pgbackrest_spool:/var/spool/pgbackrest
+      - ../infra/generated/${CRM_NODE_ID}:/run/secrets:ro
+      - ../infra/generated/${CRM_NODE_ID}/patroni.yml:/etc/patroni/patroni.yml:ro
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "--cacert", "/run/cluster-secrets/ca.crt", "--cert", "/run/cluster-secrets/patroni-client.crt", "--key", "/run/cluster-secrets/patroni-client.key", "https://127.0.0.1:8008/liveness"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  haproxy:
+    image: ${HAPROXY_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      patroni:
+        condition: service_started
+    ports:
+      - "5433:5433"
+    networks:
+      default:
+        aliases:
+          - db.mlmll.cn
+    volumes:
+      - ../infra/generated/${CRM_NODE_ID}:/run/secrets:ro
+      - ../infra/generated/${CRM_NODE_ID}/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5433"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ${CRM_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      haproxy:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      CRM_CLUSTER_MODE: postgresql
+      CRM_DESKTOP_APP: "0"
+      CRM_CLUSTER_ID: crm-prod
+      CRM_NODE_ID: ${CRM_NODE_ID}
+      CRM_NODE_NAME: ${CRM_NODE_NAME}
+      CRM_NODE_ROLE: ${CRM_NODE_ROLE}
+      CRM_PUBLIC_URL: ${CRM_PUBLIC_URL}
+      CRM_APP_VERSION: ${CRM_APP_VERSION}
+      CRM_QUERY_WORKERS: ${CRM_QUERY_WORKERS}
+      CRM_TRANSFER_WORKERS: ${CRM_TRANSFER_WORKERS}
+      CRM_REPORT_IDLE_SECONDS: ${CRM_REPORT_IDLE_SECONDS}
+      CRM_DATA_DIR: /app/data
+      CRM_SESSION_BASE: /app/session
+      CRM_DISABLE_DATA_MIGRATION: "1"
+      CRM_CLUSTER_ADMIN_TOKEN: ${CRM_CLUSTER_ADMIN_TOKEN}
+      CRM_CREDENTIALS_KEY: ${CRM_CREDENTIALS_KEY}
+      DATABASE_URL: postgresql://crm_app:${POSTGRES_APP_PASSWORD}@db.mlmll.cn:5433/crm_barcode?sslmode=verify-full&sslrootcert=/run/secrets/ca.crt&sslcert=/run/secrets/app-client.crt&sslkey=/run/secrets/app-client.key
+      R2_BUCKET: ${R2_BUCKET}
+      R2_ENDPOINT_URL: ${R2_ENDPOINT_URL}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+    ports:
+      - "${CRM_APP_PORT}:5001"
+    volumes:
+      - crm_app_data:/app/data
+      - crm_browser_session:/app/session
+      - ../infra/generated/${CRM_NODE_ID}:/run/secrets:ro
+    shm_size: "2gb"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/readyz', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 30s
+
+  nas-r2-mirror:
+    image: ${RCLONE_IMAGE}
+    profiles: ["nas"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        while true; do
+          rclone sync
+          ":s3,provider=Cloudflare,access_key_id=${R2_ACCESS_KEY_ID},secret_access_key=${R2_SECRET_ACCESS_KEY},endpoint=${R2_ENDPOINT_URL}:${R2_BUCKET}/backups/postgresql"
+          /nas-backup/postgresql --checksum --fast-list;
+          sleep 21600;
+        done
+    volumes:
+      - ${NAS_BACKUP_PATH}:/nas-backup
+
+volumes:
+  etcd_data:
+  postgres_data:
+  postgres_socket:
+  pgbackrest_spool:
+  crm_app_data:
+  crm_browser_session:

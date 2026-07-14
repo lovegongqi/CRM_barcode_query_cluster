@@ -10,28 +10,24 @@ HAPROXY_TEMPLATE = ROOT / "haproxy" / "haproxy.cfg"
 NODES = {
     "hk": {
         "host": "hk.mlmll.cn",
-        "nofailover": "false",
         "nosync": "false",
         "failover_priority": "90",
         "etcd": True,
     },
     "sg": {
         "host": "sg.mlmll.cn",
-        "nofailover": "false",
         "nosync": "false",
         "failover_priority": "100",
         "etcd": True,
     },
     "us": {
         "host": "us.mlmll.cn",
-        "nofailover": "false",
         "nosync": "true",
         "failover_priority": "50",
         "etcd": True,
     },
     "nas": {
         "host": "mlmll.cn",
-        "nofailover": "true",
         "nosync": "true",
         "failover_priority": "0",
         "etcd": False,
@@ -55,7 +51,6 @@ def render_node(node_id: str, output_dir: Path | str) -> dict[str, str | None]:
     replacements = {
         "NODE_ID": node_id,
         "NODE_HOST": node["host"],
-        "NOFAILOVER": node["nofailover"],
         "NOSYNC": node["nosync"],
         "FAILOVER_PRIORITY": node["failover_priority"],
     }

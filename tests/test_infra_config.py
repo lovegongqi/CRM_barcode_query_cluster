@@ -16,6 +16,7 @@ def rendered(tmp_path):
 def test_postgres_rejects_non_tls(rendered):
     hba = Path(rendered["hk"]["pg_hba"]).read_text(encoding="utf-8")
 
+    assert "hostssl postgres postgres 0.0.0.0/0 scram-sha-256 clientcert=verify-ca" in hba
     assert "hostssl crm_barcode crm_app 0.0.0.0/0 scram-sha-256 clientcert=verify-ca" in hba
     assert "hostssl replication crm_replica 0.0.0.0/0 scram-sha-256 clientcert=verify-ca" in hba
     assert "host all all 0.0.0.0/0 reject" in hba
@@ -40,11 +41,20 @@ def test_patroni_roles_and_synchronous_policy(rendered):
 
     assert "synchronous_mode: true" in hk
     assert "synchronous_mode_strict: false" in hk
-    assert "nofailover: false" in hk
+    assert "nofailover:" not in hk
+    assert "failover_priority: 90" in hk
     assert "failover_priority: 100" in sg
     assert "failover_priority: 50" in us
-    assert "nofailover: true" in nas
+    assert "nofailover:" not in nas
     assert "failover_priority: 0" in nas
+
+
+def test_patroni_etcd_hosts_use_protocol_field(rendered):
+    patroni = Path(rendered["hk"]["patroni"]).read_text(encoding="utf-8")
+
+    assert "protocol: https" in patroni
+    assert "hosts: hk.mlmll.cn:2379,sg.mlmll.cn:2379,us.mlmll.cn:2379" in patroni
+    assert "hosts: https://" not in patroni
 
 
 def test_etcd_quorum_exists_only_on_three_cloud_nodes(rendered):
