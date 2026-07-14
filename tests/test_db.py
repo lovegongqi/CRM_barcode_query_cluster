@@ -1,7 +1,9 @@
+import threading
 import uuid
 
 import pytest
 from psycopg import OperationalError
+from psycopg_pool import PoolTimeout
 
 import cluster.db as db_module
 from cluster.db import Database
@@ -54,6 +56,50 @@ def test_database_pool_checks_connections_are_writable(monkeypatch):
     Database("postgresql://example")
 
     assert captured["check"] is Database._check_writable_connection
+
+
+def test_database_replaces_exhausted_pool_before_running_sql():
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    class FailedPool:
+        def __init__(self):
+            self.closed = False
+
+        def getconn(self, timeout=None):
+            raise PoolTimeout("old primary unavailable")
+
+        def close(self, timeout=5):
+            self.closed = True
+
+    class WorkingPool:
+        def __init__(self):
+            self.connection = FakeConnection()
+            self.returned = None
+
+        def getconn(self, timeout=None):
+            return self.connection
+
+        def putconn(self, connection):
+            self.returned = connection
+
+    failed_pool = FailedPool()
+    working_pool = WorkingPool()
+    database = Database.__new__(Database)
+    database.pool = failed_pool
+    database._pool_lock = threading.Lock()
+    database._create_pool = lambda: working_pool
+
+    with database._connection() as connection:
+        assert connection is working_pool.connection
+
+    assert database.pool is working_pool
+    assert failed_pool.closed is True
+    assert working_pool.returned is working_pool.connection
 
 
 def test_transaction_rolls_back_on_error(database):

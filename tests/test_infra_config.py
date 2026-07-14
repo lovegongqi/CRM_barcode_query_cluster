@@ -83,6 +83,32 @@ def test_haproxy_uses_tls_patroni_health_checks(rendered):
     assert "server hk hk.mlmll.cn:15432" in haproxy
 
 
+def test_haproxy_routes_each_nodes_local_database_over_docker_network(rendered):
+    hosts = {
+        "hk": "hk.mlmll.cn",
+        "sg": "sg.mlmll.cn",
+        "us": "us.mlmll.cn",
+        "nas": "mlmll.cn",
+    }
+
+    for node_id, rendered_paths in rendered.items():
+        haproxy = Path(rendered_paths["haproxy"]).read_text(encoding="utf-8")
+        local_line = next(
+            line for line in haproxy.splitlines()
+            if line.strip().startswith(f"server {node_id} ")
+        )
+        assert f"server {node_id} patroni:5432" in local_line
+        assert "resolvers public_dns" not in local_line
+        for remote_id, remote_host in hosts.items():
+            if remote_id != node_id:
+                remote_line = next(
+                    line for line in haproxy.splitlines()
+                    if line.strip().startswith(f"server {remote_id} ")
+                )
+                assert f"server {remote_id} {remote_host}:15432" in remote_line
+                assert "resolvers public_dns" in remote_line
+
+
 def test_patroni_advertises_non_conflicting_public_postgres_port(rendered):
     patroni = Path(rendered["hk"]["patroni"]).read_text(encoding="utf-8")
 

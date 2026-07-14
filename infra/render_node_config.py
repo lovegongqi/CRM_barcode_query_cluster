@@ -54,6 +54,22 @@ def render_node(node_id: str, output_dir: Path | str) -> dict[str, str | None]:
         "NOSYNC": node["nosync"],
         "FAILOVER_PRIORITY": node["failover_priority"],
     }
+    replacements.update(
+        {
+            f"{target_id.upper()}_DB_ADDRESS": (
+                "patroni:5432" if target_id == node_id else f"{target['host']}:15432"
+            )
+            for target_id, target in NODES.items()
+        }
+    )
+    replacements.update(
+        {
+            f"{target_id.upper()}_DB_RESOLVER": (
+                "" if target_id == node_id else "resolvers public_dns"
+            )
+            for target_id in NODES
+        }
+    )
 
     patroni_path = output / "patroni.yml"
     patroni_path.write_text(
@@ -66,7 +82,10 @@ def render_node(node_id: str, output_dir: Path | str) -> dict[str, str | None]:
         encoding="utf-8",
     )
     haproxy_path = output / "haproxy.cfg"
-    haproxy_path.write_text(HAPROXY_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+    haproxy_path.write_text(
+        _render(HAPROXY_TEMPLATE, replacements),
+        encoding="utf-8",
+    )
 
     etcd_path = None
     if node["etcd"]:

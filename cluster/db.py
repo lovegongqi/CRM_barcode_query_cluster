@@ -1,20 +1,56 @@
 from contextlib import contextmanager
+import threading
 
 from psycopg import OperationalError
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolClosed, PoolTimeout
 
 
 class Database:
     def __init__(self, url: str, min_size: int = 1, max_size: int = 10):
-        self.pool = ConnectionPool(
-            conninfo=url,
-            min_size=min_size,
-            max_size=max_size,
+        self._url = url
+        self._min_size = min_size
+        self._max_size = max_size
+        self._pool_lock = threading.Lock()
+        self.pool = self._create_pool()
+
+    def _create_pool(self):
+        return ConnectionPool(
+            conninfo=self._url,
+            min_size=self._min_size,
+            max_size=self._max_size,
             kwargs={"row_factory": dict_row},
             check=self._check_writable_connection,
             open=True,
         )
+
+    def _replace_pool(self, failed_pool):
+        replaced = False
+        with self._pool_lock:
+            if self.pool is failed_pool:
+                self.pool = self._create_pool()
+                replaced = True
+            pool = self.pool
+        if replaced:
+            failed_pool.close(timeout=0)
+        return pool
+
+    def _acquire_connection(self):
+        pool = self.pool
+        try:
+            return pool, pool.getconn(timeout=5)
+        except (PoolClosed, PoolTimeout):
+            pool = self._replace_pool(pool)
+            return pool, pool.getconn(timeout=10)
+
+    @contextmanager
+    def _connection(self):
+        pool, connection = self._acquire_connection()
+        try:
+            with connection:
+                yield connection
+        finally:
+            pool.putconn(connection)
 
     @staticmethod
     def _check_writable_connection(connection) -> None:
@@ -33,7 +69,7 @@ class Database:
 
     @contextmanager
     def transaction(self):
-        with self.pool.connection() as connection:
+        with self._connection() as connection:
             with connection.transaction():
                 yield connection
 
@@ -43,12 +79,12 @@ class Database:
             return cursor.rowcount
 
     def fetch_one(self, sql: str, params=None):
-        with self.pool.connection() as connection:
+        with self._connection() as connection:
             row = connection.execute(sql, params).fetchone()
             return dict(row) if row is not None else None
 
     def fetch_all(self, sql: str, params=None) -> list[dict]:
-        with self.pool.connection() as connection:
+        with self._connection() as connection:
             rows = connection.execute(sql, params).fetchall()
             return [dict(row) for row in rows]
 

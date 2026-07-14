@@ -16,6 +16,7 @@ session
 venv
 .venv
 release-artifacts
+infra/generated
 
 *.log
 *.pid
