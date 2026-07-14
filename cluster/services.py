@@ -5,6 +5,7 @@ from cluster.catalog import CatalogRepository
 from cluster.config import ClusterConfig
 from cluster.crypto import CredentialCipher
 from cluster.db import Database
+from cluster.jobs import JobRepository
 from cluster.migrations import MigrationRunner
 from cluster.objects import R2ObjectStore
 
@@ -15,6 +16,7 @@ class ClusterServices:
     database: Database
     catalog: CatalogRepository
     objects: R2ObjectStore
+    jobs: JobRepository | None = None
 
     def publish_barcode_result(
         self,
@@ -51,4 +53,5 @@ def build_cluster_services(config: ClusterConfig) -> ClusterServices:
     cipher = CredentialCipher(config.credentials_key)
     catalog = CatalogRepository(database, cipher)
     objects = R2ObjectStore(config, database=database)
-    return ClusterServices(config, database, catalog, objects)
+    jobs = JobRepository(database)
+    return ClusterServices(config, database, catalog, objects, jobs)

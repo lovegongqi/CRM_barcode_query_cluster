@@ -25,6 +25,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 from datetime import datetime
 
 from cluster.config import ClusterConfig
+from cluster.scheduler import ClusterScheduler
 from cluster.services import build_cluster_services
 
 try:
@@ -91,6 +92,7 @@ IS_DESKTOP_APP = os.environ.get("CRM_DESKTOP_APP") == "1"
 SERVER_CLUSTER_CONFIG = ClusterConfig.from_env()
 CLUSTER_SERVICES = None
 CLUSTER_SERVICES_LOCK = threading.Lock()
+CLUSTER_SCHEDULER = None
 STARTUP_LOGIN_AUTO_CHECK = os.environ.get("CRM_STARTUP_LOGIN_AUTO_CHECK", "1") != "0"
 try:
     STARTUP_LOGIN_CHECK_DELAY_SECONDS = max(0, int(os.environ.get("CRM_STARTUP_LOGIN_CHECK_DELAY_SECONDS", "2")))
@@ -123,7 +125,31 @@ def _get_cluster_services():
         with CLUSTER_SERVICES_LOCK:
             if CLUSTER_SERVICES is None:
                 CLUSTER_SERVICES = build_cluster_services(SERVER_CLUSTER_CONFIG)
+    _ensure_cluster_scheduler(CLUSTER_SERVICES)
     return CLUSTER_SERVICES
+
+
+def _ensure_cluster_scheduler(services):
+    global CLUSTER_SCHEDULER
+    if CLUSTER_SCHEDULER is not None or not getattr(services, "jobs", None):
+        return
+    if "crm_pool" not in globals():
+        return
+    with CLUSTER_SERVICES_LOCK:
+        if CLUSTER_SCHEDULER is not None:
+            return
+        CLUSTER_SCHEDULER = ClusterScheduler(
+            services.jobs,
+            SERVER_CLUSTER_CONFIG.node_id,
+            _cluster_scheduler_slots,
+            {
+                "query": _handle_cluster_query_item,
+                "library_lookup": _handle_cluster_library_item,
+                "transfer": _handle_cluster_transfer_item,
+                "service_close": _handle_cluster_service_close_item,
+            },
+        )
+        CLUSTER_SCHEDULER.start()
 
 class CRMSession:
     def __init__(self, session_dir=None):
@@ -1938,6 +1964,8 @@ class CRMSession:
         if not (self._click_top_button("结单确认") or self._click_top_button("确认结单")):
             msg = self._visible_message()
             return False, "failed", msg or "未找到右上方结单确认按钮"
+        if log:
+            log("已点击结单确认，等待 CRM 返回结果", "info")
         return self._wait_service_close_result(log)
 
     def _wait_service_close_result(self, log=None, timeout=60):
@@ -5610,6 +5638,127 @@ def publish_cluster_query_result(barcode, slot_id):
         return True, ""
     except Exception as error:
         return False, f"共享查询结果发布失败：{error}"
+
+
+def _cluster_scheduler_slots():
+    with crm_pool.pool_lock:
+        slot_groups = [
+            (slot_id, "query", crm_pool.workers[slot_id])
+            for slot_id in crm_pool.query_slots
+        ] + [
+            (slot_id, "transfer", crm_pool.workers[slot_id])
+            for slot_id in crm_pool.transfer_slots
+        ]
+    return [{
+            "slot_id": slot_id,
+            "kind": kind,
+            "logged_in": bool(worker.logged_in),
+            "worker": worker,
+        }
+        for slot_id, kind, worker in slot_groups
+    ]
+
+
+def _cluster_job_logger(item, slot_id):
+    def emit(message, level="info"):
+        CLUSTER_SERVICES.jobs.append_log(
+            item["job_id"],
+            "cluster",
+            SERVER_CLUSTER_CONFIG.node_id,
+            slot_id,
+            level,
+            str(message),
+        )
+
+    return emit
+
+
+def _handle_cluster_query_item(worker, item, repository):
+    payload = item.get("payload_json") or {}
+    barcode = str(payload.get("barcode") or item.get("item_key") or "").strip()
+    emit = _cluster_job_logger(item, worker.slot_id)
+    emit(f"开始查询条码：{barcode}")
+    success, result = worker.query_barcode(barcode, emit)
+    if not success:
+        raise RuntimeError(result)
+    published, error = publish_cluster_query_result(barcode, worker.slot_id)
+    if not published:
+        raise RuntimeError(error)
+    emit(f"条码查询完成：{barcode}", "success")
+    return {"barcode": barcode, "view_url": f"/barcode/{barcode}.html"}
+
+
+def _handle_cluster_library_item(worker, item, repository):
+    payload = item.get("payload_json") or {}
+    barcode = str(payload.get("barcode") or item.get("item_key") or "").strip()
+    emit = _cluster_job_logger(item, worker.slot_id)
+    success, result = worker.query_barcode(barcode, emit, TEMP_QUERY_DIR)
+    if not success:
+        raise RuntimeError(result)
+    temp_path = os.path.join(TEMP_QUERY_DIR, f"{barcode}.html")
+    try:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    except OSError as error:
+        emit(f"临时查询文件删除失败：{error}", "warn")
+    emit(f"条码匹配补充完成：{barcode}", "success")
+    return {"barcode": barcode}
+
+
+def _handle_cluster_transfer_item(worker, item, repository):
+    payload = item.get("payload_json") or {}
+    emit = _cluster_job_logger(item, worker.slot_id)
+    owner = item.get("lease_owner") or f"{SERVER_CLUSTER_CONFIG.node_id}:{worker.slot_id}"
+    submitted = False
+
+    def log(message, level="info"):
+        nonlocal submitted
+        emit(message, level)
+        if not submitted and "移库单已保存" in str(message):
+            submitted = repository.mark_submitted(
+                item["id"],
+                owner,
+                str(message).split("：", 1)[-1].strip(),
+            )
+
+    success, result = worker.create_transfer(
+        payload.get("summary") or {},
+        str(payload.get("distributor") or ""),
+        str(payload.get("transfer_type") or "移出"),
+        str(payload.get("remark") or ""),
+        log,
+    )
+    if not success:
+        error = result.get("error") if isinstance(result, dict) else result
+        raise RuntimeError(error or "移库失败")
+    distributor = str(payload.get("distributor") or "").strip()
+    if distributor:
+        save_distributor_history(distributor)
+    return result if isinstance(result, dict) else {"result": result}
+
+
+def _handle_cluster_service_close_item(worker, item, repository):
+    payload = item.get("payload_json") or {}
+    service_order = payload.get("service_order") or payload
+    emit = _cluster_job_logger(item, worker.slot_id)
+    owner = item.get("lease_owner") or f"{SERVER_CLUSTER_CONFIG.node_id}:{worker.slot_id}"
+    submitted = False
+
+    def log(message, level="info"):
+        nonlocal submitted
+        emit(message, level)
+        if not submitted and "已点击结单确认" in str(message):
+            submitted = repository.mark_submitted(
+                item["id"],
+                owner,
+                str(service_order.get("service_no") or item.get("item_key") or ""),
+            )
+
+    success, result = worker.close_service_orders([service_order], log)
+    if not success:
+        error = result.get("error") if isinstance(result, dict) else result
+        raise RuntimeError(error or "结单失败")
+    return result if isinstance(result, dict) else {"result": result}
 
 def refresh_product_library_from_query_fields(barcode, fields, log=None):
     info = _barcode_product_info({
