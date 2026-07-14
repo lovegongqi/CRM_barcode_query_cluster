@@ -39,6 +39,9 @@ services:
       dockerfile: infra/patroni/Dockerfile
     image: ${PATRONI_IMAGE}
     restart: unless-stopped
+    dns:
+      - ${DOCKER_DNS_PRIMARY:-223.5.5.5}
+      - ${DOCKER_DNS_SECONDARY:-119.29.29.29}
     environment:
       CRM_NODE_HOST: ${CRM_NODE_HOST}
       PATRONI_SUPERUSER_USERNAME: postgres
@@ -158,15 +161,16 @@ services:
     image: ${RCLONE_IMAGE}
     profiles: ["nas"]
     restart: unless-stopped
+    environment:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      RCLONE_CONFIG_R2_ENDPOINT: ${R2_ENDPOINT_URL}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        while true; do
-          rclone sync
-          ":s3,provider=Cloudflare,access_key_id=${R2_ACCESS_KEY_ID},secret_access_key=${R2_SECRET_ACCESS_KEY},endpoint=${R2_ENDPOINT_URL}:${R2_BUCKET}/backups/postgresql"
-          /nas-backup/postgresql --checksum --fast-list;
-          sleep 21600;
-        done
+        while true; do rclone sync "r2:${R2_BUCKET}/backups/postgresql" /nas-backup/postgresql --checksum --fast-list; sleep 21600; done
     volumes:
       - ${NAS_BACKUP_PATH}:/nas-backup
 

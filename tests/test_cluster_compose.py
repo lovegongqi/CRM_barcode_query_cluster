@@ -35,6 +35,15 @@ def test_public_origins_run_independent_cloudflare_tunnels():
     assert "tunnel --no-autoupdate --protocol ${CLOUDFLARE_TUNNEL_PROTOCOL:-auto} run" in cloudflared
 
 
+def test_nas_r2_mirror_passes_source_and_target_to_one_rclone_command():
+    text = (ROOT / "deploy" / "compose.cluster.yml").read_text(encoding="utf-8")
+    mirror = text.split("  nas-r2-mirror:", 1)[1].split("\nvolumes:", 1)[0]
+
+    assert "RCLONE_CONFIG_R2_TYPE: s3" in mirror
+    assert 'rclone sync "r2:${R2_BUCKET}/backups/postgresql" /nas-backup/postgresql' in mirror
+    assert '":s3,provider=Cloudflare' not in mirror
+
+
 def test_patroni_replication_uses_mutual_tls_credentials():
     text = (ROOT / "deploy" / "compose.cluster.yml").read_text(encoding="utf-8")
 
@@ -45,6 +54,14 @@ def test_patroni_replication_uses_mutual_tls_credentials():
     assert "PATRONI_REPLICATION_SSLKEY: /run/cluster-secrets/replica-client.key" in text
     assert "PATRONI_REWIND_USERNAME: crm_rewind" in text
     assert "PATRONI_REWIND_SSLMODE: verify-full" in text
+
+
+def test_patroni_uses_explicit_dns_servers_for_etcd_discovery():
+    text = (ROOT / "deploy" / "compose.cluster.yml").read_text(encoding="utf-8")
+    patroni = text.split("  patroni:", 1)[1].split("\n  haproxy:", 1)[0]
+
+    assert "${DOCKER_DNS_PRIMARY:-223.5.5.5}" in patroni
+    assert "${DOCKER_DNS_SECONDARY:-119.29.29.29}" in patroni
 
 
 def test_pki_generates_dedicated_database_admin_certificate():
