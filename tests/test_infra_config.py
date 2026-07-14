@@ -71,3 +71,11 @@ def test_haproxy_uses_tls_patroni_health_checks(rendered):
     assert "check-ssl" in haproxy
     assert "ca-file /run/secrets/ca.crt" in haproxy
     assert "crt /run/secrets/haproxy-client.pem" in haproxy
+    assert "server hk hk.mlmll.cn:15432" in haproxy
+
+
+def test_patroni_advertises_non_conflicting_public_postgres_port(rendered):
+    patroni = Path(rendered["hk"]["patroni"]).read_text(encoding="utf-8")
+
+    assert "listen: 0.0.0.0:5432" in patroni
+    assert "connect_address: hk.mlmll.cn:15432" in patroni

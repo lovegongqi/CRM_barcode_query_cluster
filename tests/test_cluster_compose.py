@@ -12,6 +12,8 @@ def test_compose_runs_shared_app_database_and_local_sessions():
     assert "sslmode=verify-full" in text
     assert "crm_browser_session:/app/session" in text
     assert "postgres_data:/var/lib/postgresql/data" in text
+    assert '"${POSTGRES_PUBLIC_PORT}:5432"' in text
+    assert '"5432:5432"' not in text
     assert 'profiles: ["etcd"]' in text
     assert 'profiles: ["nas"]' in text
 

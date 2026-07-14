@@ -9,6 +9,8 @@
 
 所有节点均运行本机 HAProxy，应用只连接 `db.mlmll.cn:5433`。HAProxy 根据 Patroni 状态把连接发送到当前主库。数据库、Patroni 和 etcd 的公网连接都要求集群私有 CA 签发的客户端证书。
 
+PostgreSQL 容器内部使用 `5432`，节点之间统一通过公网 `15432` 连接，避免占用服务器上已有数据库的 `5432`。
+
 ## 部署文件
 
 - `compose.cluster.yml`：四个节点共用的生产编排

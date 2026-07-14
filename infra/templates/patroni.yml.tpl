@@ -51,7 +51,7 @@ bootstrap:
 
 postgresql:
   listen: 0.0.0.0:5432
-  connect_address: __NODE_HOST__:5432
+  connect_address: __NODE_HOST__:15432
   data_dir: /var/lib/postgresql/data
   bin_dir: /usr/lib/postgresql/16/bin
   pgpass: /run/patroni/pgpass
