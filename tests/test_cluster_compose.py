@@ -37,6 +37,12 @@ def test_pki_generates_dedicated_database_admin_certificate():
     assert '"${name}" == "patroni-server" || "${name}" == "etcd-server"' in text
 
 
+def test_postgres_server_certificate_covers_patroni_local_connection():
+    text = (ROOT / "infra" / "pki" / "generate.sh").read_text(encoding="utf-8")
+
+    assert 'DNS:localhost,IP:127.0.0.1' in text
+
+
 def test_pgbackrest_keeps_seven_full_backups_in_r2():
     text = (ROOT / "infra" / "pgbackrest" / "pgbackrest.conf.tpl").read_text(encoding="utf-8")
 

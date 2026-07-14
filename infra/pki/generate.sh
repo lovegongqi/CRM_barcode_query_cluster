@@ -51,7 +51,7 @@ issue_leaf() {
     -out "${csr}"
   local subject_alt_name="DNS:${host},DNS:${node}.mlmll.cn"
   if [[ "${name}" == "postgres-server" ]]; then
-    subject_alt_name="${subject_alt_name},DNS:db.mlmll.cn"
+    subject_alt_name="${subject_alt_name},DNS:db.mlmll.cn,DNS:localhost,IP:127.0.0.1"
   fi
   if [[ "${name}" == "patroni-server" || "${name}" == "etcd-server" ]]; then
     subject_alt_name="${subject_alt_name},IP:127.0.0.1"
