@@ -32,7 +32,7 @@ def test_public_origins_run_independent_cloudflare_tunnels():
     assert 'profiles: ["origin"]' in cloudflared
     assert "TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}" in cloudflared
     assert "http://app:5001" not in cloudflared
-    assert "tunnel --no-autoupdate run" in cloudflared
+    assert "tunnel --no-autoupdate --protocol ${CLOUDFLARE_TUNNEL_PROTOCOL:-auto} run" in cloudflared
 
 
 def test_patroni_replication_uses_mutual_tls_credentials():
