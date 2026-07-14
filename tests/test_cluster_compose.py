@@ -82,3 +82,9 @@ def test_pgbackrest_backup_runs_as_postgres_user():
     )
 
     assert text.count("gosu postgres pgbackrest") == 3
+
+
+def test_pgbackrest_config_directory_is_accessible_to_postgres():
+    text = (ROOT / "infra" / "patroni" / "entrypoint.sh").read_text(encoding="utf-8")
+
+    assert "chown -R postgres:postgres /etc/pgbackrest" in text

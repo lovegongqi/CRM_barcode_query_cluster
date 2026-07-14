@@ -11,7 +11,7 @@ chown -R postgres:postgres \
   /var/lib/postgresql/data /var/run/postgresql /run/patroni /run/cluster-secrets \
   /var/log/pgbackrest /var/spool/pgbackrest
 render-pgbackrest-config
-chown postgres:postgres /etc/pgbackrest/pgbackrest.conf
+chown -R postgres:postgres /etc/pgbackrest
 cron
 
 (
