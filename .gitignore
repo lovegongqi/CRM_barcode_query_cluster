@@ -29,6 +29,7 @@ __pycache__/
 venv/
 .venv/
 .worktrees/
+infra/generated/
 
 # Cluster-generated secrets and verification reports
 infra/generated/

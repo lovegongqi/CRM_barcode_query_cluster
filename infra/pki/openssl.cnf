@@ -1,0 +1,14 @@
+[req]
+distinguished_name = subject
+prompt = no
+
+[subject]
+O = CRM Barcode Query
+OU = Private Cluster
+
+[leaf]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyAgreement
+extendedKeyUsage = serverAuth,clientAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer

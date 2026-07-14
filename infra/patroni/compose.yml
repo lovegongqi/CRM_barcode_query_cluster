@@ -1,0 +1,19 @@
+services:
+  patroni:
+    image: ghcr.io/zalando/spilo-16:3.3-p2
+    restart: unless-stopped
+    environment:
+      PATRONI_CONFIGURATION: /etc/patroni/patroni.yml
+      PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      PATRONI_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD}
+      PATRONI_REWIND_PASSWORD: ${POSTGRES_REWIND_PASSWORD}
+    ports:
+      - "5432:5432"
+      - "8008:8008"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../generated/${CRM_NODE_ID}:/run/secrets:ro
+      - ../generated/${CRM_NODE_ID}/patroni.yml:/etc/patroni/patroni.yml:ro
+
+volumes:
+  postgres_data:
