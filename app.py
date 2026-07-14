@@ -94,6 +94,10 @@ CLUSTER_SERVICES = None
 CLUSTER_SERVICES_LOCK = threading.Lock()
 CLUSTER_SCHEDULER = None
 CLUSTER_HEARTBEAT_THREAD = None
+DATABASE_READINESS_LOCK = threading.Lock()
+DATABASE_READINESS_STATE = {"checked_at": 0.0, "result": None}
+DATABASE_READINESS_CACHE_SECONDS = 5
+DATABASE_READINESS_MAX_STALE_SECONDS = 15
 STARTUP_LOGIN_AUTO_CHECK = os.environ.get("CRM_STARTUP_LOGIN_AUTO_CHECK", "1") != "0"
 try:
     STARTUP_LOGIN_CHECK_DELAY_SECONDS = max(0, int(os.environ.get("CRM_STARTUP_LOGIN_CHECK_DELAY_SECONDS", "2")))
@@ -4730,6 +4734,43 @@ def _check_directory_writable(path):
     except Exception as e:
         return False, str(e)
 
+
+def _database_readiness_check(services):
+    now = time.monotonic()
+    cached = DATABASE_READINESS_STATE.get("result")
+    cache_age = now - DATABASE_READINESS_STATE.get("checked_at", 0.0)
+    if cached and cache_age <= DATABASE_READINESS_CACHE_SECONDS:
+        return dict(cached)
+
+    if not DATABASE_READINESS_LOCK.acquire(blocking=False):
+        if cached and cache_age <= DATABASE_READINESS_MAX_STALE_SECONDS:
+            return dict(cached)
+        return {"ok": False, "message": "数据库健康检查进行中"}
+
+    try:
+        now = time.monotonic()
+        cached = DATABASE_READINESS_STATE.get("result")
+        cache_age = now - DATABASE_READINESS_STATE.get("checked_at", 0.0)
+        if cached and cache_age <= DATABASE_READINESS_CACHE_SECONDS:
+            return dict(cached)
+        try:
+            row = services.database.fetch_one(
+                "SELECT pg_is_in_recovery() AS in_recovery, now() AS checked_at"
+            )
+            writable = bool(row and not row.get("in_recovery"))
+            result = {
+                "ok": writable,
+                "writable": writable,
+                "checked_at": str((row or {}).get("checked_at") or ""),
+            }
+        except Exception as error:
+            result = {"ok": False, "message": str(error)}
+        DATABASE_READINESS_STATE["checked_at"] = time.monotonic()
+        DATABASE_READINESS_STATE["result"] = result
+        return dict(result)
+    finally:
+        DATABASE_READINESS_LOCK.release()
+
 def _readiness_checks():
     checks = {}
     config_ok = True
@@ -4759,18 +4800,7 @@ def _readiness_checks():
     }
     services = _get_cluster_services()
     if services:
-        try:
-            row = services.database.fetch_one(
-                "SELECT pg_is_in_recovery() AS in_recovery, now() AS checked_at"
-            )
-            writable = bool(row and not row.get("in_recovery"))
-            checks["database"] = {
-                "ok": writable,
-                "writable": writable,
-                "checked_at": str((row or {}).get("checked_at") or ""),
-            }
-        except Exception as error:
-            checks["database"] = {"ok": False, "message": str(error)}
+        checks["database"] = _database_readiness_check(services)
     return checks
 
 def _node_status_payload(include_checks=False):
