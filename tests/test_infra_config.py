@@ -77,6 +77,7 @@ def test_haproxy_uses_tls_patroni_health_checks(rendered):
 
     assert "bind 0.0.0.0:5433" in haproxy
     assert "option httpchk GET /primary" in haproxy
+    assert "on-marked-down shutdown-sessions" in haproxy
     assert "check-ssl" in haproxy
     assert "ca-file /run/secrets/ca.crt" in haproxy
     assert "crt /run/secrets/haproxy-client.pem" in haproxy
