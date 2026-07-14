@@ -16,6 +16,6 @@ if ! curl --silent --fail \
   exit 0
 fi
 
-pgbackrest --stanza=crm-barcode stanza-create >/dev/null 2>&1 || true
-pgbackrest --stanza=crm-barcode check
-pgbackrest --stanza=crm-barcode --type="${TYPE}" backup
+gosu postgres pgbackrest --stanza=crm-barcode stanza-create >/dev/null 2>&1 || true
+gosu postgres pgbackrest --stanza=crm-barcode check
+gosu postgres pgbackrest --stanza=crm-barcode --type="${TYPE}" backup

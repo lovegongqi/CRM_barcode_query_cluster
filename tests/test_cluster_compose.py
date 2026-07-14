@@ -74,3 +74,11 @@ def test_backup_schedule_has_weekly_full_and_daily_differential():
 
     assert "backup-if-primary diff" in text
     assert "backup-if-primary full" in text
+
+
+def test_pgbackrest_backup_runs_as_postgres_user():
+    text = (ROOT / "infra" / "pgbackrest" / "backup_if_primary.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert text.count("gosu postgres pgbackrest") == 3
