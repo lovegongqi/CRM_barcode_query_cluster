@@ -80,6 +80,10 @@ def test_database_replaces_exhausted_pool_before_running_sql():
         def __init__(self):
             self.connection = FakeConnection()
             self.returned = None
+            self.wait_timeout = None
+
+        def wait(self, timeout=None):
+            self.wait_timeout = timeout
 
         def getconn(self, timeout=None):
             return self.connection
@@ -99,7 +103,36 @@ def test_database_replaces_exhausted_pool_before_running_sql():
 
     assert database.pool is working_pool
     assert failed_pool.closed is True
+    assert working_pool.wait_timeout == 10
     assert working_pool.returned is working_pool.connection
+
+
+def test_database_does_not_publish_an_unready_replacement_pool():
+    class CurrentPool:
+        pass
+
+    class UnreadyPool:
+        def __init__(self):
+            self.closed = False
+
+        def wait(self, timeout=None):
+            raise PoolTimeout("primary is still changing")
+
+        def close(self, timeout=5):
+            self.closed = True
+
+    current_pool = CurrentPool()
+    unready_pool = UnreadyPool()
+    database = Database.__new__(Database)
+    database.pool = current_pool
+    database._pool_lock = threading.Lock()
+    database._create_pool = lambda: unready_pool
+
+    with pytest.raises(PoolTimeout, match="primary is still changing"):
+        database._replace_pool(current_pool)
+
+    assert database.pool is current_pool
+    assert unready_pool.closed is True
 
 
 def test_transaction_rolls_back_on_error(database):

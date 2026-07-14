@@ -28,7 +28,13 @@ class Database:
         replaced = False
         with self._pool_lock:
             if self.pool is failed_pool:
-                self.pool = self._create_pool()
+                replacement = self._create_pool()
+                try:
+                    replacement.wait(timeout=10)
+                except Exception:
+                    replacement.close(timeout=0)
+                    raise
+                self.pool = replacement
                 replaced = True
             pool = self.pool
         if replaced:
