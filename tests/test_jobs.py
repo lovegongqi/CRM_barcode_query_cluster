@@ -103,3 +103,50 @@ def test_job_creation_is_idempotent_and_logs_use_cursor(repository):
     assert second["id"] == first["id"]
     assert status["total"] == 1
     assert [row["message"] for row in status["logs"]] == ["继续"]
+
+
+def test_stopped_job_cancels_pending_items(repository):
+    job = repository.create_job(
+        "query",
+        [
+            {"item_key": "A", "barcode": "A"},
+            {"item_key": "B", "barcode": "B"},
+        ],
+        {},
+        "admin",
+        "stop:" + uuid.uuid4().hex,
+    )
+
+    assert repository.request_stop(job["id"]) is True
+
+    status = repository.status(job["id"])
+    assert status["stop_requested"] is True
+    assert {item["status"] for item in status["items"]} == {"cancelled"}
+    assert repository.claim_item(["query"], "hk:query-1", 120) is None
+
+
+def test_latest_job_and_needs_review_are_queryable(repository):
+    library_job = repository.create_job(
+        "library_lookup",
+        [{"item_key": "5312503010858", "barcode": "5312503010858"}],
+        {},
+        "admin",
+        "library:" + uuid.uuid4().hex,
+    )
+    transfer_job = repository.create_job(
+        "transfer",
+        [{"item_key": "transfer", "barcodes": ["5312503010858"]}],
+        {},
+        "admin",
+        "transfer:" + uuid.uuid4().hex,
+    )
+    item = repository.claim_item(["transfer"], "hk:transfer-1", 120)
+    repository.start_item(item["id"], "hk:transfer-1")
+    repository.mark_submitted(item["id"], "hk:transfer-1", "TRSF1")
+    repository.fail_item(item["id"], "hk:transfer-1", "确认结果未知")
+
+    assert repository.latest_job("library_lookup", "admin")["id"] == library_job["id"]
+    review_rows = repository.list_needs_review()
+    assert len(review_rows) == 1
+    assert review_rows[0]["job_id"] == transfer_job["id"]
+    assert review_rows[0]["external_ref"] == "TRSF1"

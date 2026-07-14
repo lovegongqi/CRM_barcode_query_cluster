@@ -67,7 +67,7 @@ def test_query_slot_claims_all_safe_query_work():
     scheduler.stop()
 
     kinds, owner, _lease_seconds = repository.claimed[0]
-    assert kinds == ("query", "library_lookup", "service_close")
+    assert kinds == ("query", "library_lookup", "transfer_summary", "service_close")
     assert owner == "hk:query-1"
     assert repository.failed == []
 

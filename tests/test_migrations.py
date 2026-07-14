@@ -11,7 +11,11 @@ def test_migration_is_idempotent(test_database_url):
 
         runner = MigrationRunner(database)
 
-        assert runner.apply() == ["0001_initial", "0002_job_safety_states"]
+        assert runner.apply() == [
+            "0001_initial",
+            "0002_job_safety_states",
+            "0003_transfer_summary_jobs",
+        ]
         assert runner.apply() == []
         assert database.fetch_one(
             "SELECT version FROM schema_migrations WHERE version = %s",

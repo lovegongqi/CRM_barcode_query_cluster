@@ -84,7 +84,7 @@ class ClusterScheduler:
                 slot_stop.wait(self.poll_interval)
                 continue
             kinds = (
-                ["query", "library_lookup", "service_close"]
+                ["query", "library_lookup", "transfer_summary", "service_close"]
                 if slot["kind"] == "query"
                 else ["transfer"]
             )

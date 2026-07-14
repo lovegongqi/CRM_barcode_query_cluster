@@ -180,6 +180,7 @@ loadLibrary();
 
 let lookupTimer = null;
 let queryTimer = null;
+let currentLibraryQueryJobId = sessionStorage.getItem('crm_product_library_query_job') || '';
 
 function normalizeSearchText(text) {
     return String(text || '').toLowerCase().replace(/\s+/g, '');
@@ -314,6 +315,10 @@ async function confirmQueryBarcode() {
         appendQueryLog(data.error || '查询启动失败', 'error');
         return;
     }
+    if (data.job_id) {
+        currentLibraryQueryJobId = data.job_id;
+        sessionStorage.setItem('crm_product_library_query_job', currentLibraryQueryJobId);
+    }
     if (queryTimer) clearInterval(queryTimer);
     queryTimer = setInterval(pollQueryStatus, 1000);
     pollQueryStatus();
@@ -340,7 +345,13 @@ function renderQueryLogs(logs) {
 }
 
 async function pollQueryStatus() {
-    const data = await fetch('/api/product-library/query/status').then(res => res.json());
+    const params = new URLSearchParams();
+    if (currentLibraryQueryJobId) params.set('job_id', currentLibraryQueryJobId);
+    const data = await fetch('/api/product-library/query/status?' + params.toString()).then(res => res.json());
+    if (data.job_id && !currentLibraryQueryJobId) {
+        currentLibraryQueryJobId = data.job_id;
+        sessionStorage.setItem('crm_product_library_query_job', currentLibraryQueryJobId);
+    }
     renderQueryLogs(data.logs || []);
     if (!data.done) return;
     clearInterval(queryTimer);
@@ -355,8 +366,14 @@ async function pollQueryStatus() {
 }
 
 async function restoreQueryStatus() {
-    const data = await fetch('/api/product-library/query/status').then(res => res.json()).catch(() => null);
+    const params = new URLSearchParams();
+    if (currentLibraryQueryJobId) params.set('job_id', currentLibraryQueryJobId);
+    const data = await fetch('/api/product-library/query/status?' + params.toString()).then(res => res.json()).catch(() => null);
     if (!data || !data.success) return;
+    if (data.job_id) {
+        currentLibraryQueryJobId = data.job_id;
+        sessionStorage.setItem('crm_product_library_query_job', currentLibraryQueryJobId);
+    }
     renderQueryLogs(data.logs || []);
     if (data.running) {
         if (queryTimer) clearInterval(queryTimer);

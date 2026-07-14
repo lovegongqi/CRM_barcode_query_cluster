@@ -93,6 +93,7 @@ SERVER_CLUSTER_CONFIG = ClusterConfig.from_env()
 CLUSTER_SERVICES = None
 CLUSTER_SERVICES_LOCK = threading.Lock()
 CLUSTER_SCHEDULER = None
+CLUSTER_HEARTBEAT_THREAD = None
 STARTUP_LOGIN_AUTO_CHECK = os.environ.get("CRM_STARTUP_LOGIN_AUTO_CHECK", "1") != "0"
 try:
     STARTUP_LOGIN_CHECK_DELAY_SECONDS = max(0, int(os.environ.get("CRM_STARTUP_LOGIN_CHECK_DELAY_SECONDS", "2")))
@@ -125,6 +126,7 @@ def _get_cluster_services():
         with CLUSTER_SERVICES_LOCK:
             if CLUSTER_SERVICES is None:
                 CLUSTER_SERVICES = build_cluster_services(SERVER_CLUSTER_CONFIG)
+    _ensure_cluster_heartbeat(CLUSTER_SERVICES)
     _ensure_cluster_scheduler(CLUSTER_SERVICES)
     return CLUSTER_SERVICES
 
@@ -145,11 +147,27 @@ def _ensure_cluster_scheduler(services):
             {
                 "query": _handle_cluster_query_item,
                 "library_lookup": _handle_cluster_library_item,
+                "transfer_summary": _handle_cluster_transfer_summary_item,
                 "transfer": _handle_cluster_transfer_item,
                 "service_close": _handle_cluster_service_close_item,
             },
         )
         CLUSTER_SCHEDULER.start()
+
+
+def _ensure_cluster_heartbeat(services):
+    global CLUSTER_HEARTBEAT_THREAD
+    if CLUSTER_HEARTBEAT_THREAD is not None and CLUSTER_HEARTBEAT_THREAD.is_alive():
+        return
+    with CLUSTER_SERVICES_LOCK:
+        if CLUSTER_HEARTBEAT_THREAD is not None and CLUSTER_HEARTBEAT_THREAD.is_alive():
+            return
+        CLUSTER_HEARTBEAT_THREAD = threading.Thread(
+            target=_cluster_heartbeat_loop,
+            name=f"cluster-heartbeat:{SERVER_CLUSTER_CONFIG.node_id}",
+            daemon=True,
+        )
+        CLUSTER_HEARTBEAT_THREAD.start()
 
 class CRMSession:
     def __init__(self, session_dir=None):
@@ -4739,6 +4757,20 @@ def _readiness_checks():
         "query_workers": len(getattr(crm_pool, "query_slots", []) or []),
         "transfer_workers": len(getattr(crm_pool, "transfer_slots", []) or []),
     }
+    services = _get_cluster_services()
+    if services:
+        try:
+            row = services.database.fetch_one(
+                "SELECT pg_is_in_recovery() AS in_recovery, now() AS checked_at"
+            )
+            writable = bool(row and not row.get("in_recovery"))
+            checks["database"] = {
+                "ok": writable,
+                "writable": writable,
+                "checked_at": str((row or {}).get("checked_at") or ""),
+            }
+        except Exception as error:
+            checks["database"] = {"ok": False, "message": str(error)}
     return checks
 
 def _node_status_payload(include_checks=False):
@@ -5001,7 +5033,29 @@ def _env_cluster_nodes():
         "url": url,
     }]
 
+def _cluster_timestamp_is_future(value):
+    try:
+        return datetime.fromisoformat(str(value)).timestamp() >= time.time()
+    except (TypeError, ValueError):
+        return False
+
 def load_cluster_nodes():
+    services = _get_cluster_services()
+    if services:
+        return [
+            {
+                "id": row["node_id"],
+                "name": row["node_name"],
+                "role": row["node_role"],
+                "url": row.get("public_url") or "",
+                "online": _cluster_timestamp_is_future(row.get("expires_at")),
+                "database_role": row.get("database_role") or "",
+                "replication_lag_bytes": row.get("replication_lag_bytes"),
+                "last_seen_at": row.get("last_seen_at") or "",
+                "status": row.get("status_json") or {},
+            }
+            for row in services.catalog.list_nodes()
+        ]
     if os.path.exists(CLUSTER_NODES_FILE):
         try:
             with open(CLUSTER_NODES_FILE, "r", encoding="utf-8") as f:
@@ -5659,6 +5713,58 @@ def _cluster_scheduler_slots():
     ]
 
 
+def _cluster_heartbeat_once():
+    services = CLUSTER_SERVICES
+    if not services:
+        return
+    slots = _cluster_scheduler_slots()
+    try:
+        database_state = services.database.fetch_one(
+            "SELECT pg_is_in_recovery() AS in_recovery"
+        ) or {}
+        database_role = "replica" if database_state.get("in_recovery") else "leader"
+    except Exception:
+        database_role = "unknown"
+    services.catalog.heartbeat_node(
+        {
+            "node_id": SERVER_CLUSTER_CONFIG.node_id,
+            "node_name": SERVER_CLUSTER_CONFIG.node_name,
+            "node_role": SERVER_CLUSTER_CONFIG.node_role,
+            "public_url": _public_node_url(),
+            "query_workers": len(crm_pool.query_slots),
+            "transfer_workers": len(crm_pool.transfer_slots),
+            "database_role": database_role,
+            "status": {
+                "started_at": datetime.fromtimestamp(APP_STARTED_AT).isoformat(),
+                "version": _env_text("CRM_APP_VERSION", _env_text("GITHUB_SHA", "")),
+            },
+        },
+        ttl_seconds=120,
+    )
+    services.catalog.replace_slots(
+        SERVER_CLUSTER_CONFIG.node_id,
+        [
+            {
+                "slot_id": row["slot_id"],
+                "kind": row["kind"],
+                "logged_in": row["logged_in"],
+                "busy": bool(row["worker"].busy),
+            }
+            for row in slots
+        ],
+        ttl_seconds=120,
+    )
+
+
+def _cluster_heartbeat_loop():
+    while True:
+        try:
+            _cluster_heartbeat_once()
+        except Exception as error:
+            print(f"  [集群] 节点心跳失败: {error}")
+        time.sleep(30)
+
+
 def _cluster_job_logger(item, slot_id):
     def emit(message, level="info"):
         CLUSTER_SERVICES.jobs.append_log(
@@ -5703,6 +5809,29 @@ def _handle_cluster_library_item(worker, item, repository):
         emit(f"临时查询文件删除失败：{error}", "warn")
     emit(f"条码匹配补充完成：{barcode}", "success")
     return {"barcode": barcode}
+
+
+def _handle_cluster_transfer_summary_item(worker, item, repository):
+    payload = item.get("payload_json") or {}
+    emit = _cluster_job_logger(item, worker.slot_id)
+    barcodes = normalize_input_barcodes(payload.get("barcodes") or [])
+    transfer_type = str(payload.get("transfer_type") or "移出").strip()
+    distributor = str(payload.get("distributor") or "").strip()
+    excluded = payload.get("excluded") or []
+    emit(f"开始汇总预览，共 {len(barcodes)} 个条码")
+    auto_library = ensure_product_library_for_barcodes(barcodes, emit, worker)
+    summary = build_transfer_summary(barcodes, transfer_type, distributor)
+    summary["excluded"] = excluded
+    summary["auto_library"] = auto_library
+    _exclude_unmatched_transfer_barcodes(summary)
+    if not summary.get("groups"):
+        raise RuntimeError("本次没有可移库条码，未匹配到产品信息的条码已临时排除")
+    if summary.get("missing"):
+        raise RuntimeError("部分条码没有查询结果，也没有匹配到条码前缀，请先维护条码匹配或查询一次该产品条码")
+    if summary.get("incomplete"):
+        raise RuntimeError("部分条码缺少产品名称或产品编码，无法自动汇总")
+    emit(f"汇总完成：产品 {len(summary.get('groups') or [])} 条，条码 {len(summary.get('barcodes') or [])} 个", "success")
+    return {"summary": summary}
 
 
 def _handle_cluster_transfer_item(worker, item, repository):
@@ -5758,7 +5887,17 @@ def _handle_cluster_service_close_item(worker, item, repository):
     if not success:
         error = result.get("error") if isinstance(result, dict) else result
         raise RuntimeError(error or "结单失败")
-    return result if isinstance(result, dict) else {"result": result}
+    payload_result = result if isinstance(result, dict) else {"result": result}
+    for row in payload_result.get("results") or []:
+        if not row.get("success") and row.get("status") != "already_closed":
+            continue
+        service_no = str(row.get("service_no") or service_order.get("service_no") or "").strip()
+        if service_no:
+            _record_service_closed_for_barcodes(
+                service_no,
+                row.get("barcodes") or service_order.get("barcodes") or [],
+            )
+    return payload_result
 
 def refresh_product_library_from_query_fields(barcode, fields, log=None):
     info = _barcode_product_info({
@@ -7236,6 +7375,45 @@ def api_service_close_start():
             reason += f"，未找到结果 {len(missing)} 个"
         return jsonify({'success': False, 'error': reason, **prepared})
 
+    services = _get_cluster_services()
+    if services:
+        account = current_account_public() or {}
+        job = services.jobs.create_job(
+            "service_close",
+            [
+                {
+                    "item_key": str(order.get("service_no") or ""),
+                    "kind": "service_close",
+                    "service_order": order,
+                    "max_attempts": 2,
+                }
+                for order in orders
+            ],
+            {
+                "orders": orders,
+                "missing": prepared.get("missing") or [],
+                "no_service": prepared.get("no_service") or [],
+            },
+            account.get("username") or "desktop",
+            data.get("idempotency_key") or f"service-close:{uuid.uuid4().hex}",
+        )
+        services.jobs.append_log(
+            job["id"], "results", SERVER_CLUSTER_CONFIG.node_id, "", "info",
+            f"开始批量结单：共 {len(orders)} 个服务单",
+        )
+        return jsonify({
+            'success': True,
+            'job_id': job['id'],
+            'slot_id': '',
+            'slot_ids': [],
+            'slot_label': '自动调度空闲查询通道',
+            'orders': orders,
+            'total': len(orders),
+            'missing': prepared.get("missing") or [],
+            'no_service': prepared.get("no_service") or [],
+            'message': f'批量结单已开始，共 {len(orders)} 个服务单',
+        })
+
     workers, error = _select_idle_query_workers_desc()
     if error:
         return jsonify({'success': False, 'error': error})
@@ -7285,6 +7463,56 @@ def api_service_close_status():
         since = int(request.args.get('since') or 0)
     except (TypeError, ValueError):
         since = 0
+    services = _get_cluster_services()
+    if services:
+        job_id = str(request.args.get("job_id") or "").strip()
+        status = services.jobs.status(job_id, since) if job_id else None
+        if not status:
+            return jsonify({'success': True, 'job_id': job_id, 'running': False, 'done': False, 'logs': [], 'results': []})
+        items = status.get("items") or []
+        results = []
+        for item in items:
+            result = item.get("result_json") or {}
+            result_rows = result.get("results") if isinstance(result, dict) else None
+            if result_rows:
+                results.extend(result_rows)
+            elif item.get("error"):
+                order = (item.get("payload_json") or {}).get("service_order") or {}
+                results.append({
+                    "service_no": item["item_key"],
+                    "success": False,
+                    "status": item["status"],
+                    "message": item["error"],
+                    "barcodes": order.get("barcodes") or [],
+                    "customer_names": order.get("customer_names") or [],
+                })
+        logs = status.get("logs") or []
+        return jsonify({
+            'success': True,
+            'job_id': status['id'],
+            'slot_id': '',
+            'slot_ids': [],
+            'running': status['status'] in ('pending', 'running'),
+            'done': status['status'] not in ('pending', 'running'),
+            'close_success': status['status'] == 'succeeded',
+            'error': '',
+            'total': status['total'],
+            'current': status['completed'],
+            'closed_count': sum(row.get('success') and row.get('status') != 'already_closed' for row in results),
+            'already_closed_count': sum(row.get('status') == 'already_closed' for row in results),
+            'failed_count': status['failed'],
+            'orders': (status.get('payload_json') or {}).get('orders') or [],
+            'results': results,
+            'missing': (status.get('payload_json') or {}).get('missing') or [],
+            'no_service': (status.get('payload_json') or {}).get('no_service') or [],
+            'logs': [
+                {'seq': row['id'], 'time': str(row['created_at'])[11:19], 'message': row['message'], 'level': row['level']}
+                for row in logs
+            ],
+            'log_seq': max([since] + [int(row['id']) for row in logs]),
+            'started_at': status.get('started_at') or '',
+            'finished_at': status.get('finished_at') or '',
+        })
     slot_id = crm_pool.normalize_slot(request.args.get("slot_id"), "query")
     job_id = request.args.get("job_id") or _latest_job_id(latest_service_close_job_by_slot, slot_id)
     with service_close_job_lock:
@@ -7411,6 +7639,40 @@ def api_transfer_summary_start():
     if not barcodes:
         return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需移库' if excluded else '请先选择要移库的条码', 'excluded': excluded})
 
+    services = _get_cluster_services()
+    if services:
+        account = current_account_public() or {}
+        job = services.jobs.create_job(
+            "transfer_summary",
+            [{
+                "item_key": uuid.uuid4().hex,
+                "kind": "transfer_summary",
+                "barcodes": barcodes,
+                "distributor": distributor,
+                "transfer_type": transfer_type,
+                "excluded": excluded,
+                "max_attempts": 6,
+            }],
+            {
+                "barcodes": barcodes,
+                "distributor": distributor,
+                "transfer_type": transfer_type,
+                "excluded": excluded,
+            },
+            account.get("username") or "desktop",
+            data.get("idempotency_key") or f"transfer-summary:{uuid.uuid4().hex}",
+        )
+        services.jobs.append_log(
+            job["id"], "transfer", SERVER_CLUSTER_CONFIG.node_id, "", "info",
+            f"开始汇总预览，共 {len(barcodes)} 个条码",
+        )
+        return jsonify({
+            'success': True,
+            'job_id': job['id'],
+            'slot_id': slot_id,
+            'message': '汇总预览已加入空闲查询通道队列',
+        })
+
     with summary_job_lock:
         running_job_id = latest_summary_job_by_slot.get(slot_id)
         running_job = summary_jobs.get(running_job_id)
@@ -7438,6 +7700,37 @@ def api_transfer_summary_start():
 
 @app.route("/api/transfer/summary/status", methods=["GET"])
 def api_transfer_summary_status():
+    services = _get_cluster_services()
+    if services:
+        job_id = str(request.args.get("job_id") or "").strip()
+        status = services.jobs.status(job_id) if job_id else None
+        if not status:
+            return jsonify({
+                'success': True, 'job_id': job_id, 'slot_id': '', 'running': False,
+                'done': False, 'summary_success': False, 'error': '', 'summary': None,
+                'logs': [], 'log_seq': 0, 'started_at': '', 'finished_at': '',
+            })
+        item = (status.get("items") or [{}])[0]
+        result = item.get("result_json") or {}
+        logs = status.get("logs") or []
+        terminal = status['status'] not in ('pending', 'running')
+        return jsonify({
+            'success': True,
+            'job_id': status['id'],
+            'slot_id': (item.get('lease_owner') or '').split(':', 1)[-1] if item.get('lease_owner') else '',
+            'running': not terminal,
+            'done': terminal,
+            'summary_success': status['status'] == 'succeeded',
+            'error': item.get('error') or '',
+            'summary': result.get('summary'),
+            'logs': [
+                {'seq': row['id'], 'time': str(row['created_at'])[11:19], 'message': row['message'], 'level': row['level']}
+                for row in logs
+            ],
+            'log_seq': max([0] + [int(row['id']) for row in logs]),
+            'started_at': status.get('started_at') or '',
+            'finished_at': status.get('finished_at') or '',
+        })
     slot_id = crm_pool.normalize_slot(request.args.get("slot_id"), "transfer")
     job_id = request.args.get("job_id") or _latest_job_id(latest_summary_job_by_slot, slot_id)
     with summary_job_lock:
@@ -7474,12 +7767,14 @@ def api_crm_transfer():
     if not distributor:
         return jsonify({'success': False, 'error': '目标分销商不能为空'})
 
-    representatives = _missing_product_library_representatives(barcodes)
-    if representatives:
-        ready, ready_message = _crm_ready_for_auto_query(worker)
-        if not ready:
-            return jsonify({'success': False, 'error': ready_message})
-        ensure_product_library_for_barcodes(barcodes, None, worker)
+    services = _get_cluster_services()
+    if not services:
+        representatives = _missing_product_library_representatives(barcodes)
+        if representatives:
+            ready, ready_message = _crm_ready_for_auto_query(worker)
+            if not ready:
+                return jsonify({'success': False, 'error': ready_message})
+            ensure_product_library_for_barcodes(barcodes, None, worker)
 
     summary = build_transfer_summary(barcodes, transfer_type, distributor)
     summary['excluded'] = excluded
@@ -7494,6 +7789,42 @@ def api_crm_transfer():
         return jsonify({'success': False, 'error': '部分条码没有查询结果，也没有匹配到条码前缀，请先维护条码匹配或查询一次该产品条码', 'summary': summary})
     if summary['incomplete']:
         return jsonify({'success': False, 'error': '部分条码缺少产品名称或产品编码，无法自动移库', 'summary': summary})
+
+    if services:
+        account = current_account_public() or {}
+        job = services.jobs.create_job(
+            "transfer",
+            [{
+                "item_key": uuid.uuid4().hex,
+                "kind": "transfer",
+                "summary": summary,
+                "distributor": distributor,
+                "transfer_type": transfer_type,
+                "remark": remark,
+                "max_attempts": 2,
+            }],
+            {"summary": summary, "distributor": distributor, "transfer_type": transfer_type, "remark": remark},
+            account.get("username") or "desktop",
+            data.get("idempotency_key") or f"transfer:{uuid.uuid4().hex}",
+        )
+        services.jobs.append_log(
+            job["id"], "transfer", SERVER_CLUSTER_CONFIG.node_id, "", "info",
+            f"开始提交移库：{transfer_type}，分销商 {distributor}",
+        )
+        return jsonify({
+            'success': True,
+            'started': True,
+            'job_id': job['id'],
+            'slot_id': '',
+            'message': '移库任务已开始，请查看日志',
+            'summary': summary,
+            'transfer': {
+                'dealer': own_dealer_name(),
+                'distributor': distributor,
+                'transfer_type': transfer_type,
+                'remark': remark,
+            },
+        })
 
     with transfer_job_lock:
         running_job_id = latest_transfer_job_by_slot.get(slot_id)
@@ -7536,6 +7867,42 @@ def api_crm_transfer():
 
 @app.route("/api/crm/transfer/status", methods=["GET"])
 def api_crm_transfer_status():
+    services = _get_cluster_services()
+    if services:
+        job_id = str(request.args.get("job_id") or "").strip()
+        status = services.jobs.status(job_id) if job_id else None
+        if not status:
+            return jsonify({'success': True, 'job_id': job_id, 'running': False, 'done': False, 'logs': []})
+        item = (status.get('items') or [{}])[0]
+        result = item.get('result_json') or {}
+        logs = status.get('logs') or []
+        transfer = status.get('payload_json') or {}
+        return jsonify({
+            'success': True,
+            'job_id': status['id'],
+            'slot_id': (item.get('lease_owner') or '').split(':', 1)[-1],
+            'running': status['status'] in ('pending', 'running'),
+            'done': status['status'] not in ('pending', 'running'),
+            'transfer_success': status['status'] == 'succeeded',
+            'needs_review': item.get('status') == 'needs_review',
+            'error': item.get('error') or '',
+            'message': item.get('error') or '',
+            'result': result,
+            'summary': transfer.get('summary'),
+            'transfer': {
+                'dealer': own_dealer_name(),
+                'distributor': transfer.get('distributor') or '',
+                'transfer_type': transfer.get('transfer_type') or '',
+                'remark': transfer.get('remark') or '',
+            },
+            'logs': [
+                {'seq': row['id'], 'time': str(row['created_at'])[11:19], 'message': row['message'], 'level': row['level']}
+                for row in logs
+            ],
+            'log_seq': max([0] + [int(row['id']) for row in logs]),
+            'started_at': status.get('started_at') or '',
+            'finished_at': status.get('finished_at') or '',
+        })
     slot_id = crm_pool.normalize_slot(request.args.get("slot_id"), "transfer")
     job_id = request.args.get("job_id") or _latest_job_id(latest_transfer_job_by_slot, slot_id)
     with transfer_job_lock:
@@ -7734,6 +8101,28 @@ def api_product_library_query_start():
         return jsonify({'success': False, 'error': '请输入条码'})
     if is_disassembly_barcode(barcode):
         return jsonify({'success': False, 'error': '这是拆机条码，CRM 不查询，也不写入条码匹配'})
+    services = _get_cluster_services()
+    if services:
+        account = current_account_public() or {}
+        created_by = account.get("username") or "desktop"
+        job = services.jobs.create_job(
+            "library_lookup",
+            [{"item_key": barcode, "barcode": barcode, "max_attempts": 6}],
+            {"barcode": barcode},
+            created_by,
+            data.get("idempotency_key") or f"library:{uuid.uuid4().hex}",
+        )
+        services.jobs.append_log(
+            job["id"], "product-library", SERVER_CLUSTER_CONFIG.node_id, "", "info",
+            f"准备查询条码：{barcode}",
+        )
+        return jsonify({
+            'success': True,
+            'job_id': job['id'],
+            'slot_id': '',
+            'slot_label': '自动调度空闲查询通道',
+            'message': '条码查询已加入队列',
+        })
     with library_query_lock:
         if library_query_job['running']:
             return jsonify({'success': False, 'error': '已有条码匹配查询正在执行'})
@@ -7764,6 +8153,47 @@ def api_product_library_query_start():
 
 @app.route("/api/product-library/query/status")
 def api_product_library_query_status():
+    services = _get_cluster_services()
+    if services:
+        account = current_account_public() or {}
+        created_by = account.get("username") or "desktop"
+        job_id = str(request.args.get("job_id") or "").strip()
+        if not job_id:
+            latest = services.jobs.latest_job("library_lookup", created_by) or {}
+            job_id = latest.get("id") or ""
+        status = services.jobs.status(job_id) if job_id else None
+        if not status:
+            return jsonify({
+                'success': True, 'job_id': job_id, 'running': False, 'done': False,
+                'query_success': False, 'barcode': '', 'slot_id': '', 'slot_label': '',
+                'error': '', 'logs': [], 'started_at': '', 'finished_at': '',
+            })
+        items = status.get("items") or []
+        item = items[0] if items else {}
+        logs = status.get("logs") or []
+        terminal = status['status'] not in ('pending', 'running')
+        return jsonify({
+            'success': True,
+            'job_id': status['id'],
+            'running': not terminal,
+            'done': terminal,
+            'query_success': status['status'] == 'succeeded',
+            'barcode': item.get('item_key') or (status.get('payload_json') or {}).get('barcode') or '',
+            'slot_id': (item.get('lease_owner') or '').split(':', 1)[-1] if item.get('lease_owner') else '',
+            'slot_label': '自动调度空闲查询通道',
+            'error': item.get('error') or '',
+            'logs': [
+                {
+                    'id': row['id'],
+                    'time': str(row['created_at'])[11:19],
+                    'message': row['message'],
+                    'level': row['level'],
+                }
+                for row in logs
+            ],
+            'started_at': status.get('started_at') or '',
+            'finished_at': status.get('finished_at') or '',
+        })
     with library_query_lock:
         return jsonify({
             'success': True,
@@ -7899,18 +8329,74 @@ def api_runtime_config_save():
 def api_cluster_nodes():
     if not is_admin_account():
         return jsonify({'success': False, 'error': '只有管理员可以查看服务器配置'}), 403
+    services = _get_cluster_services()
     nodes = load_cluster_nodes()
+    if services:
+        slots_by_node = {}
+        for slot in services.catalog.list_slots():
+            slots_by_node.setdefault(slot["node_id"], []).append(slot)
+        enriched = []
+        for node in nodes:
+            slots = slots_by_node.get(node["id"], [])
+            query_slots = [row for row in slots if row.get("kind") == "query"]
+            transfer_slots = [row for row in slots if row.get("kind") == "transfer"]
+            status = dict(node.get("status") or {})
+            status["crm"] = {
+                "query_total": len(query_slots),
+                "query_logged_in": sum(bool(row.get("logged_in")) for row in query_slots),
+                "query_busy": sum(bool(row.get("busy")) for row in query_slots),
+                "transfer_total": len(transfer_slots),
+                "transfer_logged_in": sum(bool(row.get("logged_in")) for row in transfer_slots),
+                "transfer_busy": sum(bool(row.get("busy")) for row in transfer_slots),
+                "slots": {"query": query_slots, "transfer": transfer_slots},
+            }
+            enriched.append({**node, "status": status})
+        nodes = enriched
     return jsonify({
         'success': True,
         'local_node_id': _node_identity().get("id"),
-        'nodes': [_cluster_node_status(node) for node in nodes],
+        'nodes': nodes if services else [_cluster_node_status(node) for node in nodes],
     })
+
+@app.route("/api/cluster/needs-review")
+def api_cluster_needs_review():
+    if not is_admin_account():
+        return jsonify({'success': False, 'error': '只有管理员可以查看待复核任务'}), 403
+    services = _get_cluster_services()
+    if not services:
+        return jsonify({'success': True, 'items': []})
+    try:
+        limit = int(request.args.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    return jsonify({'success': True, 'items': services.jobs.list_needs_review(limit)})
 
 @app.route("/api/cluster/nodes/<node_id>/runtime-config", methods=["POST"])
 def api_cluster_node_runtime_config_save(node_id):
     if not is_admin_account():
         return jsonify({'success': False, 'error': '只有管理员可以修改服务器配置'}), 403
     data = request.get_json() or {}
+    services = _get_cluster_services()
+    if services:
+        node = next(
+            (row for row in services.catalog.list_nodes() if row.get("node_id") == node_id),
+            None,
+        )
+        if not node:
+            return jsonify({'success': False, 'error': '未找到这个服务器节点'}), 404
+        current = services.catalog.get_runtime_config(f"node:{node_id}") or {}
+        config = {
+            **current,
+            "query_workers": _normalize_worker_count(data.get("query_workers"), current.get("query_workers", 5)),
+            "transfer_workers": _normalize_worker_count(data.get("transfer_workers"), current.get("transfer_workers", 2)),
+        }
+        for key in ("own_dealer_name", "frozen_warehouse_name", "frozen_warehouse_save_only"):
+            if key in data:
+                config[key] = data[key]
+        services.catalog.set_runtime_config(f"node:{node_id}", config)
+        if node_id == SERVER_CLUSTER_CONFIG.node_id:
+            crm_pool.resize(config["query_workers"], config["transfer_workers"])
+        return jsonify({'success': True, 'node_id': node_id, 'config': config})
     node = next((row for row in load_cluster_nodes() if row.get("id") == node_id), None)
     if not node:
         return jsonify({'success': False, 'error': '未找到这个服务器节点'}), 404
@@ -8237,6 +8723,40 @@ def api_crm_query():
 @app.route("/api/crm/batch/start", methods=["POST"])
 def api_crm_batch_start():
     data = request.get_json()
+    services = _get_cluster_services()
+    if services:
+        barcodes = normalize_input_barcodes(data.get('barcodes') or [])
+        barcodes, excluded = filter_disassembly_barcodes(barcodes)
+        retry_limit = _normalize_retry_limit(data.get('retry_limit', DEFAULT_BATCH_RETRY_LIMIT))
+        if not barcodes:
+            return jsonify({'success': False, 'error': '输入的条码都是拆机条码，无需查询' if excluded else '条码不能为空', 'excluded': excluded})
+        account = current_account_public() or {}
+        job = services.jobs.create_job(
+            "query",
+            [
+                {
+                    "item_key": barcode,
+                    "barcode": barcode,
+                    "max_attempts": retry_limit + 1,
+                }
+                for barcode in barcodes
+            ],
+            {"retry_limit": retry_limit, "excluded": excluded},
+            account.get("username") or "desktop",
+            data.get("idempotency_key") or f"query:{uuid.uuid4().hex}",
+        )
+        services.jobs.append_log(
+            job["id"], "crm", SERVER_CLUSTER_CONFIG.node_id, "", "info",
+            f"开始批量查询：共 {len(barcodes)} 个条码",
+        )
+        return jsonify({
+            'success': True,
+            'job_id': job['id'],
+            'slot_id': '',
+            'total': len(barcodes),
+            'retry_limit': retry_limit,
+            'excluded': excluded,
+        })
     slot_id = _request_slot_id("query")
     worker = crm_pool.get(slot_id, "query")
     barcodes = data.get('barcodes') or []
@@ -8270,6 +8790,59 @@ def api_crm_batch_status():
     except (TypeError, ValueError):
         since = 0
     include_results = request.args.get('include_results') in ('1', 'true', 'yes')
+    services = _get_cluster_services()
+    if services:
+        job_id = str(request.args.get("job_id") or "").strip()
+        status = services.jobs.status(job_id, since_log_id=since) if job_id else None
+        if not status:
+            return jsonify({
+                'success': True, 'job_id': job_id, 'slot_id': '', 'running': False,
+                'stop_requested': False, 'total': 0, 'current': 0,
+                'success_count': 0, 'failed_count': 0, 'retry_limit': 0,
+                'log_seq': since, 'logs': [], 'results_count': 0,
+                'started_at': '', 'finished_at': '',
+            })
+        items = status.get("items") or []
+        logs = status.get("logs") or []
+        results = [
+            {
+                'barcode': item['item_key'],
+                'success': item['status'] == 'succeeded',
+                'attempts': item['attempts'],
+                'error': item.get('error') or '',
+                **(item.get('result_json') or {}),
+            }
+            for item in items
+            if item['status'] in ('succeeded', 'failed', 'cancelled', 'needs_review')
+        ]
+        payload = {
+            'success': True,
+            'job_id': status['id'],
+            'slot_id': next((item.get('lease_owner', '').split(':', 1)[-1] for item in items if item.get('lease_owner')), ''),
+            'running': status['status'] in ('pending', 'running'),
+            'stop_requested': status['stop_requested'],
+            'total': status['total'],
+            'current': status['completed'],
+            'success_count': status['succeeded'],
+            'failed_count': status['failed'],
+            'retry_limit': int((status.get('payload_json') or {}).get('retry_limit', 0)),
+            'log_seq': max([since] + [int(row['id']) for row in logs]),
+            'logs': [
+                {
+                    'seq': row['id'],
+                    'time': str(row['created_at'])[11:19],
+                    'message': row['message'],
+                    'level': row['level'],
+                }
+                for row in logs
+            ],
+            'results_count': len(results),
+            'started_at': status.get('started_at') or '',
+            'finished_at': status.get('finished_at') or '',
+        }
+        if include_results:
+            payload['results'] = results
+        return jsonify(payload)
     slot_id = crm_pool.normalize_slot(request.args.get("slot_id"), "query")
     job_id = request.args.get("job_id") or _latest_job_id(latest_batch_job_by_slot, slot_id)
     with batch_job_lock:
@@ -8299,6 +8872,12 @@ def api_crm_batch_status():
 @app.route("/api/crm/batch/stop", methods=["POST"])
 def api_crm_batch_stop():
     data = request.get_json(silent=True) or {}
+    services = _get_cluster_services()
+    if services:
+        job_id = str(request.args.get("job_id") or data.get("job_id") or "").strip()
+        if job_id and services.jobs.request_stop(job_id):
+            return jsonify({'success': True, 'job_id': job_id, 'slot_id': ''})
+        return jsonify({'success': False, 'error': '没有正在运行的批量查询'})
     slot_id = crm_pool.normalize_slot(request.args.get("slot_id") or data.get("slot_id"), "query")
     job_id = request.args.get("job_id") or data.get("job_id") or _latest_job_id(latest_batch_job_by_slot, slot_id)
     with batch_job_lock:

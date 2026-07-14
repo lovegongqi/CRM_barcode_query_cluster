@@ -130,6 +130,12 @@
         </div>
     </div>
 
+    <div class="card" id="needsReviewCard" style="display:none">
+        <h2>待人工复核</h2>
+        <p class="muted" style="margin-bottom:12px;">CRM 已提交但最终结果不确定的移库或结单。这里只显示，不会自动重试。</p>
+        <div class="node-table-wrap" id="needsReviewBox"><div class="muted">正在读取...</div></div>
+    </div>
+
     <div class="card" id="bulkCrmLoginCard" style="display:none">
         <h2>CRM 所有通道批量登录</h2>
         <div class="bulk-login-grid">
@@ -256,6 +262,39 @@ async function loadClusterNodes() {
     }
     clusterNodes = data.nodes || [];
     renderClusterNodes();
+}
+
+async function loadNeedsReview() {
+    const card = document.getElementById('needsReviewCard');
+    const box = document.getElementById('needsReviewBox');
+    if (!card || !box) return;
+    const data = await fetch('/api/cluster/needs-review').then(res => res.json()).catch(() => null);
+    if (!data || !data.success) {
+        card.style.display = 'none';
+        return;
+    }
+    const rows = data.items || [];
+    card.style.display = '';
+    if (!rows.length) {
+        box.innerHTML = '<div class="muted">当前没有待人工复核任务。</div>';
+        return;
+    }
+    box.innerHTML = `
+        <table>
+            <thead><tr><th>类型</th><th>CRM 单号</th><th>任务内容</th><th>执行通道</th><th>原因</th><th>更新时间</th></tr></thead>
+            <tbody>${rows.map(row => {
+                const payload = row.payload_json || {};
+                const content = payload.barcodes || (payload.service_order || {}).barcodes || row.item_key || '';
+                return `<tr>
+                    <td>${row.kind === 'transfer' ? '移库' : '结单'}</td>
+                    <td>${escapeHtml(row.external_ref || '')}</td>
+                    <td>${escapeHtml(Array.isArray(content) ? content.join('，') : content)}</td>
+                    <td>${escapeHtml(row.lease_owner || '')}</td>
+                    <td>${escapeHtml(row.error || '')}</td>
+                    <td>${escapeHtml(row.updated_at || '')}</td>
+                </tr>`;
+            }).join('')}</tbody>
+        </table>`;
 }
 
 async function saveClusterNodeConfig(nodeId) {
@@ -538,6 +577,7 @@ async function loadAccounts() {
         document.getElementById('bulkCrmLoginCard').style.display = '';
         loadRuntimeConfig();
         loadClusterNodes();
+        loadNeedsReview();
         loadBulkCrmSlots();
         loadSavedCrmCredentials();
         if (currentBulkCrmLoginJobId) startBulkLoginPolling();
@@ -555,6 +595,7 @@ async function loadAccounts() {
     if (canManage) {
         loadRuntimeConfig();
         loadClusterNodes();
+        loadNeedsReview();
         loadBulkCrmSlots();
         loadSavedCrmCredentials();
         if (currentBulkCrmLoginJobId) startBulkLoginPolling();

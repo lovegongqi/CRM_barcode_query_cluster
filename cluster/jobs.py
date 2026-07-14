@@ -91,17 +91,19 @@ class JobRepository:
         with self.db.transaction() as connection:
             row = connection.execute(
                 """
-                SELECT *
-                FROM job_items
-                WHERE kind = ANY(%s)
+                SELECT item.*
+                FROM job_items AS item
+                JOIN jobs AS job ON job.id = item.job_id
+                WHERE item.kind = ANY(%s)
+                  AND job.stop_requested = FALSE
                   AND (
-                    status = 'pending'
+                    item.status = 'pending'
                     OR (
-                        status = 'failed'
-                        AND attempts < COALESCE((payload_json->>'max_attempts')::integer, 6)
+                        item.status = 'failed'
+                        AND item.attempts < COALESCE((item.payload_json->>'max_attempts')::integer, 6)
                     )
                   )
-                ORDER BY created_at, id
+                ORDER BY item.created_at, item.id
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
                 """,
@@ -133,6 +135,31 @@ class JobRepository:
                 (row["job_id"],),
             )
             return _plain(claimed)
+
+    def request_stop(self, job_id: str) -> bool:
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                """
+                UPDATE jobs SET stop_requested = TRUE, updated_at = now()
+                WHERE id = %s
+                RETURNING id
+                """,
+                (job_id,),
+            ).fetchone()
+            if not row:
+                return False
+            connection.execute(
+                """
+                UPDATE job_items SET
+                    status = 'cancelled',
+                    error = '用户已停止任务',
+                    updated_at = now()
+                WHERE job_id = %s AND status IN ('pending', 'failed')
+                """,
+                (job_id,),
+            )
+            self._refresh_job(connection, row["id"])
+            return True
 
     def start_item(self, item_id: str, owner: str) -> bool:
         return bool(
@@ -300,6 +327,41 @@ class JobRepository:
         result["logs"] = [_plain(row) for row in logs]
         result["needs_review"] = sum(row["status"] == "needs_review" for row in items)
         return result
+
+    def latest_job(self, job_type: str, created_by: str = ""):
+        params = [job_type]
+        created_by_sql = ""
+        if created_by:
+            created_by_sql = " AND created_by = %s"
+            params.append(created_by)
+        row = self.db.fetch_one(
+            f"""
+            SELECT * FROM jobs
+            WHERE type = %s{created_by_sql}
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            tuple(params),
+        )
+        return _plain(row)
+
+    def list_needs_review(self, limit: int = 100) -> list[dict]:
+        rows = self.db.fetch_all(
+            """
+            SELECT
+                item.*,
+                job.type AS job_type,
+                job.created_by,
+                job.created_at AS job_created_at
+            FROM job_items AS item
+            JOIN jobs AS job ON job.id = item.job_id
+            WHERE item.status = 'needs_review'
+            ORDER BY item.updated_at DESC, item.id DESC
+            LIMIT %s
+            """,
+            (max(1, min(int(limit), 500)),),
+        )
+        return [_plain(row) for row in rows]
 
     @staticmethod
     def _refresh_job(connection, job_id) -> None:
