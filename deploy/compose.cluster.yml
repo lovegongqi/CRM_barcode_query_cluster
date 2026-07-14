@@ -143,6 +143,17 @@ services:
       retries: 12
       start_period: 30s
 
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}
+    profiles: ["origin"]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate run
+
   nas-r2-mirror:
     image: ${RCLONE_IMAGE}
     profiles: ["nas"]

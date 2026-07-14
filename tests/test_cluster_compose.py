@@ -25,6 +25,16 @@ def test_haproxy_can_read_root_owned_cluster_credentials():
     assert 'user: "0:0"' in haproxy
 
 
+def test_public_origins_run_independent_cloudflare_tunnels():
+    text = (ROOT / "deploy" / "compose.cluster.yml").read_text(encoding="utf-8")
+    cloudflared = text.split("  cloudflared:", 1)[1].split("\n  nas-r2-mirror:", 1)[0]
+
+    assert 'profiles: ["origin"]' in cloudflared
+    assert "TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}" in cloudflared
+    assert "http://app:5001" not in cloudflared
+    assert "tunnel --no-autoupdate run" in cloudflared
+
+
 def test_patroni_replication_uses_mutual_tls_credentials():
     text = (ROOT / "deploy" / "compose.cluster.yml").read_text(encoding="utf-8")
 
