@@ -18,6 +18,13 @@ def test_compose_runs_shared_app_database_and_local_sessions():
     assert 'profiles: ["nas"]' in text
 
 
+def test_haproxy_can_read_root_owned_cluster_credentials():
+    text = (ROOT / "deploy" / "compose.cluster.yml").read_text(encoding="utf-8")
+    haproxy = text.split("  haproxy:", 1)[1].split("\n  app:", 1)[0]
+
+    assert 'user: "0:0"' in haproxy
+
+
 def test_patroni_replication_uses_mutual_tls_credentials():
     text = (ROOT / "deploy" / "compose.cluster.yml").read_text(encoding="utf-8")
 
