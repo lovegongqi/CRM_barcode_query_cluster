@@ -75,9 +75,10 @@ def test_etcd_quorum_exists_only_on_three_cloud_nodes(rendered):
 def test_haproxy_uses_tls_patroni_health_checks(rendered):
     haproxy = Path(rendered["sg"]["haproxy"]).read_text(encoding="utf-8")
 
-    assert "bind 0.0.0.0:5433" in haproxy
+    assert "bind 0.0.0.0:5433 tcp-ut 10s" in haproxy
     assert "option httpchk GET /primary" in haproxy
     assert "on-marked-down shutdown-sessions" in haproxy
+    assert "default-server inter 3s fall 3 rise 2 tcp-ut 10s" in haproxy
     assert "check-ssl" in haproxy
     assert "ca-file /run/secrets/ca.crt" in haproxy
     assert "crt /run/secrets/haproxy-client.pem" in haproxy
