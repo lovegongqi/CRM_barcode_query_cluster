@@ -33,6 +33,15 @@ def test_every_public_control_service_requires_client_certificates(rendered):
     assert "verify required" in haproxy
 
 
+def test_patroni_ctl_uses_client_certificate_for_peer_requests(rendered):
+    patroni = Path(rendered["hk"]["patroni"]).read_text(encoding="utf-8")
+
+    assert "ctl:" in patroni
+    assert "cacert: /run/cluster-secrets/ca.crt" in patroni
+    assert "certfile: /run/cluster-secrets/patroni-client.crt" in patroni
+    assert "keyfile: /run/cluster-secrets/patroni-client.key" in patroni
+
+
 def test_patroni_roles_and_synchronous_policy(rendered):
     hk = Path(rendered["hk"]["patroni"]).read_text(encoding="utf-8")
     sg = Path(rendered["sg"]["patroni"]).read_text(encoding="utf-8")

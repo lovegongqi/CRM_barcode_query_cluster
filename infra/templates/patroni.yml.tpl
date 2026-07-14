@@ -10,6 +10,11 @@ restapi:
   cafile: /run/cluster-secrets/ca.crt
   verify_client: required
 
+ctl:
+  cacert: /run/cluster-secrets/ca.crt
+  certfile: /run/cluster-secrets/patroni-client.crt
+  keyfile: /run/cluster-secrets/patroni-client.key
+
 etcd3:
   hosts: hk.mlmll.cn:2379,sg.mlmll.cn:2379,us.mlmll.cn:2379
   protocol: https
