@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 
+from psycopg import OperationalError
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -11,8 +12,24 @@ class Database:
             min_size=min_size,
             max_size=max_size,
             kwargs={"row_factory": dict_row},
+            check=self._check_writable_connection,
             open=True,
         )
+
+    @staticmethod
+    def _check_writable_connection(connection) -> None:
+        was_autocommit = connection.autocommit
+        if not was_autocommit:
+            connection.autocommit = True
+        try:
+            row = connection.execute(
+                "SELECT pg_is_in_recovery() AS in_recovery"
+            ).fetchone()
+            if row["in_recovery"]:
+                raise OperationalError("connection is attached to a read-only replica")
+        finally:
+            if not was_autocommit:
+                connection.autocommit = False
 
     @contextmanager
     def transaction(self):
