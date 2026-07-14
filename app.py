@@ -19,12 +19,16 @@ import queue
 import uuid
 import shutil
 import hmac
+import base64
+import hashlib
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from urllib import request as urlrequest, error as urlerror
-from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session, redirect, has_request_context
+from flask import Flask, render_template, request, jsonify, send_from_directory, Response, session, redirect, has_request_context, g
 from datetime import datetime
 
 from cluster.config import ClusterConfig
+from cluster.crypto import CredentialCipher
 from cluster.scheduler import ClusterScheduler
 from cluster.services import build_cluster_services
 
@@ -3794,9 +3798,9 @@ def _empty_service_close_job(slot_id=None, orders=None):
         'finished_at': '',
     }
 
-def _empty_bulk_login_job(scope, slots=None):
+def _empty_bulk_login_job(scope, slots=None, job_id=None):
     return {
-        'job_id': uuid.uuid4().hex,
+        'job_id': job_id or uuid.uuid4().hex,
         'scope': scope,
         'running': False,
         'done': False,
@@ -5007,10 +5011,118 @@ def business_config():
 def _cluster_admin_token():
     return str(os.environ.get("CRM_CLUSTER_ADMIN_TOKEN") or "").strip()
 
+CLUSTER_REQUEST_MAX_AGE_SECONDS = 60
+cluster_request_nonce_lock = threading.Lock()
+cluster_request_nonces = {}
+
+def _cluster_payload_cipher():
+    token = _cluster_admin_token()
+    if not token:
+        raise ValueError("未配置 CRM_CLUSTER_ADMIN_TOKEN")
+    key = base64.urlsafe_b64encode(hashlib.sha256(token.encode("utf-8")).digest())
+    return CredentialCipher(key)
+
+def _encode_cluster_payload(payload):
+    message = {
+        "payload": payload or {},
+        "issued_at": time.time(),
+        "nonce": uuid.uuid4().hex,
+    }
+    plaintext = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+    encrypted = _cluster_payload_cipher().encrypt(plaintext)
+    return json.dumps({"encrypted": encrypted}, separators=(",", ":")).encode("utf-8")
+
+def _encode_cluster_request_payload(payload, target_node_id, path, request_id=None):
+    return _encode_cluster_payload({
+        **(payload or {}),
+        "_cluster_request": {
+            "target_node_id": target_node_id,
+            "path": path,
+            "request_id": request_id or uuid.uuid4().hex,
+        },
+    })
+
+def _encode_cluster_response_payload(payload, request_id):
+    return _encode_cluster_payload({
+        "_cluster_response_to": request_id,
+        "result": payload,
+    })
+
+def _decode_cluster_response(raw, request_id):
+    payload = _decode_cluster_payload(raw)
+    if payload.get("_cluster_response_to") != request_id:
+        raise ValueError("集群响应与请求不匹配")
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("集群响应内容无效")
+    return result
+
+def _decode_cluster_payload(raw, consume_nonce=False):
+    envelope = json.loads(bytes(raw or b"").decode("utf-8"))
+    encrypted = str((envelope or {}).get("encrypted") or "")
+    if not encrypted:
+        raise ValueError("集群加密请求无效")
+    message = json.loads(_cluster_payload_cipher().decrypt(encrypted))
+    issued_at = float(message.get("issued_at") or 0)
+    nonce = str(message.get("nonce") or "")
+    if not nonce or abs(time.time() - issued_at) > CLUSTER_REQUEST_MAX_AGE_SECONDS:
+        raise ValueError("集群请求已过期")
+    if consume_nonce:
+        with cluster_request_nonce_lock:
+            cutoff = time.time() - CLUSTER_REQUEST_MAX_AGE_SECONDS
+            for seen_nonce, seen_at in list(cluster_request_nonces.items()):
+                if seen_at < cutoff:
+                    cluster_request_nonces.pop(seen_nonce, None)
+            if nonce in cluster_request_nonces:
+                raise ValueError("集群请求已被处理")
+            cluster_request_nonces[nonce] = issued_at
+    payload = message.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("集群请求内容无效")
+    return payload
+
+def _cluster_internal_payload():
+    cached = getattr(g, "cluster_internal_payload", None)
+    if isinstance(cached, dict):
+        return cached
+    payload = _decode_cluster_payload(request.get_data(cache=True), consume_nonce=True)
+    metadata = payload.pop("_cluster_request", None) or {}
+    if (
+        metadata.get("target_node_id") != SERVER_CLUSTER_CONFIG.node_id
+        or metadata.get("path") != request.path
+        or not metadata.get("request_id")
+    ):
+        raise ValueError("集群请求目标不匹配")
+    g.cluster_request_id = metadata["request_id"]
+    g.cluster_internal_payload = payload
+    return payload
+
+def _cluster_json_response(payload):
+    if request.headers.get("X-CRM-Cluster-Encrypted") == "1":
+        return Response(
+            _encode_cluster_response_payload(payload, g.cluster_request_id),
+            content_type="application/json",
+        )
+    return jsonify(payload)
+
+def _request_json_payload():
+    try:
+        if request.headers.get("X-CRM-Cluster-Encrypted") == "1":
+            return _cluster_internal_payload()
+    except Exception:
+        return {}
+    return request.get_json(silent=True) or {}
+
 def _cluster_admin_authorized():
     token = _cluster_admin_token()
     if not token:
         return False
+    if request.headers.get("X-CRM-Cluster-Encrypted") == "1":
+        try:
+            _cluster_internal_payload()
+            return True
+        except Exception:
+            return False
     provided = (request.headers.get("X-CRM-Cluster-Token") or "").strip()
     auth_header = (request.headers.get("Authorization") or "").strip()
     if not provided and auth_header.lower().startswith("bearer "):
@@ -5127,23 +5239,25 @@ def _post_node_runtime_config(node, data):
     token = _cluster_admin_token()
     if not token:
         return False, "未配置 CRM_CLUSTER_ADMIN_TOKEN，不能远程修改节点", None
-    payload = json.dumps({
+    path = "/api/runtime-config"
+    request_id = uuid.uuid4().hex
+    payload = _encode_cluster_request_payload({
         "query_workers": data.get("query_workers"),
         "transfer_workers": data.get("transfer_workers"),
-    }).encode("utf-8")
+    }, node["id"], path, request_id)
     req = urlrequest.Request(
-        node["url"] + "/api/runtime-config",
+        node["url"] + path,
         data=payload,
         method="POST",
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "X-CRM-Cluster-Token": token,
+            "X-CRM-Cluster-Encrypted": "1",
         },
     )
     try:
         with urlrequest.urlopen(req, timeout=12) as resp:
-            result = json.loads(resp.read().decode("utf-8", errors="replace"))
+            result = _decode_cluster_response(resp.read(), request_id)
     except urlerror.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         return False, body or str(e), None
@@ -5777,6 +5891,7 @@ def _cluster_heartbeat_once():
             {
                 "slot_id": row["slot_id"],
                 "kind": row["kind"],
+                "browser_running": row["worker"].is_alive(),
                 "logged_in": row["logged_in"],
                 "busy": bool(row["worker"].busy),
             }
@@ -7015,6 +7130,10 @@ def required_permission_for_path(path):
 @app.before_request
 def require_app_login():
     path = request.path
+    if path.startswith("/api/internal/"):
+        if _cluster_admin_authorized():
+            return None
+        return jsonify({'success': False, 'error': '集群内部认证失败'}), 403
     if IS_DESKTOP_APP:
         return None
     if path.startswith("/api/app-auth"):
@@ -8343,9 +8462,9 @@ def api_runtime_config():
 def api_runtime_config_save():
     if not (is_admin_account() or _cluster_admin_authorized()):
         return jsonify({'success': False, 'error': '只有管理员可以修改系统配置'})
-    data = request.get_json() or {}
+    data = _request_json_payload()
     config, slots = _save_local_runtime_config_from_payload(data)
-    return jsonify({
+    return _cluster_json_response({
         'success': True,
         'config': config,
         'active': {
@@ -8503,8 +8622,51 @@ def api_crm_status():
         'remembered_logged_in': worker.remembered_logged_in,
     })
 
+
+def _cluster_crm_slots_payload(services):
+    nodes = {row["node_id"]: row for row in services.catalog.list_nodes()}
+    result = {"query": [], "transfer": []}
+    for slot in services.catalog.list_slots():
+        kind = slot.get("kind")
+        if kind not in result:
+            continue
+        node = nodes.get(slot.get("node_id")) or {}
+        online = (
+            _cluster_timestamp_is_future(node.get("expires_at"))
+            and _cluster_timestamp_is_future(slot.get("expires_at"))
+        )
+        node_id = str(slot.get("node_id") or "")
+        slot_id = str(slot.get("slot_id") or "")
+        node_name = str(node.get("node_name") or node_id)
+        slot_number = slot_id.rsplit("-", 1)[-1]
+        slot_label = f"{'移库' if kind == 'transfer' else '查询'}{slot_number}"
+        result[kind].append({
+            "id": f"{node_id}:{slot_id}",
+            "slot_id": slot_id,
+            "node_id": node_id,
+            "node_name": node_name,
+            "label": f"{node_name} · {slot_label}",
+            "kind": kind,
+            "online": online,
+            "browser_running": online and bool(slot.get("browser_running")),
+            "logged_in": bool(slot.get("logged_in")) and online,
+            "busy": bool(slot.get("busy")) and online,
+            "last_error": str(slot.get("last_error") or ""),
+        })
+    return {
+        **result,
+        "defaults": {
+            "query": result["query"][0]["id"] if result["query"] else "",
+            "transfer": result["transfer"][0]["id"] if result["transfer"] else "",
+        },
+    }
+
+
 @app.route("/api/crm/slots")
 def api_crm_slots():
+    services = _get_cluster_services()
+    if request.args.get("scope") == "cluster" and services:
+        return jsonify({'success': True, **_cluster_crm_slots_payload(services)})
     return jsonify({'success': True, **crm_pool.slots_payload()})
 
 @app.route("/healthz")
@@ -8624,21 +8786,33 @@ def _bulk_login_status_payload(job):
         'finished_at': job.get('finished_at') or '',
     }
 
-@app.route("/api/crm/bulk-login/start", methods=["POST"])
-def api_crm_bulk_login_start():
-    data = request.get_json() or {}
+def _start_local_bulk_login(data):
     scope = str(data.get('scope') or data.get('kind') or 'query').strip() or 'query'
     username = str(data.get('username') or '').strip()
     password = str(data.get('password') or '')
+    requested_job_id = str(data.get('requested_job_id') or '').strip()[:160]
     if not username or not password:
-        return jsonify({'success': False, 'error': '请输入 CRM 账号和密码'})
+        return {'success': False, 'error': '请输入 CRM 账号和密码'}
     scope, slots = _bulk_login_slots_for_scope(scope)
+    target_slot_ids = {slot.get('id') for slot in slots}
     with bulk_login_job_lock:
+        requested_job = bulk_login_jobs.get(requested_job_id) if requested_job_id else None
+        if requested_job:
+            return _bulk_login_status_payload(requested_job)
         running_id = latest_bulk_login_job_by_scope.get(scope)
         running_job = bulk_login_jobs.get(running_id)
         if running_job and running_job.get('running'):
-            return jsonify(_bulk_login_status_payload(running_job))
-        job = _empty_bulk_login_job(scope, slots)
+            return _bulk_login_status_payload(running_job)
+        for active_job in bulk_login_jobs.values():
+            if not active_job.get('running'):
+                continue
+            active_slot_ids = {slot.get('id') for slot in active_job.get('slots') or []}
+            if target_slot_ids & active_slot_ids:
+                return {
+                    'success': False,
+                    'error': '相同 CRM 通道正在登录，请等待当前批量登录完成',
+                }
+        job = _empty_bulk_login_job(scope, slots, requested_job_id or None)
         job.update({
             'running': bool(slots),
             'done': not bool(slots),
@@ -8655,52 +8829,390 @@ def api_crm_bulk_login_start():
         payload = _bulk_login_status_payload(job)
     if slots:
         threading.Thread(target=_run_bulk_login_job, args=(job['job_id'], username, password), daemon=True).start()
-    return jsonify(payload)
+    return payload
 
-@app.route("/api/crm/bulk-login/status")
-def api_crm_bulk_login_status():
-    scope = str(request.args.get('scope') or 'query').strip() or 'query'
-    job_id = request.args.get('job_id') or latest_bulk_login_job_by_scope.get(scope)
+def _local_bulk_login_status(data):
+    scope = str(data.get('scope') or 'query').strip() or 'query'
+    job_id = data.get('job_id') or latest_bulk_login_job_by_scope.get(scope)
     with bulk_login_job_lock:
         job = bulk_login_jobs.get(job_id)
         if not job:
-            return jsonify({'success': False, 'error': '没有批量登录任务'})
-        return jsonify(_bulk_login_status_payload(job))
+            return {'success': False, 'error': '没有批量登录任务'}
+        return _bulk_login_status_payload(job)
 
-@app.route("/api/crm/bulk-login/captcha", methods=["POST"])
-def api_crm_bulk_login_captcha():
-    data = request.get_json() or {}
+def _submit_local_bulk_login_captcha(data):
     scope = str(data.get('scope') or 'query').strip() or 'query'
     job_id = data.get('job_id') or latest_bulk_login_job_by_scope.get(scope)
     captcha = str(data.get('captcha') or '').strip()
     if not captcha:
-        return jsonify({'success': False, 'error': '请输入验证码'})
+        return {'success': False, 'error': '请输入验证码'}
     with bulk_login_job_lock:
         job = bulk_login_jobs.get(job_id)
         if not job:
-            return jsonify({'success': False, 'error': '没有批量登录任务'})
+            return {'success': False, 'error': '没有批量登录任务'}
         job['captcha'] = captcha
         _append_job_log_unlocked(job, '已收到验证码，正在同步提交到等待中的通道', 'info', 1000)
         payload = _bulk_login_status_payload(job)
     threading.Thread(target=_submit_bulk_login_pending, args=(job_id,), daemon=True).start()
-    return jsonify(payload)
+    return payload
 
-@app.route("/api/crm/bulk-login/cancel", methods=["POST"])
-def api_crm_bulk_login_cancel():
-    data = request.get_json() or {}
+def _cancel_local_bulk_login(data):
     scope = str(data.get('scope') or 'query').strip() or 'query'
     job_id = data.get('job_id') or latest_bulk_login_job_by_scope.get(scope)
     with bulk_login_job_lock:
         job = bulk_login_jobs.get(job_id)
         if not job:
-            return jsonify({'success': True})
+            return {'success': True}
         job['stop_requested'] = True
         job['running'] = False
         job['done'] = True
         job['error'] = '批量登录已取消'
         job['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         _append_job_log_unlocked(job, '批量登录已取消', 'warn', 1000)
-        return jsonify(_bulk_login_status_payload(job))
+        return _bulk_login_status_payload(job)
+
+def _cluster_bulk_login_node_call(node, action, payload=None):
+    payload = dict(payload or {})
+    if node.get('id') == SERVER_CLUSTER_CONFIG.node_id:
+        if action == 'start':
+            return _start_local_bulk_login(payload)
+        if action == 'status':
+            return _local_bulk_login_status(payload)
+        if action == 'captcha':
+            return _submit_local_bulk_login_captcha(payload)
+        if action == 'cancel':
+            return _cancel_local_bulk_login(payload)
+        return {'success': False, 'error': f'不支持的批量登录操作：{action}'}
+
+    token = _cluster_admin_token()
+    if not token:
+        return {'success': False, 'error': '未配置 CRM_CLUSTER_ADMIN_TOKEN'}
+    node_url = _normalize_node_url(node.get('url'))
+    if not node_url:
+        return {'success': False, 'error': '节点没有可用访问地址'}
+    path = f"/api/internal/crm/bulk-login/{action}"
+    request_id = uuid.uuid4().hex
+    body = _encode_cluster_request_payload(payload, node['id'], path, request_id)
+    req = urlrequest.Request(
+        f"{node_url}{path}",
+        data=body,
+        method='POST',
+        headers={
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CRM-Cluster-Encrypted': '1',
+        },
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=5) as resp:
+            return _decode_cluster_response(resp.read(), request_id)
+    except urlerror.HTTPError as error:
+        message = error.read().decode('utf-8', errors='replace').strip()
+        return {'success': False, 'error': message or str(error)}
+    except Exception as error:
+        return {'success': False, 'error': str(error)}
+
+def _cluster_bulk_login_append_log(state, node_name, row):
+    state['log_seq'] = int(state.get('log_seq') or 0) + 1
+    state.setdefault('logs', []).append({
+        'id': state['log_seq'],
+        'time': str(row.get('time') or datetime.now().strftime('%H:%M:%S')),
+        'message': f"[{node_name}] {str(row.get('message') or '')}",
+        'level': str(row.get('level') or 'dim'),
+    })
+    state['logs'] = state['logs'][-2000:]
+
+def _cluster_bulk_login_merge_results(state, results):
+    for node, result in results:
+        entry = state['nodes'][node['id']]
+        if result.get('success'):
+            entry['error'] = ''
+            entry['error_count'] = 0
+            entry['last_status'] = result
+            if result.get('job_id'):
+                entry['job_id'] = result['job_id']
+            cursor = int(entry.get('log_cursor') or 0)
+            for row in result.get('logs') or []:
+                row_id = int(row.get('id') or 0)
+                if row_id > cursor:
+                    _cluster_bulk_login_append_log(state, entry['name'], row)
+                    cursor = max(cursor, row_id)
+            entry['log_cursor'] = cursor
+        else:
+            error = str(result.get('error') or '节点请求失败')
+            entry['error_count'] = int(entry.get('error_count') or 0) + 1
+            if entry.get('error') != error:
+                _cluster_bulk_login_append_log(
+                    state,
+                    entry['name'],
+                    {'message': f'批量登录请求失败：{error}', 'level': 'error'},
+                )
+            entry['error'] = error
+    state['updated_at'] = datetime.now().isoformat()
+
+def _cluster_bulk_login_payload(state):
+    slots = []
+    node_statuses = []
+    running = False
+    all_done = True
+    waiting_captcha = False
+    success_count = 0
+    failed_count = 0
+    unavailable_count = 0
+    errors = []
+    for node_id in sorted(state.get('nodes') or {}):
+        entry = state['nodes'][node_id]
+        status = entry.get('last_status') or {}
+        error = entry.get('error') or ''
+        terminal_error = bool(entry.get('skipped')) or int(entry.get('error_count') or 0) >= 3
+        node_statuses.append({
+            'node_id': node_id,
+            'node_name': entry.get('name') or node_id,
+            'job_id': entry.get('job_id') or '',
+            'running': bool(status.get('running')),
+            'done': bool(status.get('done')),
+            'error': error,
+        })
+        if error:
+            errors.append(f"{entry.get('name') or node_id}：{error}")
+            if terminal_error:
+                failed_count += 1
+                unavailable_count += 1
+            else:
+                running = True
+                all_done = False
+                waiting_captcha = waiting_captcha or bool(status.get('waiting_captcha'))
+        else:
+            running = running or bool(status.get('running'))
+            all_done = all_done and bool(status.get('done'))
+            waiting_captcha = waiting_captcha or bool(status.get('waiting_captcha'))
+            success_count += int(status.get('success_count') or 0)
+            failed_count += int(status.get('failed_count') or 0)
+        for slot in status.get('slots') or []:
+            namespaced = dict(slot)
+            namespaced['local_id'] = slot.get('id') or ''
+            namespaced['id'] = f"{node_id}:{slot.get('id') or ''}"
+            namespaced['node_id'] = node_id
+            namespaced['node_name'] = entry.get('name') or node_id
+            namespaced['label'] = f"{entry.get('name') or node_id} · {slot.get('label') or slot.get('id') or ''}"
+            slots.append(namespaced)
+    done = all_done and not running
+    return {
+        'success': True,
+        'job_id': state.get('job_id') or '',
+        'scope': state.get('scope') or 'all',
+        'running': running,
+        'done': done,
+        'login_success': done and failed_count == 0 and not errors,
+        'error': '；'.join(errors),
+        'waiting_captcha': waiting_captcha,
+        'captcha_received': bool(state.get('captcha_received')),
+        'pending_slots': [slot for slot in slots if slot.get('status') == 'waiting_captcha'],
+        'active_slots': [slot for slot in slots if slot.get('status') in {'pending', 'opening', 'submitting_captcha'}],
+        'slots': slots,
+        'nodes': node_statuses,
+        'total': len(slots) + unavailable_count,
+        'success_count': success_count,
+        'failed_count': failed_count,
+        'logs': list(state.get('logs') or []),
+        'log_seq': int(state.get('log_seq') or 0),
+        'started_at': state.get('started_at') or '',
+        'finished_at': state.get('finished_at') or (datetime.now().strftime('%Y-%m-%d %H:%M:%S') if done else ''),
+    }
+
+def _cluster_bulk_login_state(job_id):
+    services = _get_cluster_services()
+    return services.catalog.get_runtime_config(f"cluster-bulk-login:{job_id}") if services and job_id else None
+
+def _save_cluster_bulk_login_state(state):
+    services = _get_cluster_services()
+    if services:
+        services.catalog.set_runtime_config(f"cluster-bulk-login:{state['job_id']}", state)
+
+def _cluster_bulk_login_call_state_nodes(state, action, extra=None):
+    entries = [
+        state['nodes'][node_id]
+        for node_id in sorted(state.get('nodes') or {})
+        if state['nodes'][node_id].get('job_id') and not state['nodes'][node_id].get('skipped')
+    ]
+
+    def call(entry):
+        payload = {
+            'scope': state.get('scope') or 'all',
+            'job_id': entry.get('job_id') or '',
+            **(extra or {}),
+        }
+        node = {'id': entry['id'], 'name': entry['name'], 'url': entry['url']}
+        return node, _cluster_bulk_login_node_call(node, action, payload)
+
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(entries)))) as executor:
+        return list(executor.map(call, entries))
+
+def _start_cluster_bulk_login(data):
+    scope = str(data.get('scope') or data.get('kind') or 'query').strip() or 'query'
+    username = str(data.get('username') or '').strip()
+    password = str(data.get('password') or '')
+    if not username or not password:
+        return {'success': False, 'error': '请输入 CRM 账号和密码'}
+    if not _cluster_admin_token():
+        return {'success': False, 'error': '未配置 CRM_CLUSTER_ADMIN_TOKEN，不能批量登录所有服务器'}
+    services = _get_cluster_services()
+    with services.database.advisory_lock(f"cluster-bulk-login-start:{scope}") as acquired:
+        latest_job_id = _latest_cluster_bulk_login_job_id(scope)
+        latest_state = _cluster_bulk_login_state(latest_job_id)
+        if latest_state:
+            latest_payload = _cluster_bulk_login_payload(latest_state)
+            if latest_payload.get('running') or latest_payload.get('waiting_captcha'):
+                return latest_payload
+        if not acquired:
+            return {'success': False, 'error': '相同范围的批量登录正在启动，请稍后重试'}
+        return _create_cluster_bulk_login(scope, username, password)
+
+def _create_cluster_bulk_login(scope, username, password):
+    all_nodes = sorted(load_cluster_nodes(), key=lambda row: row.get('id') or '')
+    nodes = [row for row in all_nodes if row.get('online')]
+    if not nodes:
+        return {'success': False, 'error': '没有可用服务器节点'}
+    job_id = uuid.uuid4().hex
+    state = {
+        'job_id': job_id,
+        'scope': scope,
+        'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'updated_at': datetime.now().isoformat(),
+        'log_seq': 0,
+        'logs': [],
+        'captcha_received': False,
+        'last_polled_at': '',
+        'nodes': {
+            node['id']: {
+                'id': node['id'],
+                'name': node.get('name') or node['id'],
+                'url': node.get('url') or '',
+                'job_id': f"{job_id}:{node['id']}" if node.get('online') else '',
+                'log_cursor': 0,
+                'error': '' if node.get('online') else '服务器离线，本次未登录',
+                'error_count': 0 if node.get('online') else 3,
+                'skipped': not node.get('online'),
+                'last_status': {},
+            }
+            for node in all_nodes
+        },
+    }
+    for node in all_nodes:
+        if not node.get('online'):
+            _cluster_bulk_login_append_log(
+                state,
+                node.get('name') or node['id'],
+                {'message': '服务器离线，本次未登录', 'level': 'error'},
+            )
+
+    def start(node):
+        return node, _cluster_bulk_login_node_call(
+            node,
+            'start',
+            {
+                'scope': scope,
+                'username': username,
+                'password': password,
+                'requested_job_id': state['nodes'][node['id']]['job_id'],
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(nodes)))) as executor:
+        results = list(executor.map(start, nodes))
+    _cluster_bulk_login_merge_results(state, results)
+    _save_cluster_bulk_login_state(state)
+    services = _get_cluster_services()
+    services.catalog.set_runtime_config(f"cluster-bulk-login-latest:{scope}", {'job_id': job_id})
+    return _cluster_bulk_login_payload(state)
+
+def _cluster_bulk_login_action(job_id, action, extra=None):
+    services = _get_cluster_services()
+    with services.database.advisory_lock(f"cluster-bulk-login-action:{job_id}") as acquired:
+        state = _cluster_bulk_login_state(job_id)
+        if not state:
+            return {'success': False, 'error': '没有批量登录任务'}
+        if not acquired:
+            return _cluster_bulk_login_payload(state)
+        if action == 'status':
+            try:
+                last_polled = datetime.fromisoformat(str(state.get('last_polled_at') or '')).timestamp()
+            except (TypeError, ValueError):
+                last_polled = 0
+            if time.time() - last_polled < 2:
+                return _cluster_bulk_login_payload(state)
+        if action == 'captcha':
+            state['captcha_received'] = True
+        results = _cluster_bulk_login_call_state_nodes(state, action, extra)
+        _cluster_bulk_login_merge_results(state, results)
+        if action == 'status':
+            state['last_polled_at'] = datetime.now().isoformat()
+            statuses = [entry.get('last_status') or {} for entry in state.get('nodes', {}).values()]
+            if any(row.get('waiting_captcha') and not row.get('captcha_received') for row in statuses):
+                state['captcha_received'] = False
+        payload = _cluster_bulk_login_payload(state)
+        if payload.get('done') and not state.get('finished_at'):
+            state['finished_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            payload['finished_at'] = state['finished_at']
+        _save_cluster_bulk_login_state(state)
+        return payload
+
+def _latest_cluster_bulk_login_job_id(scope):
+    services = _get_cluster_services()
+    row = services.catalog.get_runtime_config(f"cluster-bulk-login-latest:{scope}") if services else None
+    return str((row or {}).get('job_id') or '')
+
+@app.route("/api/crm/bulk-login/start", methods=["POST"])
+def api_crm_bulk_login_start():
+    data = request.get_json() or {}
+    if _get_cluster_services():
+        return jsonify(_start_cluster_bulk_login(data))
+    return jsonify(_start_local_bulk_login(data))
+
+@app.route("/api/crm/bulk-login/status")
+def api_crm_bulk_login_status():
+    scope = str(request.args.get('scope') or 'query').strip() or 'query'
+    if _get_cluster_services():
+        job_id = request.args.get('job_id') or _latest_cluster_bulk_login_job_id(scope)
+        return jsonify(_cluster_bulk_login_action(job_id, 'status'))
+    return jsonify(_local_bulk_login_status({'scope': scope, 'job_id': request.args.get('job_id')}))
+
+@app.route("/api/crm/bulk-login/captcha", methods=["POST"])
+def api_crm_bulk_login_captcha():
+    data = request.get_json() or {}
+    if _get_cluster_services():
+        scope = str(data.get('scope') or 'query').strip() or 'query'
+        job_id = data.get('job_id') or _latest_cluster_bulk_login_job_id(scope)
+        captcha = str(data.get('captcha') or '').strip()
+        if not captcha:
+            return jsonify({'success': False, 'error': '请输入验证码'})
+        return jsonify(_cluster_bulk_login_action(job_id, 'captcha', {'captcha': captcha}))
+    return jsonify(_submit_local_bulk_login_captcha(data))
+
+@app.route("/api/crm/bulk-login/cancel", methods=["POST"])
+def api_crm_bulk_login_cancel():
+    data = request.get_json() or {}
+    if _get_cluster_services():
+        scope = str(data.get('scope') or 'query').strip() or 'query'
+        job_id = data.get('job_id') or _latest_cluster_bulk_login_job_id(scope)
+        return jsonify(_cluster_bulk_login_action(job_id, 'cancel'))
+    return jsonify(_cancel_local_bulk_login(data))
+
+@app.route("/api/internal/crm/bulk-login/start", methods=["POST"])
+def api_internal_crm_bulk_login_start():
+    return _cluster_json_response(_start_local_bulk_login(_request_json_payload()))
+
+@app.route("/api/internal/crm/bulk-login/status", methods=["POST"])
+def api_internal_crm_bulk_login_status():
+    return _cluster_json_response(_local_bulk_login_status(_request_json_payload()))
+
+@app.route("/api/internal/crm/bulk-login/captcha", methods=["POST"])
+def api_internal_crm_bulk_login_captcha():
+    return _cluster_json_response(_submit_local_bulk_login_captcha(_request_json_payload()))
+
+@app.route("/api/internal/crm/bulk-login/cancel", methods=["POST"])
+def api_internal_crm_bulk_login_cancel():
+    return _cluster_json_response(_cancel_local_bulk_login(_request_json_payload()))
 
 @app.route("/api/crm/logout", methods=["POST"])
 def api_crm_logout():

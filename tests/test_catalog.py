@@ -113,6 +113,7 @@ def test_node_and_slot_heartbeats_are_shared(catalog):
                 "kind": "query",
                 "logged_in": True,
                 "busy": False,
+                "browser_running": True,
             }
         ],
         ttl_seconds=180,
@@ -120,6 +121,7 @@ def test_node_and_slot_heartbeats_are_shared(catalog):
 
     assert catalog.list_nodes()[0]["node_id"] == node_id
     assert catalog.list_slots(node_id)[0]["logged_in"] is True
+    assert catalog.list_slots(node_id)[0]["browser_running"] is True
 
 
 def test_product_rule_replacement_and_distributor_deletion(catalog):

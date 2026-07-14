@@ -79,6 +79,23 @@ class Database:
             with connection.transaction():
                 yield connection
 
+    @contextmanager
+    def advisory_lock(self, name: str):
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT pg_try_advisory_lock(hashtext(%s)) AS acquired",
+                (name,),
+            ).fetchone()
+            acquired = bool(row and row["acquired"])
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    connection.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s))",
+                        (name,),
+                    )
+
     def execute(self, sql: str, params=None) -> int:
         with self.transaction() as connection:
             cursor = connection.execute(sql, params)

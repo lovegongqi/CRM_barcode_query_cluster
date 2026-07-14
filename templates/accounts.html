@@ -208,6 +208,7 @@ let bulkCrmSlots = [];
 let pendingBulkCrmSlots = [];
 let currentBulkCrmLoginJobId = sessionStorage.getItem('crm_bulk_login_job_all') || '';
 let bulkLoginPollTimer = null;
+let bulkLoginPollPending = false;
 let lastBulkLoginLogSeq = 0;
 let clusterNodes = [];
 
@@ -389,7 +390,7 @@ function renderBulkCrmSlots() {
 }
 
 async function loadBulkCrmSlots() {
-    const data = await fetch('/api/crm/slots').then(res => res.json()).catch(() => null);
+    const data = await fetch('/api/crm/slots?scope=cluster').then(res => res.json()).catch(() => null);
     if (!data || !data.success) {
         bulkCrmSlots = [];
         renderBulkCrmSlots();
@@ -508,15 +509,23 @@ function renderBulkLoginJob(data) {
 }
 
 async function pollBulkLoginJob() {
-    if (!currentBulkCrmLoginJobId) return;
-    const params = new URLSearchParams({scope: 'all', job_id: currentBulkCrmLoginJobId});
-    const data = await fetch('/api/crm/bulk-login/status?' + params.toString()).then(res => res.json()).catch(() => null);
-    if (data && data.success) renderBulkLoginJob(data);
+    if (!currentBulkCrmLoginJobId || bulkLoginPollPending) return;
+    bulkLoginPollPending = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+        const params = new URLSearchParams({scope: 'all', job_id: currentBulkCrmLoginJobId});
+        const data = await fetch('/api/crm/bulk-login/status?' + params.toString(), {signal: controller.signal}).then(res => res.json()).catch(() => null);
+        if (data && data.success) renderBulkLoginJob(data);
+    } finally {
+        clearTimeout(timeout);
+        bulkLoginPollPending = false;
+    }
 }
 
 function startBulkLoginPolling() {
     if (bulkLoginPollTimer) clearInterval(bulkLoginPollTimer);
-    bulkLoginPollTimer = setInterval(pollBulkLoginJob, 1000);
+    bulkLoginPollTimer = setInterval(pollBulkLoginJob, 2000);
     pollBulkLoginJob();
 }
 

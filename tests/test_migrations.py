@@ -15,6 +15,7 @@ def test_migration_is_idempotent(test_database_url):
             "0001_initial",
             "0002_job_safety_states",
             "0003_transfer_summary_jobs",
+            "0004_slot_browser_state",
         ]
         assert runner.apply() == []
         assert database.fetch_one(

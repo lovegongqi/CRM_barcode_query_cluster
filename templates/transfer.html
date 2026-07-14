@@ -220,6 +220,7 @@ let transferSlots = [];
 let pendingLoginSlots = [];
 let currentLoginJobId = sessionStorage.getItem('crm_bulk_login_job_transfer') || '';
 let loginPollTimer = null;
+let loginPollPending = false;
 let lastLoginLogSeq = 0;
 const BUSINESS_CONFIG = {{ business_config|tojson }};
 const OWN_DEALER_NAME = BUSINESS_CONFIG.own_dealer_name || '江西省天麓工贸有限公司';
@@ -736,15 +737,23 @@ function renderBulkLoginStatus(data) {
 }
 
 async function pollBulkLoginStatus() {
-    if (!currentLoginJobId) return;
-    const params = new URLSearchParams({scope: 'transfer', job_id: currentLoginJobId});
-    const data = await fetch('/api/crm/bulk-login/status?' + params.toString()).then(r => r.json()).catch(() => null);
-    if (data && data.success) renderBulkLoginStatus(data);
+    if (!currentLoginJobId || loginPollPending) return;
+    loginPollPending = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+        const params = new URLSearchParams({scope: 'transfer', job_id: currentLoginJobId});
+        const data = await fetch('/api/crm/bulk-login/status?' + params.toString(), {signal: controller.signal}).then(r => r.json()).catch(() => null);
+        if (data && data.success) renderBulkLoginStatus(data);
+    } finally {
+        clearTimeout(timeout);
+        loginPollPending = false;
+    }
 }
 
 function startBulkLoginPolling() {
     if (loginPollTimer) clearInterval(loginPollTimer);
-    loginPollTimer = setInterval(pollBulkLoginStatus, 1000);
+    loginPollTimer = setInterval(pollBulkLoginStatus, 2000);
     pollBulkLoginStatus();
 }
 

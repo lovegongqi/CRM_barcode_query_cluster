@@ -171,3 +171,15 @@ def test_fetch_methods_return_plain_dicts(database):
     assert row["scope"] == scope
     assert row["value_json"] == {"query_workers": 5}
     assert rows == [{"scope": scope}]
+
+
+def test_advisory_lock_is_nonblocking(database):
+    lock_name = "test-lock:" + uuid.uuid4().hex
+
+    with database.advisory_lock(lock_name) as first_acquired:
+        with database.advisory_lock(lock_name) as second_acquired:
+            assert first_acquired is True
+            assert second_acquired is False
+
+    with database.advisory_lock(lock_name) as acquired_after_release:
+        assert acquired_after_release is True

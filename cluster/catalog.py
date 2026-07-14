@@ -456,14 +456,15 @@ class CatalogRepository:
                 connection.execute(
                     """
                     INSERT INTO crm_slots(
-                        node_id, slot_id, kind, logged_in, busy,
+                        node_id, slot_id, kind, browser_running, logged_in, busy,
                         current_item_id, last_error, last_seen_at, expires_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         node_id,
                         slot["slot_id"],
                         slot["kind"],
+                        bool(slot.get("browser_running", False)),
                         bool(slot.get("logged_in", False)),
                         bool(slot.get("busy", False)),
                         str(slot.get("current_item_id") or ""),
