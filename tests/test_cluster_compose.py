@@ -34,6 +34,7 @@ def test_pki_generates_dedicated_database_admin_certificate():
     text = (ROOT / "infra" / "pki" / "generate.sh").read_text(encoding="utf-8")
 
     assert 'issue_leaf "${node}" "${host}" admin-client clientAuth' in text
+    assert '"${name}" == "patroni-server" || "${name}" == "etcd-server"' in text
 
 
 def test_pgbackrest_keeps_seven_full_backups_in_r2():

@@ -53,7 +53,7 @@ issue_leaf() {
   if [[ "${name}" == "postgres-server" ]]; then
     subject_alt_name="${subject_alt_name},DNS:db.mlmll.cn"
   fi
-  if [[ "${name}" == "patroni-server" ]]; then
+  if [[ "${name}" == "patroni-server" || "${name}" == "etcd-server" ]]; then
     subject_alt_name="${subject_alt_name},IP:127.0.0.1"
   fi
   {
